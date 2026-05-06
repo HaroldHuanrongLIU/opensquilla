@@ -186,7 +186,13 @@ def test_release_wheel_content_scanner_flags_internal_markers(tmp_path: Path) ->
         archive.writestr("opensquilla/__init__.py", "__version__ = '0.1.0'\n")
         archive.writestr(
             "opensquilla-0.1.0.dist-info/METADATA",
-            "Project-URL: Repository, https://github.com/internal-org/opensquilla\n",
+            "\n".join(
+                [
+                    "Author: INTERNAL_ORG_NAME",
+                    "Project-URL: Repository, https://github.com/internal-org/opensquilla",
+                    "",
+                ]
+            ),
         )
 
     assert module.forbidden_release_text_hits(wheel_path) == [

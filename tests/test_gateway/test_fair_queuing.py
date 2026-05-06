@@ -360,29 +360,34 @@ async def test_round_robin_strict_abcabc_order() -> None:
 async def test_no_underutilization() -> None:
     """1 agent, 5 sessions, 10 messages each, max_concurrency=4.
 
-    Each task takes ~50 ms.  With 4 slots always busy the total wall-clock
-    should be ≤ 1.5× the serial lower bound (50 tasks × 50 ms / 4 slots = 625 ms).
-    Using 50 ms tasks (vs 10 ms) amortizes asyncio/RR scheduling overhead so that
-    the boundary wait from 5-sessions-vs-4-slots does not inflate the ratio beyond
-    the tolerance.  This asserts the RR scheduler does not leave slots idle when
-    work is available.
+    This asserts the RR scheduler fills all available slots while work is
+    available without relying on wall-clock thresholds that include CI logging
+    and enqueue overhead.
     """
-    import time
-
     random.seed(5)
-    task_duration_s = 0.050  # 50 ms per task — amortizes scheduler overhead
     tasks_per_session = 10
     num_sessions = 5
     max_concurrency = 4
-    total_tasks = tasks_per_session * num_sessions
-    # Serial lower bound = total_tasks * duration / concurrency
-    serial_lower_bound_s = total_tasks * task_duration_s / max_concurrency  # 0.625 s
-    tolerance_multiplier = 1.5  # generous to avoid CI flakiness
+    peak_in_flight = 0
+    current_in_flight = 0
+    peak_reached = asyncio.Event()
+    release_handlers = asyncio.Event()
+    counter_lock = asyncio.Lock()
 
     agent_id = "agent-util"
 
     async def timed_handler(_run: Any) -> None:
-        await asyncio.sleep(task_duration_s)
+        nonlocal current_in_flight, peak_in_flight
+        async with counter_lock:
+            current_in_flight += 1
+            peak_in_flight = max(peak_in_flight, current_in_flight)
+            if peak_in_flight >= max_concurrency:
+                peak_reached.set()
+        try:
+            await release_handlers.wait()
+        finally:
+            async with counter_lock:
+                current_in_flight -= 1
 
     storage = _make_storage()
     runtime = TaskRuntime(
@@ -397,18 +402,14 @@ async def test_no_underutilization() -> None:
         for i in range(num_sessions)
     ]
 
-    start = time.monotonic()
     handles = []
     for env in envs:
         for i in range(tasks_per_session):
             h = await runtime.enqueue(env, f"msg {i}")
             handles.append(h)
 
+    await asyncio.wait_for(peak_reached.wait(), timeout=5.0)
+    release_handlers.set()
     await asyncio.gather(*(runtime.wait(h.task_id, timeout=60.0) for h in handles))
-    elapsed = time.monotonic() - start
 
-    assert elapsed <= serial_lower_bound_s * tolerance_multiplier, (
-        f"Underutilization detected: elapsed={elapsed:.3f}s > "
-        f"{tolerance_multiplier}× lower bound={serial_lower_bound_s:.3f}s. "
-        f"Slots may be sitting idle."
-    )
+    assert peak_in_flight == max_concurrency

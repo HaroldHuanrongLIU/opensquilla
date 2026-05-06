@@ -215,6 +215,15 @@ generation, and concurrency settings are managed through
 `opensquilla onboard`, `opensquilla config`, and
 `opensquilla.toml.example`.
 
+## Benchmark Results
+
+PinchBench 1.2.1 average results across 25 tasks:
+
+| Agent | Base Model | Avg. score | Total input tokens | Total output tokens | Total cost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OpenSquilla | Model router (Opus4.7, GLM5.1, DS4 Flash) | 0.9251 | 1,721,328 | 61,475 | $0.688 |
+| OpenClaw | Claude Opus 4.7 | 0.9255 | 3,066,243 | 50,890 | $6.233 |
+
 ## Key Features
 
 - **Token-efficient routing** — local `SquillaRouter` (LightGBM + ONNX
@@ -227,7 +236,7 @@ generation, and concurrency settings are managed through
   kicks in when the turn needs deep thought, and the system prompt
   scales with task complexity (lightweight for trivial turns, full
   instructions for complex ones). No paying reasoning tokens for "hello".
-- **On-demand MCP tools and skills** — built-in MCP client plus 16
+- **On-demand skills** — built-in MCP client plus 16
   bundled skills (coding agents, GitHub, cron, deep research,
   pptx/docx/xlsx/pdf toolkits, summarization, tmux, weather, and more);
   only the skills needed for the current task are loaded into context,
