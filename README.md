@@ -38,14 +38,27 @@ The fastest path to a running OpenSquilla on your local machine.
    git lfs pull --include="src/opensquilla/squilla_router/models/**"
    ```
 
-3. Install:
+3. Install with the recommended profile. This is the default profile and
+   includes the bundled SquillaRouter runtime and model dependencies.
+
+   macOS / Linux:
 
    ```sh
-   bash install.sh                                       # macOS / Linux
-   # pwsh -ExecutionPolicy Bypass -File install.ps1      # Windows
+   bash install.sh
    ```
 
-4. Configure (interactive wizard):
+   Windows PowerShell:
+
+   ```powershell
+   pwsh -ExecutionPolicy Bypass -File install.ps1
+   ```
+
+   Only set `OPENSQUILLA_INSTALL_PROFILE=core` if you intentionally want
+   to skip the bundled router.
+
+4. Configure (interactive wizard). Use the installed `opensquilla`
+   command for the steps below; do not prefix these commands with
+   `uv run` unless you are using the development install section.
 
    ```sh
    opensquilla onboard
@@ -90,40 +103,57 @@ git lfs pull --include="src/opensquilla/squilla_router/models/**"
 
 ### Install (user-local, recommended)
 
-The `install.sh` / `install.ps1` scripts run `uv tool install` when
-available and otherwise `python -m pip install --user`. The actual
-install location is whatever `uv` or `pip` chooses for the current
-user (`~/.local/share/uv/...`, `site.USER_BASE`, etc.); the
-post-install banner records a conventional user prefix and the
+This is the normal install path for users. The scripts install
+`.[recommended]` by default, which includes the bundled SquillaRouter
+runtime dependencies. After this install, run `opensquilla ...`
+directly.
+
+The scripts prefer `uv tool install` and fall back to
+`python -m pip install --user`. That installed CLI uses its own Python
+environment; it is intentionally separate from a checkout-local `.venv`.
+The post-install banner records a conventional user prefix and the
 default loopback bind so you know where to look.
 
+macOS / Linux:
+
 ```sh
-bash install.sh                                       # macOS / Linux
-# pwsh -ExecutionPolicy Bypass -File install.ps1      # Windows
+bash install.sh
 ```
 
-**(optional)** Set `OPENSQUILLA_INSTALL_PROFILE=core` to skip the
-bundled router, or `OPENSQUILLA_INSTALL_DRY_RUN=1` to print the plan
-without touching the system.
+Windows PowerShell:
 
-### Install (for development) — (optional)
+```powershell
+pwsh -ExecutionPolicy Bypass -File install.ps1
+```
 
-If you want a venv tied to this checkout (typical for development):
+**(optional)** Set `OPENSQUILLA_INSTALL_PROFILE=core` only if you want
+the minimal runtime without the bundled router, or
+`OPENSQUILLA_INSTALL_DRY_RUN=1` to print the plan without touching the
+system.
+
+### Install (for development) — optional
+
+Use this only when you want commands to run from the current source
+checkout. This creates a checkout-local `.venv`, separate from the
+user-local `opensquilla` installed above.
 
 ```sh
 uv sync --extra recommended
 uv run opensquilla --help
 ```
 
-In this mode prefix every `opensquilla …` command below with
-`uv run`.
+In this mode prefix every `opensquilla ...` command below with `uv run`.
+Do not mix this mode with the user-local install when debugging router
+dependencies; they use different Python environments.
 
 ### First-run config
 
 `opensquilla onboard` walks you through provider setup and (unless
 skipped) channels and search, then writes a config file. The router
-defaults to `recommended`; pass `--router openrouter-mix|disabled` to
-override. Useful invocations:
+defaults to `recommended`, which enables SquillaRouter for supported
+provider profiles. Pass `--router disabled` only if you intentionally
+want direct single-model routing, or `--router openrouter-mix` to keep
+the built-in OpenRouter mixed model routes. Useful invocations:
 
 ```sh
 opensquilla onboard                # full interactive wizard
