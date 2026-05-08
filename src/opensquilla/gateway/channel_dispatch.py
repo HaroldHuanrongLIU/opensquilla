@@ -15,9 +15,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import re
+import shutil
+import tempfile
 import weakref
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -36,6 +39,18 @@ if TYPE_CHECKING:
     from opensquilla.gateway.event_bridge import EventBridge
 
 log = structlog.get_logger(__name__)
+
+_ARTIFACT_MARKER_LINE_RE = re.compile(
+    r"^\s*\[generated artifact omitted:[^\r\n]*\]\s*$",
+    re.MULTILINE,
+)
+_MARKDOWN_IMAGE_LINE_RE = re.compile(
+    r"^\s*!\[[^\]\r\n]*\]\((?P<target>[^)\r\n]+)\)\s*$"
+)
+_LOOSE_IMAGE_LINE_RE = re.compile(
+    r"^\s*![^\r\n]*\((?P<target>[^)\r\n]+\.(?:png|jpe?g|gif|webp))\)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _emit_metric(name: str, value: int = 1, **labels: Any) -> None:
@@ -411,6 +426,7 @@ async def run_channel_dispatch(
                             route_envelope=_route_envelope,
                             inbound=_inbound,
                             transcript_watermark=_transcript_watermark,
+                            config=config,
                             stream_relay=_stream_relay,
                         )
                     finally:
@@ -673,7 +689,7 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
     await status_reactor.running(msg)
     typing_task = _start_typing_keepalive(channel)
     try:
-        await _deliver_runtime_channel_reply(channel=channel, task_runtime=task_runtime, session_manager=session_manager, session_key=session_key, task_id=handle.task_id, route_envelope=route_envelope, inbound=msg, transcript_watermark=transcript_watermark, stream_relay=stream_relay)  # noqa: E501
+        await _deliver_runtime_channel_reply(channel=channel, task_runtime=task_runtime, session_manager=session_manager, session_key=session_key, task_id=handle.task_id, route_envelope=route_envelope, inbound=msg, transcript_watermark=transcript_watermark, config=config, stream_relay=stream_relay)  # noqa: E501
     finally:
         if typing_task is not None:
             typing_task.cancel()
@@ -1120,6 +1136,9 @@ class _RuntimeChannelStreamRelay:
         text = _text_delta_from_event(event)
         if not text:
             return
+        text = _strip_artifact_markers_from_channel_text(text)
+        if not text:
+            return
         self.text_emitted = True
         await self._queue.put(text)
 
@@ -1219,8 +1238,64 @@ def _artifact_media_root_from_config(config: Any) -> Path:
     return Path(media_root_raw) if media_root_raw else Path(".opensquilla") / "media"
 
 
+def _strip_artifact_markers_from_channel_text(text: str) -> str:
+    if "[generated artifact omitted:" not in text:
+        return text
+    lines = [
+        line
+        for line in text.replace("\r\n", "\n").split("\n")
+        if not _ARTIFACT_MARKER_LINE_RE.match(line)
+    ]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _artifact_reference_names(artifacts: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for artifact in artifacts:
+        name = artifact.get("name")
+        if isinstance(name, str) and name:
+            names.add(Path(name).name.lower())
+    return names
+
+
+def _image_reference_target_name(line: str) -> str:
+    match = _MARKDOWN_IMAGE_LINE_RE.match(line) or _LOOSE_IMAGE_LINE_RE.match(line)
+    if match is None:
+        return ""
+    target = match.group("target").strip().strip("'\"")
+    target = target.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+    return target.rsplit("/", 1)[-1].lower()
+
+
+def _strip_delivered_artifact_image_references(
+    text: str,
+    artifacts: list[dict[str, Any]],
+) -> str:
+    names = _artifact_reference_names(artifacts)
+    if not names or "!" not in text:
+        return text
+    lines = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        target_name = _image_reference_target_name(line)
+        if target_name and target_name in names:
+            continue
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def _can_deliver_channel_files(channel: Any) -> bool:
     return callable(getattr(channel, "send_file", None))
+
+
+@contextlib.contextmanager
+def _named_artifact_delivery_path(source: Path, filename: str) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="opensquilla-artifact-") as tmp_dir:
+        target = Path(tmp_dir) / Path(filename).name
+        try:
+            target.hardlink_to(source)
+        except OSError:
+            shutil.copy2(source, target)
+        yield target
 
 
 async def _deliver_artifacts_as_channel_files(
@@ -1242,10 +1317,11 @@ async def _deliver_artifacts_as_channel_files(
             undelivered.append(artifact)
             continue
         try:
-            _ref, path = store.resolve_for_download(artifact_id, session_id=session_id)
-            result = send_file(msg.channel_id, str(path))
-            if inspect.isawaitable(result):
-                await result
+            ref, path = store.resolve_for_download(artifact_id, session_id=session_id)
+            with _named_artifact_delivery_path(path, ref.name) as delivery_path:
+                result = send_file(msg.channel_id, str(delivery_path))
+                if inspect.isawaitable(result):
+                    await result
         except Exception as exc:  # noqa: BLE001 - preserve text fallback on delivery failure.
             log.warning(
                 "channel_dispatch.artifact_file_delivery_failed",
@@ -1437,6 +1513,7 @@ async def _deliver_runtime_channel_reply(
     route_envelope: Any,
     inbound: IncomingMessage,
     transcript_watermark: int,
+    config: Any = None,
     stream_relay: _RuntimeChannelStreamRelay | None = None,
 ) -> None:
     """Await a task_runtime result and send the channel reply.
@@ -1500,14 +1577,70 @@ async def _deliver_runtime_channel_reply(
             content = f"Error: {content}"
 
     if content:
-        await channel.send(
-            _build_runtime_reply_message(
+        content, artifacts = _split_assistant_artifact_content(content)
+        content = _strip_artifact_markers_from_channel_text(content)
+        content = _strip_delivered_artifact_image_references(content, artifacts)
+        if _can_deliver_channel_files(channel):
+            if content:
+                await channel.send(
+                    _build_runtime_reply_message(
+                        channel,
+                        content,
+                        inbound,
+                        route_envelope,
+                    )
+                )
+            undelivered = await _deliver_artifacts_as_channel_files(
                 channel,
-                content,
                 inbound,
-                route_envelope,
+                artifacts,
+                config,
             )
-        )
+            fallback_lines = _artifact_fallback_lines(undelivered)
+            if fallback_lines:
+                await channel.send(
+                    _build_runtime_reply_message(
+                        channel,
+                        "\n".join(fallback_lines),
+                        inbound,
+                        route_envelope,
+                    )
+                )
+        else:
+            fallback_lines = _artifact_fallback_lines(artifacts)
+            if fallback_lines:
+                content = "\n\n".join(part for part in (content, "\n".join(fallback_lines)) if part)
+            if content:
+                await channel.send(
+                    _build_runtime_reply_message(
+                        channel,
+                        content,
+                        inbound,
+                        route_envelope,
+                    )
+                )
+
+
+def _split_assistant_artifact_content(content: str) -> tuple[str, list[dict[str, Any]]]:
+    try:
+        parsed = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return content, []
+    if not isinstance(parsed, dict):
+        return content, []
+    text = parsed.get("text")
+    artifacts_raw = parsed.get("artifacts")
+    if not isinstance(text, str) or not isinstance(artifacts_raw, list):
+        return content, []
+    artifacts: list[dict[str, Any]] = []
+    for artifact in artifacts_raw:
+        try:
+            payload = artifact_payload(artifact)
+        except Exception:
+            continue
+        if payload:
+            artifacts.append(payload)
+    return text, artifacts
 
 
 async def _run_turn_batch_path(
@@ -1581,6 +1714,8 @@ async def _run_turn_batch_path(
 
     if not error_occurred:
         content = "".join(text_parts)
+        content = _strip_artifact_markers_from_channel_text(content)
+        content = _strip_delivered_artifact_image_references(content, artifacts)
         if _can_deliver_channel_files(channel):
             if content:
                 await channel.send(_build_reply_message(channel, content, msg))
@@ -1658,8 +1793,10 @@ async def _run_turn_streaming_path(
         )
         async for event in _wrap_channel_turn_stream(stream, config):
             if isinstance(event, TextDeltaEvent):
-                text_emitted = True
-                await queue.put(event.text)
+                cleaned = _strip_artifact_markers_from_channel_text(event.text)
+                if cleaned:
+                    text_emitted = True
+                    await queue.put(cleaned)
                 if event_bridge is not None:
                     await event_bridge.emit(
                         session_key,

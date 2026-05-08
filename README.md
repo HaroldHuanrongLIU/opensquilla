@@ -30,8 +30,8 @@ Choose one path and stay on it:
 
 | Goal | Use this path | Commands use |
 | --- | --- | --- |
-| Run OpenSquilla as a local app | **Install** | `opensquilla ...` |
-| Modify or debug OpenSquilla source | **Develop from source** | `uv run opensquilla ...` |
+| Run OpenSquilla as a local app | [Install](#install) | `opensquilla ...` |
+| Modify or debug OpenSquilla source | [Develop from source](#develop-from-source) | `uv run opensquilla ...` |
 
 Both paths can start from `git clone`. In the install path, the clone is only
 the source package the installer reads from. In the development path, the clone
@@ -140,9 +140,13 @@ pwsh -ExecutionPolicy Bypass -File install.ps1
 
 Install channel extras into the same user-local command:
 
+Windows PowerShell:
+
 ```powershell
 pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu
 ```
+
+macOS/Linux:
 
 ```sh
 OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh
@@ -176,6 +180,9 @@ where.exe opensquilla
 ```sh
 command -v opensquilla
 ```
+
+After reinstalling from a local checkout, restart the gateway process so it
+loads the updated package.
 
 ### Develop from source
 

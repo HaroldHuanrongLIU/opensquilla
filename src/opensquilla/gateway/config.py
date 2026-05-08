@@ -1158,6 +1158,7 @@ class FeishuChannelEntry(ConfiguredChannelEntry):
     """Gateway config entry for a Feishu (Lark) channel."""
 
     type: Literal["feishu"] = "feishu"
+    status_reactions_enabled: bool = True
     app_id: str
     app_secret: str
     encrypt_key: str = ""

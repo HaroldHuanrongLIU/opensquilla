@@ -100,6 +100,25 @@ def test_feishu_connection_mode_choices():
     assert field.choices == ("webhook", "websocket")
 
 
+def test_feishu_status_reactions_are_enabled_by_default():
+    entry = FeishuChannelEntry(
+        name="feishu",
+        app_id="cli_test",
+        app_secret="secret",
+    )
+
+    assert entry.status_reactions_enabled is True
+
+
+def test_feishu_status_reactions_are_exposed_in_setup_spec():
+    spec = get_channel_setup_spec("feishu")
+    field = next(f for f in spec.fields if f.name == "status_reactions_enabled")
+
+    assert field.field_type == "bool"
+    assert field.default is True
+    assert field.advanced is True
+
+
 def test_feishu_webhook_fields_are_conditional():
     spec = get_channel_setup_spec("feishu")
     fields = {f.name: f for f in spec.fields}
