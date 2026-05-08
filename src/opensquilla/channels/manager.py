@@ -54,6 +54,7 @@ class ChannelManager:
     # does not look healthy.
     _dispatch_states: dict[str, str] = field(default_factory=dict)
     _restart_counts: dict[str, int] = field(default_factory=dict)
+    _start_errors: dict[str, dict[str, str]] = field(default_factory=dict)
     # Inner-loop retry policy (overridable for tests).
     _max_retries: int = 5
     _retry_backoff_initial: float = 1.0
@@ -146,14 +147,31 @@ class ChannelManager:
             *[self._safe_start(name) for name in self._channels],
             return_exceptions=True,
         )
-        return {name: not isinstance(r, BaseException) for name, r in zip(self._channels, results)}
+        statuses: dict[str, bool] = {}
+        for name, result in zip(self._channels, results):
+            if isinstance(result, BaseException):
+                self._start_errors[name] = {
+                    "error_type": type(result).__name__,
+                    "error": str(result),
+                    "exception": repr(result),
+                }
+                statuses[name] = False
+            else:
+                self._start_errors.pop(name, None)
+                statuses[name] = True
+        return statuses
+
+    def start_errors(self) -> dict[str, dict[str, str]]:
+        """Return sanitized per-channel startup errors for operator diagnostics."""
+        return {name: dict(details) for name, details in self._start_errors.items()}
 
     async def _safe_start(self, name: str) -> None:
         """Start a single channel with 30 s timeout, then launch dispatch loop."""
         from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet, _compute_channel_cap
 
         adapter = self._channels[name]
-        await asyncio.wait_for(adapter.start(), timeout=30.0)
+        startup_timeout = float(getattr(adapter, "startup_timeout_s", 30.0))
+        await asyncio.wait_for(adapter.start(), timeout=startup_timeout)
         entry_agent_id = self._agent_ids.get(name, "main")
         key_builder = partial(self._build_session_key, name, agent_id=entry_agent_id)
         cap = _compute_channel_cap(self._config)

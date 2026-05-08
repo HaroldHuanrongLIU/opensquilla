@@ -338,12 +338,18 @@ const ChatView = (() => {
 
   /* ── Inline SVG icons local to chat.js (icons.js owned by another agent) ── */
 
-  // 14px gear/cog icon for the composer-toolbar trigger button
+  // 14px sliders icon — three horizontal rails with knobs at different
+  // positions. Reads as "adjustable runtime modes" rather than "global config",
+  // distinguishing this control from the sidebar Config (gear) entry.
   function _iconGear() {
     return '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" '
       + 'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-      + '<circle cx="12" cy="12" r="3"/>'
-      + '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
+      + '<line x1="3" y1="6" x2="21" y2="6"/>'
+      + '<line x1="3" y1="12" x2="21" y2="12"/>'
+      + '<line x1="3" y1="18" x2="21" y2="18"/>'
+      + '<circle cx="8" cy="6" r="2.2" fill="currentColor"/>'
+      + '<circle cx="16" cy="12" r="2.2" fill="currentColor"/>'
+      + '<circle cx="10" cy="18" r="2.2" fill="currentColor"/>'
       + '</svg>';
   }
 
@@ -820,14 +826,18 @@ const ChatView = (() => {
         <div class="chat-slash hidden" id="chat-slash"></div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
+          <div class="chat-bypass-warn hidden" id="chat-bypass-warn" role="status" aria-live="polite">
+            <span class="chat-bypass-warn__glyph" aria-hidden="true">!</span>
+            <span class="chat-bypass-warn__text">Approvals bypassed for this session</span>
+          </div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
               <button type="button" class="btn btn--icon btn--ghost chat-toolbar-trigger" id="chat-toolbar-trigger"
-                      title="Composer settings"
-                      aria-label="Composer settings"
+                      title="Run modes — tool compress, approvals, router"
+                      aria-label="Run modes"
                       aria-haspopup="dialog"
-                      aria-expanded="false">${_iconGear()}</button>
+                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="compress"></i><i data-dot="router"></i></span></button>
               <div class="chat-toolbar-popover hidden" id="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
                 <div class="chat-toolbar-popover-arrow" aria-hidden="true"></div>
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
@@ -1442,6 +1452,18 @@ const ChatView = (() => {
     const trigger = _el && _el.querySelector('#chat-toolbar-trigger');
     if (!trigger) return;
     trigger.classList.toggle('is-glowing', _toolbarTriggerActive());
+    // Per-toggle status dots — each lights independently so a glance at the
+    // composer reveals which mode is non-default, not just that something is.
+    const bypass = !!_toolbarState.bypass;
+    const compress = _toolbarState.toolCompress !== 'truncate';
+    const routerOff = _toolbarState.router === false;
+    trigger.classList.toggle('has-dot-bypass', bypass);
+    trigger.classList.toggle('has-dot-compress', compress);
+    trigger.classList.toggle('has-dot-router', routerOff);
+    // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
+    // Tool compress and router-off are non-default but not safety-critical.
+    const warn = _el && _el.querySelector('#chat-bypass-warn');
+    if (warn) warn.classList.toggle('hidden', !bypass);
   }
 
   function _bindToolbarTrigger() {
@@ -1515,13 +1537,31 @@ const ChatView = (() => {
     const update = () => {
       const h = _composer.getBoundingClientRect().height;
       chatEl.style.setProperty('--composer-h', h + 'px');
+      // Propagate to root so global consumers (e.g. .toast-stack on mobile,
+      // which lives at body level) can lift themselves above the composer.
+      document.documentElement.style.setProperty('--composer-h', h + 'px');
+      // Swap placeholder for the cramped phone width — iOS forces 16px on
+      // inputs to prevent auto-zoom, which makes "Send a message..." truncate
+      // to "Send a…". A shorter placeholder reads cleanly on every iPhone.
+      if (_textarea) {
+        const w = window.innerWidth;
+        const want = w <= 480 ? 'Message...' : 'Send a message...';
+        if (_textarea.getAttribute('placeholder') !== want) {
+          _textarea.setAttribute('placeholder', want);
+        }
+      }
     };
 
     update(); // initial measurement
     _composerObserver = new ResizeObserver(update);
     _composerObserver.observe(_composer);
+    // Window resize covers viewport changes (phone rotation, dev-tools width
+     // change) where the composer height stays constant but the placeholder
+     // breakpoint may flip.
+    window.addEventListener('resize', update);
     _unsubs.push(() => {
       if (_composerObserver) { _composerObserver.disconnect(); _composerObserver = null; }
+      window.removeEventListener('resize', update);
     });
   }
 
@@ -2255,6 +2295,7 @@ const ChatView = (() => {
             __savings_ui_suppressed: !!u.__savings_ui_suppressed,
           });
         }
+        _scheduleHistorySync();
 
         // On natural completion, drain the head of the pending queue (FIFO).
         // On abort, recover pending into the composer instead — the user
@@ -2626,6 +2667,7 @@ const ChatView = (() => {
     if (lastSeg && lastSeg.type === 'text') lastSeg.raw = finalText;
     _renderDirty = true;
     _flushRender();
+    _renderStreamArtifacts();
   }
 
   function _reconcileFinalStreamText(finalText) {
@@ -3285,6 +3327,17 @@ const ChatView = (() => {
     if (_autoScroll) _scrollToBottom();
   }
 
+  function _renderStreamArtifacts() {
+    if (!_streamBubble) return;
+    const body = _streamBubble.querySelector('.msg-body');
+    if (!body) return;
+    body.querySelectorAll('.msg-artifacts').forEach((el) => el.remove());
+    if (_streamArtifacts.length > 0) {
+      body.insertAdjacentHTML('beforeend', _renderArtifacts(_streamArtifacts));
+      if (_autoScroll) _scrollToBottom();
+    }
+  }
+
   function _artifactDownloadUrl(artifact) {
     let raw = artifact && artifact.download_url ? String(artifact.download_url) : '';
     if (!raw && artifact && artifact.id) raw = `/api/v1/artifacts/${encodeURIComponent(artifact.id)}`;
@@ -3299,6 +3352,23 @@ const ChatView = (() => {
     }
   }
 
+  function _isImageArtifact(artifact) {
+    const mime = artifact && artifact.mime ? String(artifact.mime).toLowerCase() : '';
+    return mime.startsWith('image/');
+  }
+
+  function _artifactPreviewUrl(artifact) {
+    const raw = _artifactDownloadUrl(artifact);
+    if (!raw) return '';
+    try {
+      const url = new URL(raw, window.location.origin);
+      if (_sessionKey) url.searchParams.set('sessionKey', _sessionKey);
+      return url.pathname + url.search + url.hash;
+    } catch {
+      return raw;
+    }
+  }
+
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
     let html = '<div class="msg-artifacts">';
@@ -3307,11 +3377,24 @@ const ChatView = (() => {
       const mime = artifact && artifact.mime ? String(artifact.mime) : 'artifact';
       const size = artifact && artifact.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : '';
       const downloadUrl = _artifactDownloadUrl(artifact || {});
-      html += `<button type="button" class="msg-artifact-chip" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
-        <span class="msg-file-chip__icon" aria-hidden="true">file</span>
-        <span class="msg-file-chip__name">${_esc(name)}</span>
-        <span class="msg-file-chip__meta">${_esc([mime, size].filter(Boolean).join(' · '))}</span>
-      </button>`;
+      const meta = [mime, size].filter(Boolean).join(' · ');
+      if (_isImageArtifact(artifact)) {
+        const previewUrl = _artifactPreviewUrl(artifact || {});
+        html += `<button type="button" class="msg-artifact-card msg-artifact-card--image" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="Download ${_esc(name)}">
+          ${previewUrl ? `<img class="msg-artifact-preview" src="${_esc(previewUrl)}" alt="${_esc(name)}" loading="lazy">` : '<span class="msg-artifact-preview msg-artifact-preview--empty" aria-hidden="true"></span>'}
+          <span class="msg-artifact-card__body">
+            <span class="msg-artifact-card__name">${_esc(name)}</span>
+            <span class="msg-artifact-card__meta">${_esc(meta)}</span>
+          </span>
+          <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
+        </button>`;
+      } else {
+        html += `<button type="button" class="msg-artifact-chip" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
+          <span class="msg-file-chip__icon" aria-hidden="true">file</span>
+          <span class="msg-file-chip__name">${_esc(name)}</span>
+          <span class="msg-file-chip__meta">${_esc(meta)}</span>
+        </button>`;
+      }
     });
     html += '</div>';
     return html;
@@ -4052,6 +4135,8 @@ const ChatView = (() => {
     _intervals.forEach(id => clearInterval(id));
     _intervals = [];
     if (_composerObserver) { _composerObserver.disconnect(); _composerObserver = null; }
+    // Clear the root --composer-h so other views' toasts don't keep that offset.
+    document.documentElement.style.removeProperty('--composer-h');
     if (_isStreaming) _endStreaming();
     _hideThinkingIndicator();
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }

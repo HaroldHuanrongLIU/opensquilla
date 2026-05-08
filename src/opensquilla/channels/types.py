@@ -95,7 +95,8 @@ class ManagedChannel(Channel, Protocol):
     that loop in ``asyncio.create_task(...)`` spawned from ``start()``
     and return once the task is registered. ``stop()`` cancels the
     task and awaits its completion. ``ChannelManager`` relies on this
-    contract to bound ``start_all()`` with a 30 s timeout.
+    contract to bound ``start_all()`` with a 30 s timeout by default.
+    Adapters with known slow cold starts may expose ``startup_timeout_s``.
 
     metadata['is_group'] contract
     -----------------------------

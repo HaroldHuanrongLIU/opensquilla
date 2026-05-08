@@ -54,6 +54,7 @@ from opensquilla.observability.decision_log import (
     write_decision_entry,
 )
 from opensquilla.observability.prompt_report import PromptReport, build_prompt_report
+from opensquilla.observability.trace import TraceContext, TraceEvent, write_trace_event
 from opensquilla.observability.turn_call_log import TurnCallLogger, is_turn_call_log_enabled
 from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
@@ -1349,8 +1350,8 @@ class TurnRunner:
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        # Observability: bracket the pipeline + stream loop with monotonic
-        # clock so latency_ms reflects the full turn.
+        # Observability: bracket turn setup + stream loop with monotonic clock
+        # so latency_ms reflects the full turn.
         turn_started_at = time.monotonic()
         turn_id = uuid.uuid4().hex
         resolved_model = ""
@@ -1359,6 +1360,11 @@ class TurnRunner:
         tool_defs_for_log: list[Any] = []
         provider_for_log: Any | None = None
         turn_call_logger: TurnCallLogger | None = None
+        trace_context = TraceContext.new(
+            session_key=session_key,
+            turn_id=turn_id,
+            agent_id=agent_id,
+        )
         session_id_for_log: str | None = None
         prompt_report_for_log: PromptReport | None = None
         # Declared up-front so the CancelledError handler below can always
@@ -1366,6 +1372,16 @@ class TurnRunner:
         final_text_parts: list[str] = []
         turn_segments: list[dict] = []
         turn_artifacts: list[dict[str, Any]] = []
+        self._write_trace_event(
+            "turn_start",
+            trace_context,
+            seq=1,
+            attrs={"input_mode": input_mode, "run_kind": run_kind},
+            payload={
+                "message_chars": len(message),
+                "attachment_count": len(attachments),
+            },
+        )
         try:
             runtime_message = message
             semantic_input = semantic_message if semantic_message is not None else message
@@ -1408,6 +1424,16 @@ class TurnRunner:
                 provider_error_event = ErrorEvent(
                     message="No provider available",
                     code="no_provider",
+                )
+                self._write_trace_event(
+                    "turn_error",
+                    trace_context,
+                    seq=2,
+                    payload={
+                        "error_type": "ProviderResolutionError",
+                        "error_code": provider_error_event.code,
+                        "error_chars": len(provider_error_event.message),
+                    },
                 )
                 await self._persist_turn_error(session_key, provider_error_event)
                 yield provider_error_event
@@ -1512,9 +1538,14 @@ class TurnRunner:
                 except Exception:
                     selector_model = ""
             resolved_model = model or turn.model or selector_model
+            provider_name = getattr(provider, "provider_name", "") or type(provider).__name__
+            trace_context = replace(
+                trace_context,
+                session_id=session_id_for_log,
+            )
             if is_turn_call_log_enabled():
-                provider_name = getattr(provider, "provider_name", "") or type(provider).__name__
                 turn_call_logger = TurnCallLogger(
+                    trace_id=trace_context.trace_id,
                     turn_id=turn_id,
                     session_key=session_key,
                     session_id=session_id_for_log,
@@ -2067,6 +2098,19 @@ class TurnRunner:
                         "error": error_message,
                     },
                 )
+            if trace_context is not None:
+                self._write_trace_event(
+                    "turn_end",
+                    trace_context,
+                    seq=2,
+                    attrs={"provider": provider_name, "model": resolved_model},
+                    payload={
+                        "final_text_chars": len(final_text),
+                        "segment_count": len(turn_segments),
+                        "artifact_count": len(turn_artifacts),
+                        "error": bool(error_message),
+                    },
+                )
 
             # 11. Observability: best-effort DecisionEntry for this turn.
             #     Must never break turn execution — wrap in try/except.
@@ -2097,6 +2141,7 @@ class TurnRunner:
                 prompt_report=prompt_report_for_decision,
                 session_intent=session_intent,
                 done_event=done_event,
+                trace_id=trace_context.trace_id if trace_context is not None else None,
             )
             if pending_error_event is not None:
                 yield pending_error_event
@@ -2147,6 +2192,13 @@ class TurnRunner:
                     )
                 except Exception:
                     pass
+            if trace_context is not None:
+                self._write_trace_event(
+                    "turn_cancelled",
+                    trace_context,
+                    seq=2,
+                    payload={"partial_text_chars": len(partial_text)},
+                )
             raise
 
         except Exception as exc:
@@ -2168,7 +2220,40 @@ class TurnRunner:
                         "error": str(exc),
                     },
                 )
+            if trace_context is not None:
+                self._write_trace_event(
+                    "turn_error",
+                    trace_context,
+                    seq=2,
+                    payload={
+                        "error_type": type(exc).__name__,
+                        "error_chars": len(str(exc)),
+                    },
+                )
             yield ErrorEvent(message=str(exc), code="agent_error")
+
+    @staticmethod
+    def _write_trace_event(
+        kind: str,
+        context: TraceContext,
+        *,
+        seq: int | None = None,
+        attrs: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            write_trace_event(
+                TraceEvent(
+                    kind=kind,
+                    context=context,
+                    privacy="operational",
+                    seq=seq,
+                    attrs=attrs or {},
+                    payload=payload or {},
+                )
+            )
+        except Exception as exc:  # pragma: no cover - observability must not break turns
+            log.debug("trace_event.write_failed", kind=kind, error=str(exc))
 
     @staticmethod
     def _build_turn_call_source(
@@ -3139,6 +3224,7 @@ class TurnRunner:
         prompt_report: PromptReport | None = None,
         session_intent: str | None = None,
         done_event: DoneEvent | None = None,
+        trace_id: str | None = None,
     ) -> None:
         """Write one DecisionEntry for this turn (best-effort, never raises).
 
@@ -3309,6 +3395,7 @@ class TurnRunner:
                 session_key=session_key,
                 session_id=session_id,
                 session_intent=session_intent,
+                trace_id=trace_id or turn_id,
                 tool_profile=prompt_report.tool_profile if prompt_report else None,
                 prompt_hash=prompt_hash,
                 system_prompt_hash=system_prompt_hash,

@@ -8,6 +8,8 @@ This package defines:
   appended to ``~/.opensquilla/logs/safety-YYYYMMDD.jsonl``.
 * :class:`TurnCallLogger` — opt-in raw call audit stream appended to
   ``~/.opensquilla/logs/turn-calls-YYYYMMDD.jsonl``.
+* :class:`TraceEvent` / :class:`JsonlTraceSink` — safe trace correlation stream
+  appended to ``~/.opensquilla/logs/traces-YYYYMMDD.jsonl``.
 * :class:`PromptReport` — structured prompt-composition report for a turn.
 * :func:`load_turn` / :func:`format_transcript` — read-only replay API that
   never re-executes tools.
@@ -35,10 +37,13 @@ from opensquilla.observability.safety_log import (
 )
 from opensquilla.observability.trace import (
     TRACE_SCHEMA_VERSION,
+    JsonlTraceSink,
     MemoryTraceSink,
     PrivacyGuardSink,
     TraceContext,
     TraceEvent,
+    load_trace_events,
+    write_trace_event,
 )
 from opensquilla.observability.turn_call_log import TurnCallLogger, is_turn_call_log_enabled
 
@@ -46,6 +51,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "TRACE_SCHEMA_VERSION",
     "DecisionEntry",
+    "JsonlTraceSink",
     "MemoryTraceSink",
     "PipelineStepRecord",
     "PrivacyGuardSink",
@@ -60,8 +66,10 @@ __all__ = [
     "compute_hashes",
     "format_transcript",
     "is_turn_call_log_enabled",
+    "load_trace_events",
     "load_entries",
     "load_turn",
     "write_decision_entry",
     "write_safety_event",
+    "write_trace_event",
 ]

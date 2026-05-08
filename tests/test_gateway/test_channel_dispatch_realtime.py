@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from opensquilla.artifacts import ArtifactStore
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import Attachment, IncomingMessage, OutgoingMessage
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
@@ -17,6 +19,7 @@ from opensquilla.gateway.attachment_ingest import (
 )
 from opensquilla.gateway.channel_dispatch import (
     _artifact_fallback_lines,
+    _deliver_runtime_channel_reply,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
     _run_turn_batch_path,
@@ -24,6 +27,9 @@ from opensquilla.gateway.channel_dispatch import (
     _RuntimeChannelStreamRelay,
 )
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.routing import build_channel_route_envelope
+from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
+from opensquilla.tools.types import CallerKind
 
 
 class _FakeChannel:
@@ -182,6 +188,305 @@ async def test_direct_channel_batch_turn_sends_artifact_fallback() -> None:
     assert "sessionKey" not in json.dumps(event_artifact)
 
 
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_sends_artifact_with_adapter_file_upload(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"deck bytes",
+        session_id="session-1",
+        session_key="agent:main:channel-test",
+        name="report.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+    artifact = ref.to_dict()
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield TextDeltaEvent(text="done")
+            yield ArtifactEvent(**artifact)
+            yield DoneEvent()
+
+    class FileUploadingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    channel = FileUploadingChannel()
+    bridge = _FakeEventBridge()
+    config = SimpleNamespace(
+        attachments=SimpleNamespace(media_root=str(tmp_path)),
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:channel-test",
+        _tool_ctx(),
+        bridge,
+        None,
+        config,
+    )
+
+    assert channel.sent[-1].content == "done"
+    assert channel.files == [("c1", "report.pptx")]
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_sends_artifact_with_original_filename(
+    tmp_path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"\x89PNG\r\n\x1a\nimage bytes",
+        session_id="session-1",
+        session_key="agent:main:channel-test",
+        name="思考快与慢_信息图.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield TextDeltaEvent(text="done")
+            yield ArtifactEvent(**ref.to_dict())
+            yield DoneEvent()
+
+    class FileUploadingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    channel = FileUploadingChannel()
+    config = SimpleNamespace(
+        attachments=SimpleNamespace(media_root=str(tmp_path)),
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:channel-test",
+        _tool_ctx(),
+        _FakeEventBridge(),
+        None,
+        config,
+    )
+
+    assert channel.sent[-1].content == "done"
+    assert channel.files == [("c1", "思考快与慢_信息图.png")]
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_removes_delivered_markdown_image_reference(
+    tmp_path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"\x89PNG\r\n\x1a\nimage bytes",
+        session_id="session-1",
+        session_key="agent:main:channel-test",
+        name="thinking_fast_slow_v3.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield TextDeltaEvent(
+                text=(
+                    "新版改进：\n\n"
+                    "![Thinking, Fast and Slow Infographic v3](thinking_fast_slow_v3.png)\n\n"
+                    "点击附件保存原图。"
+                )
+            )
+            yield ArtifactEvent(**ref.to_dict())
+            yield DoneEvent()
+
+    class FileUploadingChannel(_FakeChannel):
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            return None
+
+    channel = FileUploadingChannel()
+    config = SimpleNamespace(
+        attachments=SimpleNamespace(media_root=str(tmp_path)),
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:channel-test",
+        _tool_ctx(),
+        _FakeEventBridge(),
+        None,
+        config,
+    )
+
+    assert channel.sent[-1].content == "新版改进：\n\n点击附件保存原图。"
+    assert "![Thinking" not in channel.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_removes_artifact_markers_from_channel_text(
+    tmp_path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"image bytes",
+        session_id="session-1",
+        session_key="agent:main:channel-test",
+        name="chart.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+    marker = "[generated artifact omitted: chart.png (image/png)]"
+    artifact = ref.to_dict()
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield TextDeltaEvent(text=f"ready\n\n{marker}")
+            yield ArtifactEvent(**artifact)
+            yield DoneEvent()
+
+    class FileUploadingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    channel = FileUploadingChannel()
+    config = SimpleNamespace(
+        attachments=SimpleNamespace(media_root=str(tmp_path)),
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:channel-test",
+        _tool_ctx(),
+        _FakeEventBridge(),
+        None,
+        config,
+    )
+
+    assert channel.sent[-1].content == "ready"
+    assert marker not in channel.sent[-1].content
+    assert channel.files == [("c1", "chart.png")]
+
+
+@pytest.mark.asyncio
+async def test_channel_admin_sender_gets_owner_tool_context_for_agent_turn(tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            captured["tool_context"] = kwargs["tool_context"]
+            yield TextDeltaEvent(text="ok")
+            yield DoneEvent()
+
+    msg = _message()
+    envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    config = SimpleNamespace(
+        channel_admin_senders={"feishu": ["u1"]},
+        workspace_dir=str(tmp_path),
+        workspace_strict=True,
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_with_streaming(
+        _FakeChannel(),
+        FakeTurnRunner(),
+        msg,
+        "agent:main:feishu:u1",
+        config=config,
+        route_envelope=envelope,
+    )
+
+    tool_context = captured["tool_context"]
+    assert tool_context.is_owner is True
+    assert tool_context.caller_kind is CallerKind.CHANNEL
+    assert tool_context.channel_kind == "feishu"
+    assert tool_context.sender_id == "u1"
+    decision = is_tool_allowed(
+        "write_file",
+        "dm",
+        Principal(role="operator", channel_id=tool_context.session_key),
+    )
+    assert decision.allowed is True
+    assert decision.reason == "operator_override"
+
+
+@pytest.mark.asyncio
+async def test_unlisted_channel_sender_keeps_restricted_tool_context_for_agent_turn(
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            captured["tool_context"] = kwargs["tool_context"]
+            yield TextDeltaEvent(text="ok")
+            yield DoneEvent()
+
+    msg = _message()
+    envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    config = SimpleNamespace(
+        channel_admin_senders={"feishu": ["other-user"]},
+        workspace_dir=str(tmp_path),
+        workspace_strict=True,
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_with_streaming(
+        _FakeChannel(),
+        FakeTurnRunner(),
+        msg,
+        "agent:main:feishu:u1",
+        config=config,
+        route_envelope=envelope,
+    )
+
+    tool_context = captured["tool_context"]
+    assert tool_context.is_owner is False
+    assert tool_context.caller_kind is CallerKind.CHANNEL
+    assert tool_context.channel_kind == "feishu"
+    assert tool_context.sender_id == "u1"
+
+
 def test_channel_artifact_fallback_uses_only_channel_safe_absolute_links() -> None:
     assert _artifact_fallback_lines(
         [
@@ -284,6 +589,58 @@ async def test_runtime_channel_stream_relay_appends_artifact_fallback_to_text() 
         "done",
         "\n\nGenerated file: stream.txt -> available in WebUI",
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_channel_stream_relay_sends_artifact_with_adapter_upload(
+    tmp_path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"deck bytes",
+        session_id="session-1",
+        session_key="agent:main:channel-test",
+        name="report.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+
+    class StreamingFileChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.chunks: list[str] = []
+            self.files: list[tuple[str, str]] = []
+
+        async def send_streaming(self, chunks, **kwargs):
+            async for chunk in chunks:
+                self.chunks.append(chunk)
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    class FakeTaskRuntime:
+        async def enqueue(self, envelope, message: str, *, stream_event_sink=None):
+            return None
+
+    config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
+    channel = StreamingFileChannel()
+    relay = _RuntimeChannelStreamRelay.maybe_start(
+        channel,
+        _message(),
+        FakeTaskRuntime(),
+        config,
+    )
+
+    assert relay is not None
+
+    await relay.emit(TextDeltaEvent(text="done"))
+    await relay.emit(ArtifactEvent(**ref.to_dict()))
+    await relay.close()
+
+    assert channel.chunks == ["done"]
+    assert channel.files == [("c1", "report.pptx")]
+    assert channel.sent == []
 
 
 @pytest.mark.asyncio
@@ -741,3 +1098,123 @@ async def test_debounce_channel_turn_honors_attachment_persistence_config(tmp_pa
     assert "sha256_ref" not in persisted["attachments"][0]
     assert not (tmp_path / "transcripts").exists()
     assert runtime.enqueue_calls[0]["attachments"][0]["_was_staged"] is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_reply_delivers_transcript_artifact_with_adapter_upload(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"\x89PNG\r\n\x1a\nimage bytes",
+        session_id="session-1",
+        session_key="agent:main:feishu:direct:u1",
+        name="思考快与慢_信息图.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+
+    class FileUploadingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    class FakeTaskRuntime:
+        async def wait(self, task_id: str):
+            return SimpleNamespace(status="succeeded")
+
+    class FakeSessionManager:
+        async def read_transcript(self, key: str):
+            return [
+                {"role": "user", "content": "create image"},
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {
+                            "text": "做好了，点击上方按钮下载。",
+                            "artifacts": [ref.to_dict()],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+
+    channel = FileUploadingChannel()
+    config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
+
+    await _deliver_runtime_channel_reply(
+        channel=channel,
+        task_runtime=FakeTaskRuntime(),
+        session_manager=FakeSessionManager(),
+        session_key="agent:main:feishu:direct:u1",
+        task_id="task-1",
+        route_envelope=SimpleNamespace(reply_target=None),
+        inbound=_message(),
+        transcript_watermark=1,
+        config=config,
+    )
+
+    assert channel.sent[-1].content == "做好了，点击上方按钮下载。"
+    assert channel.files == [("c1", "思考快与慢_信息图.png")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reply_delivers_file_artifact_with_adapter_upload(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"%PDF-1.4\nreport",
+        session_id="session-1",
+        session_key="agent:main:feishu:direct:u1",
+        name="report.pdf",
+        mime="application/pdf",
+        source="publish_artifact",
+    )
+
+    class FileUploadingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    class FakeTaskRuntime:
+        async def wait(self, task_id: str):
+            return SimpleNamespace(status="succeeded")
+
+    class FakeSessionManager:
+        async def read_transcript(self, key: str):
+            return [
+                {"role": "user", "content": "make report"},
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {
+                            "text": "报告已生成。",
+                            "artifacts": [ref.to_dict()],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+
+    channel = FileUploadingChannel()
+    config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
+
+    await _deliver_runtime_channel_reply(
+        channel=channel,
+        task_runtime=FakeTaskRuntime(),
+        session_manager=FakeSessionManager(),
+        session_key="agent:main:feishu:direct:u1",
+        task_id="task-1",
+        route_envelope=SimpleNamespace(reply_target=None),
+        inbound=_message(),
+        transcript_watermark=1,
+        config=config,
+    )
+
+    assert channel.sent[-1].content == "报告已生成。"
+    assert channel.files == [("c1", "report.pdf")]

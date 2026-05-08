@@ -113,6 +113,7 @@ class DecisionEntry:
     ts: str
     session_id: str | None = None
     session_intent: str | None = None
+    trace_id: str | None = None
     tool_profile: str | None = None
     system_chars: int = 0
     tool_count: int = 0
@@ -271,4 +272,7 @@ def _coerce_decision_payload(payload: dict) -> dict:
         legacy_session = normalized.get("session_id", "")
         normalized["session_key"] = legacy_session if isinstance(legacy_session, str) else ""
         normalized["session_id"] = None
+    if "trace_id" not in normalized:
+        turn_id = normalized.get("turn_id")
+        normalized["trace_id"] = turn_id if isinstance(turn_id, str) else None
     return normalized

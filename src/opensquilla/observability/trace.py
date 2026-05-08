@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, Protocol, Self
 
+from opensquilla.paths import default_opensquilla_home
+
 TRACE_SCHEMA_VERSION = 1
+LOG_DIR_ENV = "OPENSQUILLA_LOG_DIR"
 
 TracePrivacy = Literal["operational", "diagnostic", "raw"]
 _VALID_PRIVACY: frozenset[str] = frozenset({"operational", "diagnostic", "raw"})
@@ -15,6 +21,10 @@ _VALID_PRIVACY: frozenset[str] = frozenset({"operational", "diagnostic", "raw"})
 
 def _utc_ts() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _default_log_dir() -> Path:
+    return Path(os.environ.get(LOG_DIR_ENV, str(default_opensquilla_home() / "logs")))
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +177,17 @@ class MemoryTraceSink:
         return [event for event in self.events if event.trace_id == trace_id]
 
 
+class JsonlTraceSink:
+    """Append safe trace events to ``traces-YYYYMMDD.jsonl``."""
+
+    def __init__(self, log_dir: Path | None = None, *, allow_raw: bool = False) -> None:
+        self.log_dir = log_dir or _default_log_dir()
+        self.allow_raw = allow_raw
+
+    def write(self, event: TraceEvent) -> None:
+        _append_trace_event(event, self.log_dir, allow_raw=self.allow_raw)
+
+
 class PrivacyGuardSink:
     """Prevent raw trace events from flowing into safe/default sinks."""
 
@@ -178,3 +199,67 @@ class PrivacyGuardSink:
         if event.privacy == "raw" and not self.allow_raw:
             raise ValueError("raw trace event cannot be written through a safe sink")
         self.sink.write(event)
+
+
+def write_trace_event(
+    event: TraceEvent,
+    log_dir: Path | None = None,
+    *,
+    allow_raw: bool = False,
+) -> Path:
+    """Append one trace event and return the file path written."""
+
+    return _append_trace_event(event, log_dir or _default_log_dir(), allow_raw=allow_raw)
+
+
+def load_trace_events(trace_id: str, log_dir: Path | None = None) -> list[TraceEvent]:
+    """Load all persisted events for ``trace_id`` from trace JSONL files."""
+
+    log_dir = log_dir or _default_log_dir()
+    if not trace_id.strip() or not log_dir.is_dir():
+        return []
+    events: list[TraceEvent] = []
+    for jsonl in sorted(log_dir.glob("traces-*.jsonl")):
+        with jsonl.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if payload.get("trace_id") == trace_id:
+                    events.append(_trace_event_from_payload(payload))
+    return events
+
+
+def _append_trace_event(event: TraceEvent, log_dir: Path, *, allow_raw: bool) -> Path:
+    if event.privacy == "raw" and not allow_raw:
+        raise ValueError("raw trace event cannot be written through a safe sink")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    day = datetime.now(UTC).strftime("%Y%m%d")
+    path = log_dir / f"traces-{day}.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+    return path
+
+
+def _trace_event_from_payload(payload: dict[str, Any]) -> TraceEvent:
+    context = TraceContext(
+        trace_id=str(payload["trace_id"]),
+        session_key=payload.get("session_key"),
+        session_id=payload.get("session_id"),
+        turn_id=payload.get("turn_id"),
+        task_id=payload.get("task_id"),
+        run_id=payload.get("run_id"),
+        parent_run_id=payload.get("parent_run_id"),
+        agent_id=payload.get("agent_id"),
+    )
+    return TraceEvent(
+        kind=str(payload["kind"]),
+        context=context,
+        privacy=payload.get("privacy", "operational"),
+        seq=payload.get("seq"),
+        attrs=payload.get("attrs") or {},
+        payload=payload.get("payload") or {},
+        ts=str(payload.get("ts") or _utc_ts()),
+        schema_version=int(payload.get("schema_version", TRACE_SCHEMA_VERSION)),
+    )

@@ -58,21 +58,58 @@ def test_setup_view_loads_catalog_and_status():
     assert "current.mode" in txt
 
 
-def test_setup_view_is_temporarily_gated_with_cli_fallbacks():
+def test_setup_view_is_available_and_uses_canonical_cli_fallbacks():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
-    assert "const SETUP_UI_AVAILABLE = false;" in txt
-    assert "Web setup is temporarily unavailable" in txt
+    assert "SETUP_UI_AVAILABLE" not in txt
     assert "opensquilla onboard" in txt
-    assert "opensquilla providers configure" in txt
-    assert "~/.opensquilla/config.toml" in txt
+    assert "opensquilla configure provider" in txt
+    assert "opensquilla providers configure" not in txt
+    assert "onboarding.router.configure" in txt
+    assert "onboarding.channel.probe" in txt
+    assert "channels.status" in txt
+    assert "Connected" in txt
 
 
-def test_setup_view_is_loaded_and_registered():
+def test_setup_view_keeps_channel_fields_in_config_shape():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "scope === 'channel' ? label.dataset.name : _camel" in txt
+
+
+def test_setup_view_renders_catalog_field_descriptions():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "field.description" in txt
+    assert "setup-field-desc" in txt
+
+
+def test_setup_view_warns_when_env_key_is_not_visible_to_gateway():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "missing_env" in txt
+    assert "not visible to this gateway process" in txt
+    assert "Set it before starting or restarting the gateway" in txt
+    assert "if (_providerEnvMissing())" in txt
+
+
+def test_setup_view_preserves_selected_channel_type_while_redrawing_fields():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "let _channelType" in txt
+    assert "_channelType = type" in txt
+    assert "channels.some(c => c.type === _channelType)" in txt
+
+
+def test_setup_view_rebinds_conditional_fields_after_dynamic_redraw():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "function _bindConditionalSelects" in txt
+    assert "_bindConditionalSelects(_el)" in txt
+    assert "_bindConditionalSelects(box || _el)" in txt
+
+
+def test_setup_view_is_loaded_and_registered_but_not_sidebar_primary():
     template = TEMPLATE.read_text(encoding="utf-8")
     app = APP.read_text(encoding="utf-8")
     assert "static/js/views/setup.js" in template
     assert "SetupView.render" in app
-    assert 'data-path="/setup"' in app
+    assert "Router.register('/setup'" in app
+    assert 'data-path="/setup"' not in app
 
 
 def test_setup_view_marks_unsupported_providers_disabled():
@@ -86,11 +123,47 @@ def test_setup_view_treats_image_configure_as_capability_enable_action():
     assert "imageGenerationEnabled === false" in txt
 
 
+def test_setup_view_explains_image_generation_tool_visibility():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "image_generate is hidden from agents" in txt
+    assert "image_generate will be available in new turns" in txt
+
+
+def test_setup_view_preserves_selected_image_generation_provider():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "imageProviderSelected" in txt
+    assert "imageGenerationProvider" in txt
+    assert "imageGenerationPrimary || '').split('/')[0]" in txt
+
+
+def test_setup_router_controls_use_user_facing_labels():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "SquillaRouter" in txt
+    assert "OpenRouter mix" not in txt
+    assert "Balanced default (t1)" in txt
+    assert "Stronger reasoning (t2)" in txt
+
+
 def test_config_view_exposes_memory_tab_and_restart_notice():
     txt = (VIEWS / "config.js").read_text(encoding="utf-8")
     assert "label: 'Memory'" in txt
     assert "memory.embedding.provider" in txt
     assert "Gateway restart required for the change to take effect" in txt
+
+
+def test_config_view_links_to_guided_setup():
+    txt = (VIEWS / "config.js").read_text(encoding="utf-8")
+    assert "Guided setup" in txt
+    assert "Router.navigate('/setup')" in txt
+
+
+def test_channels_view_remains_status_only_but_links_guided_setup():
+    txt = (VIEWS / "channels.js").read_text(encoding="utf-8")
+    assert "Runtime status" in txt
+    assert "Guided setup" in txt
+    assert "Router.navigate('/setup')" in txt
+    assert "onboarding.channel.upsert" not in txt
+    assert "channels.restart" not in txt
 
 
 def test_example_config_does_not_advertise_local_embedding_model_override():

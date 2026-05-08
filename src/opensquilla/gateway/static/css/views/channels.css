@@ -1,4 +1,6 @@
-/* OpenSquilla Web UI — Channels view (control-center DNA). */
+/* OpenSquilla Web UI — Channels view.
+   Editorial spec-sheet read: hairline grid, mono numerals, accent only on
+   status flips and the chiseled left edge of an active card. */
 
 .ch-stage [hidden] { display: none !important; }
 
@@ -21,48 +23,94 @@
   flex-wrap: wrap;
   gap: var(--sp-4);
   padding-top: var(--sp-3);
-}
-.ch-stage__title-block { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.ch-stage__eyebrow {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.16em;
-  text-transform: uppercase; color: var(--text-dim);
-}
-.ch-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700; letter-spacing: -0.025em; line-height: 1.05;
   position: relative;
 }
+.ch-stage__title-block {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  position: relative;
+  padding-left: 18px;
+}
+/* Editorial corner-bracket on the title block — a quiet brutalist mark. */
+.ch-stage__title-block::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 4px; bottom: 28px;
+  width: 10px;
+  border-left: 1px solid var(--accent);
+  border-top: 1px solid var(--accent);
+  opacity: 0.85;
+}
+.ch-stage__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ch-stage__eyebrow::before {
+  content: "";
+  width: 16px; height: 1px;
+  background: currentColor;
+  display: inline-block;
+  opacity: 0.7;
+}
+.ch-stage__title {
+  font-family: var(--font-display);
+  font-size: clamp(1.875rem, 1.2rem + 1.4vw, 2.625rem);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1.0;
+  position: relative;
+  font-feature-settings: "ss01", "cv11";
+}
 .ch-stage__title::after {
-  content: ""; position: absolute; left: 0; bottom: -8px;
-  width: 36px; height: 2px;
+  content: "";
+  position: absolute; left: 0; bottom: -10px;
+  width: 44px; height: 2px;
   background: linear-gradient(90deg, var(--accent), transparent);
   border-radius: 2px;
 }
 .ch-stage__subtitle {
   font-size: var(--fs-sm); color: var(--text-muted);
-  margin-top: var(--sp-3); max-width: 60ch;
+  margin-top: var(--sp-4);
+  max-width: 62ch;
+  line-height: 1.55;
 }
 .ch-stage__actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 
-.ch-neg { color: var(--danger); font-weight: 600; }
+.ch-neg { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ─── List section ───────────────────────────────────────────────────── */
 
+.ch-list {
+  position: relative;
+}
 .ch-list__head {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: var(--sp-3); gap: var(--sp-3);
+  margin-bottom: var(--sp-4); gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
 }
 .ch-list__title {
-  font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.01em;
-  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-lg); font-weight: 700;
+  letter-spacing: -0.02em;
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-display);
 }
 .ch-list__count {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 22px; height: 22px; padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-  background: var(--bg-elevated); color: var(--text-muted);
+  min-width: 26px; height: 22px; padding: 0 8px;
+  border-radius: 4px;
+  font-size: 11px; font-weight: 700;
+  font-family: var(--font-mono);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
 }
 
 .ch-cards {
@@ -71,57 +119,111 @@
   gap: var(--sp-4);
 }
 
-/* ─── Card ───────────────────────────────────────────────────────────── */
+/* ─── Card — chiseled spec sheet ─────────────────────────────────────── */
 
 .ch-card {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent) 3%, transparent), transparent 30%),
-    var(--bg-surface);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: var(--sp-4);
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) calc(var(--sp-4) + 4px);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  transition: border-color var(--transition), box-shadow var(--transition), transform 200ms ease;
-  animation: ch-fade-up 320ms ease both;
-  animation-delay: calc(30ms * var(--i, 0));
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition),
+    transform 220ms var(--ease-press);
+  animation: ch-fade-up 380ms var(--ease-press) both;
+  animation-delay: calc(40ms * var(--i, 0));
+  position: relative;
+  overflow: hidden;
+}
+/* Left-edge chisel — a 3px accent rail anchored on the inside, dim by default,
+   lights up on hover. Reads like an instrument bezel. */
+.ch-card::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 14px; bottom: 14px;
+  width: 3px;
+  background: var(--border);
+  border-radius: 0 2px 2px 0;
+  transition: background 220ms var(--ease-press), top 220ms var(--ease-press), bottom 220ms var(--ease-press);
+}
+/* Top-right tick — micro corner mark gives each card a "filed" feel. */
+.ch-card::after {
+  content: "";
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 8px; height: 8px;
+  border-top: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  pointer-events: none;
 }
 .ch-card:hover {
-  border-color: var(--border-focus);
-  box-shadow: 0 16px 40px -24px rgba(0,0,0,0.6);
-  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow:
+    0 1px 0 0 color-mix(in srgb, var(--accent) 18%, transparent) inset,
+    0 24px 60px -32px rgba(0,0,0,0.7);
+  transform: translateY(-2px);
+}
+.ch-card:hover::before {
+  background: var(--accent);
+  top: 8px; bottom: 8px;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 .ch-card__head {
   display: flex; align-items: center; gap: 10px; min-width: 0;
 }
 .ch-card__name {
-  font-weight: 600; font-size: var(--fs-md); flex: 1;
-  letter-spacing: -0.01em;
+  font-weight: 700; font-size: var(--fs-md); flex: 1;
+  letter-spacing: -0.015em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0;
+  font-family: var(--font-display);
+}
+.ch-card__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .ch-card__meta {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 16px; margin: 0;
-  padding-top: var(--sp-2);
+  gap: 8px 18px; margin: 0;
+  padding-top: var(--sp-3);
   border-top: 1px dashed var(--border);
+  position: relative;
 }
-.ch-card__meta > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ch-card__meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .ch-card__meta dt {
-  font-size: 10px; font-weight: 600;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--text-dim);
+  font-family: var(--font-mono);
 }
 .ch-card__meta dd {
-  margin: 0; font-size: var(--fs-sm);
+  margin: 0;
+  font-size: var(--fs-sm);
   color: var(--text);
   white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
 }
-.ch-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.ch-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--track-tabular);
+}
 
 .ch-card__config { font-size: var(--fs-xs); }
 .ch-card__config summary {
@@ -129,35 +231,55 @@
   color: var(--text-muted);
   user-select: none;
   font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-weight: 700;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  padding: 4px 0;
+  padding: 6px 0;
   transition: color var(--transition);
+  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
+.ch-card__config summary::before {
+  content: "+";
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  width: 14px;
+  text-align: center;
+  color: var(--accent);
+  transition: transform 200ms var(--ease-press);
+}
+.ch-card__config[open] summary::before { content: "−"; }
 .ch-card__config summary:hover { color: var(--accent); }
 .ch-card__config-pre {
   margin-top: var(--sp-2);
   padding: var(--sp-3);
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--bg) 96%, transparent) 100%),
+    var(--bg);
   border: 1px solid var(--border);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
   border-radius: var(--radius-md);
   overflow: auto;
-  max-height: 200px;
+  max-height: 220px;
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1.55;
   color: var(--text-muted);
 }
 .ch-card__footnote {
   margin-top: auto;
-  padding-top: var(--sp-2);
+  padding-top: var(--sp-3);
   border-top: 1px dashed var(--border);
   font-size: var(--fs-xs);
   color: var(--text-dim);
-  line-height: 1.45;
+  line-height: 1.55;
+  font-style: italic;
 }
 
-/* ─── Empty state ────────────────────────────────────────────────────── */
+/* ─── Empty state — graph-paper backdrop ─────────────────────────────── */
 
 .ch-empty {
   grid-column: 1 / -1;
@@ -165,51 +287,92 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--sp-8) var(--sp-4);
+  padding: calc(var(--sp-8) + var(--sp-2)) var(--sp-4);
   text-align: center;
   background:
-    radial-gradient(60% 60% at 50% 30%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
+    radial-gradient(80% 60% at 50% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%),
+    repeating-linear-gradient(0deg, transparent 0 23px, var(--hairline) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, var(--hairline) 23px 24px),
     var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   position: relative;
   overflow: hidden;
 }
+/* Crosshair accents at the four corners — instrument fiducial marks. */
+.ch-empty::before,
+.ch-empty::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--accent);
+  opacity: 0.5;
+}
+.ch-empty::before {
+  top: 12px; left: 12px;
+  border-right: 0; border-bottom: 0;
+}
+.ch-empty::after {
+  bottom: 12px; right: 12px;
+  border-left: 0; border-top: 0;
+}
 .ch-empty__art {
   width: 120px; height: 120px;
   color: var(--text-muted);
   margin-bottom: var(--sp-4);
+  filter: drop-shadow(0 0 24px color-mix(in srgb, var(--accent) 18%, transparent));
 }
 .ch-empty__title {
-  font-size: 1.5rem; font-weight: 700;
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  font-size: 1.625rem; font-weight: 800;
+  letter-spacing: -0.035em;
   color: var(--text);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .ch-empty__msg {
   color: var(--text-muted);
   font-size: var(--fs-sm);
   max-width: 56ch;
-  line-height: 1.55;
+  line-height: 1.6;
   margin-bottom: var(--sp-4);
+}
+.ch-empty__actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 .ch-empty__code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  padding: 6px 14px;
   border-radius: var(--radius-md);
   letter-spacing: 0.02em;
+  font-variant-ligatures: none;
 }
 
 /* ─── Animations ─────────────────────────────────────────────────────── */
 
+@keyframes ch-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ch-card { animation: none !important; }
-  /* Dot/pulse keyframes now live in components.css; reduced-motion handling
-     is global. */
+  .ch-card:hover { transform: none; }
 }
 
 /* ─── Responsive ─────────────────────────────────────────────────────── */
@@ -218,4 +381,5 @@
   .ch-stage__header { flex-direction: column; align-items: stretch; }
   .ch-stage__actions { width: 100%; }
   .ch-cards { grid-template-columns: 1fr; }
+  .ch-stage__title-block { padding-left: 14px; }
 }

@@ -82,6 +82,10 @@ def _fields_for(spec: SearchProviderSpec) -> tuple[SearchProviderSetupField, ...
             required=False,
             default="off",
             choices=("off", "network"),
+            description=(
+                "network retries with DuckDuckGo only after timeout/network errors; "
+                "off surfaces the original provider error."
+            ),
         ),
         SearchProviderSetupField(
             name="diagnostics",
@@ -89,6 +93,10 @@ def _fields_for(spec: SearchProviderSpec) -> tuple[SearchProviderSetupField, ...
             field_type="bool",
             required=False,
             default=False,
+            description=(
+                "Include provider attempt/error details in search results for "
+                "troubleshooting; does not enable raw capture."
+            ),
         ),
     )
 

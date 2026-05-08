@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.observability.trace import load_trace_events
 from opensquilla.observability.turn_call_log import (
     LOG_DIR_ENV,
     TURN_CALL_LOG_DIR_ENV,
@@ -65,6 +66,13 @@ def _configured_debug_log_path() -> tuple[Path, str]:
     return default_opensquilla_home() / "logs" / "debug.log", "default"
 
 
+def _configured_trace_log_dir() -> tuple[Path, str]:
+    log_dir = _non_empty_env(LOG_DIR_ENV)
+    if log_dir is not None:
+        return Path(log_dir), LOG_DIR_ENV
+    return default_opensquilla_home() / "logs", "default"
+
+
 def _config_value(ctx: RpcContext, name: str, default: Any) -> Any:
     config = getattr(ctx, "config", None)
     if config is None:
@@ -75,6 +83,8 @@ def _config_value(ctx: RpcContext, name: str, default: Any) -> Any:
 def _build_logs_status(ctx: RpcContext) -> dict[str, Any]:
     raw_dir, raw_dir_source = resolve_turn_call_log_dir_with_source()
     configured_debug_log, configured_debug_log_source = _configured_debug_log_path()
+    trace_dir, trace_dir_source = _configured_trace_log_dir()
+    trace_files = sorted(trace_dir.glob("traces-*.jsonl")) if trace_dir.is_dir() else []
     active_tail_path = _find_log_file()
 
     return {
@@ -100,6 +110,15 @@ def _build_logs_status(ctx: RpcContext) -> dict[str, Any]:
             "active_tail_path": str(active_tail_path) if active_tail_path is not None else None,
             "active_tail_path_exists": active_tail_path.exists() if active_tail_path else False,
         },
+        "trace_log": {
+            "directory": {
+                "path": str(trace_dir),
+                "source": trace_dir_source,
+                "exists": trace_dir.exists(),
+            },
+            "file_count": len(trace_files),
+            "latest_path": str(trace_files[-1]) if trace_files else None,
+        },
         "diagnostics_enabled": {
             "configured": bool(_config_value(ctx, "diagnostics_enabled", False)),
             "controls_raw_turn_call": False,
@@ -120,6 +139,29 @@ async def _handle_logs_status(params: dict | None, ctx: RpcContext) -> dict[str,
     """Report log-related runtime switches without mutating filesystem state."""
 
     return _build_logs_status(ctx)
+
+
+@_d.method("logs.trace", scope="operator.read")
+async def _handle_logs_trace(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """Return safe trace events for one trace id."""
+
+    p = params or {}
+    trace_id = str(p.get("trace_id") or "").strip()
+    try:
+        limit = max(1, min(int(p.get("limit", 1000)), 5000))
+    except (TypeError, ValueError):
+        limit = 1000
+    if not trace_id:
+        return {"trace_id": "", "events": [], "count": 0, "total": 0}
+
+    events = load_trace_events(trace_id)
+    limited = events[-limit:]
+    return {
+        "trace_id": trace_id,
+        "events": [event.to_dict() for event in limited],
+        "count": len(limited),
+        "total": len(events),
+    }
 
 
 @_d.method("logs.tail", scope="operator.read")

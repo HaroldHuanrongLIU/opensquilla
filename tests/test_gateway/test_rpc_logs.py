@@ -5,6 +5,7 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_logs import _handle_logs_status, _handle_logs_tail
+from opensquilla.observability.trace import TraceContext, TraceEvent, write_trace_event
 
 
 @pytest.mark.asyncio
@@ -119,6 +120,55 @@ async def test_logs_status_reports_gateway_file_log_path_and_existence(
         "configured": True,
         "controls_raw_turn_call": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_logs_status_reports_trace_log_directory(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    write_trace_event(
+        TraceEvent(kind="turn_start", context=TraceContext.new(trace_id="trace-1")),
+        log_dir=tmp_path,
+    )
+
+    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+
+    assert result["trace_log"] == {
+        "directory": {
+            "path": str(tmp_path),
+            "source": "OPENSQUILLA_LOG_DIR",
+            "exists": True,
+        },
+        "file_count": 1,
+        "latest_path": str(next(tmp_path.glob("traces-*.jsonl"))),
+    }
+
+
+@pytest.mark.asyncio
+async def test_logs_trace_returns_persisted_trace_events(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    write_trace_event(
+        TraceEvent(
+            kind="turn_start",
+            context=TraceContext.new(
+                trace_id="trace-1",
+                session_key="agent:main:test",
+                turn_id="turn-1",
+            ),
+            seq=1,
+        ),
+        log_dir=tmp_path,
+    )
+    ctx = RpcContext(conn_id="test", config=GatewayConfig())
+
+    response = await get_dispatcher().dispatch(
+        "req-1", "logs.trace", {"trace_id": "trace-1"}, ctx
+    )
+
+    assert response.ok is True
+    assert response.payload["trace_id"] == "trace-1"
+    assert response.payload["count"] == 1
+    assert response.payload["events"][0]["kind"] == "turn_start"
+    assert response.payload["events"][0]["session_key"] == "agent:main:test"
 
 
 @pytest.mark.asyncio

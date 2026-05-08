@@ -9,9 +9,11 @@ def test_fresh_workspace_seeds_agents_template(tmp_path) -> None:
     assert (tmp_path / "AGENTS.md").is_file()
     assert (tmp_path / "SOUL.md").is_file()
     assert (tmp_path / "USER.md").is_file()
+    assert (tmp_path / "MEMORY.md").is_file()
     assert (tmp_path / "BOOTSTRAP.md").is_file()
     assert (tmp_path / "memory").is_dir()
     assert "AGENTS.md" in result.created_files
+    assert "MEMORY.md" in result.created_files
 
 
 def test_existing_workspace_backfills_missing_agents_template(tmp_path) -> None:

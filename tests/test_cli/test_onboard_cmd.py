@@ -29,9 +29,34 @@ def test_onboard_noninteractive_provider(tmp_path, monkeypatch):
     assert "sk" not in result.stdout
 
 
+def test_onboard_accepts_skip_image_generation_option(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--provider",
+            "openrouter",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--api-key",
+            "sk",
+            "--skip-channels",
+            "--skip-search",
+            "--skip-image-generation",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is False
+
+
 def test_onboard_noninteractive_provider_can_use_env_key_and_router(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     result = runner.invoke(
         app,
         [
@@ -56,6 +81,33 @@ def test_onboard_noninteractive_provider_can_use_env_key_and_router(tmp_path, mo
     assert data["squilla_router"]["tier_profile"] == "deepseek"
     assert "tiers" not in data["squilla_router"]
     assert "DEEPSEEK_API_KEY" in result.stdout
+    assert "warning" in result.stdout.lower()
+    assert "not set in this shell" in result.stdout
+
+
+def test_onboard_noninteractive_provider_can_omit_model_for_router_profile(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--provider",
+            "deepseek",
+            "--api-key-env",
+            "DEEPSEEK_API_KEY",
+            "--minimal",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["provider"] == "deepseek"
+    assert data["llm"]["model"] == "deepseek-v4-flash"
+    assert data["squilla_router"]["tier_profile"] == "deepseek"
 
 
 def test_onboard_noninteractive_provider_without_router_profile_disables_router(
@@ -148,6 +200,28 @@ def test_configure_provider_noninteractive_uses_setup_engine(tmp_path, monkeypat
     assert "api_key" not in data["llm"]
 
 
+def test_configure_provider_can_omit_model_for_router_profile(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "provider",
+            "--provider",
+            "deepseek",
+            "--api-key-env",
+            "DEEPSEEK_API_KEY",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["provider"] == "deepseek"
+    assert data["llm"]["model"] == "deepseek-v4-flash"
+
+
 def test_configure_provider_recomputes_existing_router_profile(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     target.write_text(
@@ -176,6 +250,41 @@ def test_configure_provider_recomputes_existing_router_profile(tmp_path, monkeyp
     assert data["llm"]["provider"] == "openai"
     assert data["squilla_router"]["tier_profile"] == "openai"
     assert "tiers" not in data["squilla_router"]
+
+
+def test_configure_saved_path_escapes_rich_markup_chars(tmp_path, monkeypatch):
+    root = tmp_path / "opensquilla-[review]"
+    root.mkdir()
+    target = root / "config[dev].toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "provider",
+            "--provider",
+            "openrouter",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--api-key-env",
+            "OPENROUTER_API_KEY",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert str(target) in result.stdout
+
+
+def test_configure_provider_errors_go_to_stderr(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["configure", "provider", "--provider", "not-a-provider"])
+
+    assert result.exit_code == 2
+    assert "unknown provider" in result.stderr
+    assert "unknown provider" not in result.stdout
 
 
 def test_configure_router_noninteractive_can_disable(tmp_path, monkeypatch):
@@ -224,6 +333,53 @@ def test_configure_search_noninteractive(tmp_path, monkeypatch):
     data = tomllib.loads(target.read_text())
     assert data["search_provider"] == "duckduckgo"
     assert data["search_max_results"] == 7
+
+
+def test_configure_search_can_use_env_key_reference(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "search",
+            "--search-provider",
+            "brave",
+            "--api-key-env",
+            "BRAVE_SEARCH_API_KEY",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    assert data["search_provider"] == "brave"
+    assert data["search_api_key_env"] == "BRAVE_SEARCH_API_KEY"
+    assert "search_api_key" not in data
+    assert "warning" in result.stdout.lower()
+    assert "BRAVE_SEARCH_API_KEY" in result.stdout
+
+
+def test_configure_image_generation_missing_env_is_blocked(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "image-generation",
+            "--image-provider",
+            "openrouter",
+            "--primary",
+            "openrouter/google/gemini-3.1-flash-image-preview",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "requires an api_key" in result.stderr
 
 
 def test_configure_channel_noninteractive_adds_slack(tmp_path, monkeypatch):

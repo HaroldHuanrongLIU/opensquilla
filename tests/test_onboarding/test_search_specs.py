@@ -40,3 +40,11 @@ def test_search_catalog_payload_is_web_safe_shape():
     assert "providerId" in first
     assert "runtimeSupported" in first
     assert "fields" in first
+
+
+def test_search_catalog_explains_fallback_and_diagnostics_fields():
+    spec = get_search_provider_setup_spec("brave")
+    fields = {field.name: field for field in spec.fields}
+
+    assert "DuckDuckGo" in fields["fallback_policy"].description
+    assert "attempt/error details" in fields["diagnostics"].description

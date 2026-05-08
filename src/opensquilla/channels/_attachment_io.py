@@ -126,8 +126,9 @@ async def fetch_httpx_bytes_limited(
     *,
     name: str | None,
     limit: int = MAX_ATTACHMENT_BYTES,
+    **request_kwargs: Any,
 ) -> tuple[bytes, str | None]:
-    async with client.stream("GET", url) as response:
+    async with client.stream("GET", url, **request_kwargs) as response:
         response.raise_for_status()
         ensure_content_length_within_limit(response.headers, name=name, limit=limit)
         payload = await read_limited_chunks(

@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import typer
 
+from opensquilla.cli.ui import (
+    ACCENT,
+    ACCENT_SOFT,
+    banner_panel,
+    console,
+    error_console,
+    markup_escape,
+    warning_panel,
+)
 from opensquilla.onboarding.config_store import load_config
 from opensquilla.onboarding.flow import (
     OnboardOptions,
@@ -11,8 +20,13 @@ from opensquilla.onboarding.flow import (
     run_interactive_onboard,
     run_noninteractive_provider_configure,
 )
-from opensquilla.onboarding.next_steps import format_next_steps
+from opensquilla.onboarding.next_steps import env_reference_warnings, format_next_steps
 from opensquilla.onboarding.status import get_onboarding_status
+
+
+def _print_env_reference_warnings(config) -> None:
+    for warning in env_reference_warnings(config):
+        console.print(warning_panel(warning))
 
 
 def onboard_command(
@@ -29,16 +43,20 @@ def onboard_command(
     minimal: bool = typer.Option(False, "--minimal"),
     skip_channels: bool = typer.Option(False, "--skip-channels"),
     skip_search: bool = typer.Option(False, "--skip-search"),
+    skip_image_generation: bool = typer.Option(False, "--skip-image-generation"),
     if_needed: bool = typer.Option(False, "--if-needed"),
 ) -> None:
     """Run first-run onboarding (interactive or non-interactive)."""
     if if_needed:
         cfg = load_config()
         if get_onboarding_status(cfg).llm_configured:
-            typer.echo("Onboarding already complete; nothing to do.")
+            console.print(
+                f"[{ACCENT_SOFT}]◆[/] [bold]onboarding already complete[/]"
+                " [dim]— nothing to do[/dim]"
+            )
             raise typer.Exit(code=0)
 
-    if provider and model:
+    if provider:
         result = run_noninteractive_provider_configure(
             provider,
             {
@@ -49,14 +67,25 @@ def onboard_command(
                 "router": router,
             },
         )
-        typer.echo(f"Provider configured: {provider}")
-        typer.echo(f"Config: {result.path}")
-        typer.echo(format_next_steps(load_config(result.path), config_path=result.path))
+        console.print(
+            banner_panel(
+                "Provider Configured",
+                f"{provider} · {result.path}",
+            )
+        )
+        cfg = load_config(result.path)
+        _print_env_reference_warnings(cfg)
+        console.print(
+            format_next_steps(cfg, config_path=result.path),
+            markup=False,
+            highlight=False,
+        )
         return
 
     options = OnboardOptions(
         skip_channels=skip_channels,
         skip_search=skip_search,
+        skip_image_generation=skip_image_generation,
         if_needed=if_needed,
         provider_id=provider or None,
         model=model or None,
@@ -69,7 +98,19 @@ def onboard_command(
     result = run_interactive_onboard(options)
     if "tty_required" in result.warnings:
         raise typer.Exit(code=2)
-    typer.echo(f"Onboarding complete. Config: {result.path}")
+    console.print(
+        banner_panel(
+            "Onboarding Complete",
+            str(result.path),
+        )
+    )
+    cfg = load_config(result.path)
+    _print_env_reference_warnings(cfg)
+    console.print(
+        format_next_steps(cfg, config_path=result.path),
+        markup=False,
+        highlight=False,
+    )
 
 
 def configure_command(
@@ -104,7 +145,7 @@ def configure_command(
 
         normalized = selected.strip().lower()
         try:
-            if normalized in {"provider", "providers"} and provider and model:
+            if normalized in {"provider", "providers"} and provider:
                 engine = SetupEngine()
                 engine.apply(
                     "provider",
@@ -117,13 +158,21 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
+                _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "router" and router:
                 engine = SetupEngine()
                 engine.apply("router", {"mode": router})
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
+                _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "search" and search_provider:
                 engine = SetupEngine()
@@ -132,11 +181,16 @@ def configure_command(
                     {
                         "providerId": search_provider,
                         "apiKey": api_key,
+                        "apiKeyEnv": api_key_env,
                         "maxResults": max_results,
                     },
                 )
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
+                _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized in {"channel", "channels"} and channel_type and name:
                 engine = SetupEngine()
@@ -145,7 +199,10 @@ def configure_command(
                     entry["token"] = token
                 engine.apply("channel", {"entry": entry})
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
                 return
             if normalized in {"image-generation", "image_generation"} and image_provider:
                 engine = SetupEngine()
@@ -160,7 +217,10 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
                 return
             if normalized in {"memory-embedding", "memory_embedding"} and memory_provider:
                 engine = SetupEngine()
@@ -175,12 +235,18 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                typer.echo(f"Saved: {result.path}")
+                console.print(
+                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
+                )
                 return
         except (KeyError, TypeError, ValueError) as exc:
-            typer.echo(f"Error: {exc}", err=True)
+            error_console.print(f"[red]Error:[/red] {markup_escape(exc)}")
             raise typer.Exit(code=2) from exc
 
     interactive_result = run_interactive_configure(selected or None)
     if interactive_result is not None:
-        typer.echo(f"Saved: {interactive_result.path}")
+        console.print(
+            f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+            f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(interactive_result.path)}[/]"
+        )

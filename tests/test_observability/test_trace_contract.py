@@ -3,10 +3,13 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.observability.trace import (
+    JsonlTraceSink,
     MemoryTraceSink,
     PrivacyGuardSink,
     TraceContext,
     TraceEvent,
+    load_trace_events,
+    write_trace_event,
 )
 
 
@@ -87,6 +90,38 @@ def test_memory_trace_sink_filters_by_trace_id() -> None:
     sink.write(TraceEvent(kind="turn_start", context=TraceContext.new(trace_id="trace-b")))
 
     assert [event.trace_id for event in sink.by_trace_id("trace-b")] == ["trace-b"]
+
+
+def test_jsonl_trace_sink_persists_and_loads_by_trace_id(tmp_path) -> None:
+    sink = JsonlTraceSink(log_dir=tmp_path)
+    sink.write(
+        TraceEvent(
+            kind="turn_start",
+            context=TraceContext.new(
+                trace_id="trace-a",
+                session_key="agent:main:test",
+                turn_id="turn-1",
+            ),
+            seq=1,
+        )
+    )
+    write_trace_event(
+        TraceEvent(
+            kind="turn_start",
+            context=TraceContext.new(trace_id="trace-b", turn_id="turn-2"),
+            seq=1,
+        ),
+        log_dir=tmp_path,
+    )
+
+    [path] = list(tmp_path.glob("traces-*.jsonl"))
+    assert path.exists()
+    events = load_trace_events("trace-a", log_dir=tmp_path)
+
+    assert [event.kind for event in events] == ["turn_start"]
+    assert events[0].trace_id == "trace-a"
+    assert events[0].context.session_key == "agent:main:test"
+    assert events[0].context.turn_id == "turn-1"
 
 
 @pytest.mark.parametrize(

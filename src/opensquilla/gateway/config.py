@@ -1158,6 +1158,7 @@ class FeishuChannelEntry(ConfiguredChannelEntry):
     """Gateway config entry for a Feishu (Lark) channel."""
 
     type: Literal["feishu"] = "feishu"
+    status_reactions_enabled: bool = True
     app_id: str
     app_secret: str
     encrypt_key: str = ""
@@ -1165,7 +1166,7 @@ class FeishuChannelEntry(ConfiguredChannelEntry):
     default_chat_id: str = ""
     webhook_path: str = "/feishu/events"
     api_base: str = "https://open.feishu.cn/open-apis"
-    connection_mode: Literal["webhook", "websocket"] = "webhook"
+    connection_mode: Literal["webhook", "websocket"] = "websocket"
     domain: Literal["feishu", "lark"] = "feishu"
 
 
@@ -1463,6 +1464,7 @@ class GatewayConfig(BaseSettings):
     # Search
     search_provider: str = "duckduckgo"
     search_api_key: str = ""
+    search_api_key_env: str = ""
     search_max_results: int = 5
     search_proxy: str = ""
     search_use_env_proxy: bool = False
@@ -1570,6 +1572,10 @@ class GatewayConfig(BaseSettings):
                 llm.pop("api_key_env", None)
             elif not llm.get("api_key"):
                 llm.pop("api_key", None)
+        if not data.get("search_api_key_env"):
+            data.pop("search_api_key_env", None)
+        elif not data.get("search_api_key"):
+            data.pop("search_api_key", None)
         router = data.get("squilla_router")
         if isinstance(router, dict) and router.get("tier_profile"):
             try:
