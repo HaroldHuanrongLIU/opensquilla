@@ -170,7 +170,8 @@ class ChannelManager:
         from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet, _compute_channel_cap
 
         adapter = self._channels[name]
-        await asyncio.wait_for(adapter.start(), timeout=30.0)
+        startup_timeout = float(getattr(adapter, "startup_timeout_s", 30.0))
+        await asyncio.wait_for(adapter.start(), timeout=startup_timeout)
         entry_agent_id = self._agent_ids.get(name, "main")
         key_builder = partial(self._build_session_key, name, agent_id=entry_agent_id)
         cap = _compute_channel_cap(self._config)
