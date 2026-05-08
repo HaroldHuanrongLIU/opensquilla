@@ -18,10 +18,12 @@
     padding-left: var(--sp-3);
   }
 
-  /* Toast: full-width on mobile */
+  /* Toast: full-width on mobile, lifted above the chat composer when present.
+     --composer-h is set on :root by the chat view; defaults to 0 elsewhere
+     so non-chat views keep the original bottom alignment. */
   .toast-stack {
     top: auto;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sp-3));
+    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sp-3) + var(--composer-h, 0px));
     right: var(--sp-3);
     left: var(--sp-3);
   }

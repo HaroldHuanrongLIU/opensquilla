@@ -411,7 +411,11 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  /* The 8-column session table is wider than the content area at standard
+     desktop widths (right-most MODEL column was clipped). Allow horizontal
+     scroll while still clipping any vertical overflow at the rounded edge. */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .usage-table {
   width: 100%;

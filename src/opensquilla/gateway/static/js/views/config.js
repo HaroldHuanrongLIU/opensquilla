@@ -114,13 +114,14 @@ const ConfigView = (() => {
           <div class="cfg-stage__title-block">
             <span class="cfg-stage__eyebrow">Settings</span>
             <h2 class="cfg-stage__title">Config</h2>
-            <p class="cfg-stage__subtitle">The full gateway configuration — tuned through the form view, or edit the raw YAML.</p>
+            <p class="cfg-stage__subtitle">Advanced gateway configuration. Use guided setup for provider, router, channels, and extras.</p>
           </div>
           <div class="cfg-stage__actions">
             <div class="cfg-mode-toggle" role="group" aria-label="Editor mode">
               <button class="cfg-mode-btn ${_mode === 'form' ? 'is-active' : ''}" type="button" data-cfg-mode="form">Form</button>
               <button class="cfg-mode-btn ${_mode === 'yaml' ? 'is-active' : ''}" type="button" data-cfg-mode="yaml">YAML</button>
             </div>
+            <button class="cfg-btn cfg-btn--ghost" id="cfg-guided-setup" type="button" title="Open guided setup">${icons.config()}<span>Guided setup</span></button>
             <button class="cfg-btn cfg-btn--ghost" id="cfg-reload" type="button" title="Reload config">${icons.refresh()}<span>Reload</span></button>
             <button class="cfg-btn cfg-btn--ghost" id="cfg-save" type="button" title="Save config">${icons.check()}<span>Save</span></button>
           </div>
@@ -186,6 +187,7 @@ const ConfigView = (() => {
     });
 
     _el.querySelector('#cfg-reload').addEventListener('click', () => { _dirty = {}; _invalidJson = {}; _jsonDrafts = {}; _loadData(); });
+    _el.querySelector('#cfg-guided-setup')?.addEventListener('click', () => Router.navigate('/setup'));
     _el.querySelector('#cfg-save').addEventListener('click', _save);
     _el.querySelector('#cfg-search').addEventListener('input', (e) => {
       _searchText = e.target.value.toLowerCase();

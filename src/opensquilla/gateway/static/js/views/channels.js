@@ -30,7 +30,7 @@ const ChannelsView = (() => {
           <div class="ch-stage__title-block">
             <span class="ch-stage__eyebrow">Control · Channels</span>
             <h2 class="ch-stage__title">Channels</h2>
-            <p class="ch-stage__subtitle">Runtime status for channel entries already configured through onboarding or the CLI.</p>
+            <p class="ch-stage__subtitle">Runtime status for configured channels. Use guided setup or CLI to add and change channel configuration.</p>
           </div>
           <div class="ch-stage__actions">
             <button class="btn btn--ghost" id="ch-refresh" title="Refresh">
@@ -167,9 +167,13 @@ const ChannelsView = (() => {
           </svg>
         </div>
         <div class="ch-empty__title">No configured channels.</div>
-        <p class="ch-empty__msg">Channel provisioning lives in onboarding and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.</p>
+        <p class="ch-empty__msg">Channel provisioning stays in guided setup and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.</p>
+        <div class="ch-empty__actions">
+          <button class="btn btn--primary" id="ch-guided-setup" type="button">${icons.config()}<span>Guided setup</span></button>
+        </div>
         <code class="ch-empty__code">opensquilla configure --section channels · opensquilla channels list</code>
       </div>`;
+      _el.querySelector('#ch-guided-setup')?.addEventListener('click', () => Router.navigate('/setup'));
       return;
     }
 

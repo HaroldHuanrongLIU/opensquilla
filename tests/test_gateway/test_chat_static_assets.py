@@ -15,6 +15,7 @@ from pathlib import Path
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
+BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
 
 
 def _read_app_js() -> str:
@@ -27,6 +28,10 @@ def _read_chat_js() -> str:
 
 def _read_chat_css() -> str:
     return CHAT_CSS.read_text(encoding="utf-8")
+
+
+def _read_base_css() -> str:
+    return BASE_CSS.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +61,15 @@ def test_chat_input_accept_attribute_matches_allowlist() -> None:
 
     # The legacy image-only `accept="image/*" multiple` literal must be gone:
     assert 'accept="image/*" multiple' not in source
+
+
+def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_composer() -> None:
+    css = _read_base_css()
+
+    assert "#app" in css
+    assert "height: 100vh;" in css
+    assert "height: 100dvh;" in css
+    assert css.index("height: 100vh;") < css.index("height: 100dvh;")
 
 
 # ---------------------------------------------------------------------------

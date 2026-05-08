@@ -61,8 +61,13 @@ const SetupView = (() => {
             <p class="setup__kicker">OpenSquilla setup</p>
             <h2>Core runtime configuration</h2>
           </div>
-          <div class="setup__status ${_status.needsOnboarding ? 'is-warn' : 'is-ok'}">
-            ${_status.needsOnboarding ? 'Action needed' : 'Configured'}
+          <div class="setup__head-aside">
+            <button type="button" class="setup__exit" data-exit-setup aria-label="Exit setup and return to Overview">
+              <span aria-hidden="true">←</span><span>Exit setup</span>
+            </button>
+            <div class="setup__status ${_status.needsOnboarding ? 'is-warn' : 'is-ok'}">
+              ${_status.needsOnboarding ? 'Action needed' : 'Configured'}
+            </div>
           </div>
         </header>
         <nav class="setup-stepper" aria-label="Setup steps">
@@ -307,7 +312,8 @@ const SetupView = (() => {
         </div>
         <div class="setup-actions">
           <button class="setup-btn" data-prev="extras">Back</button>
-          <button class="setup-btn setup-btn--primary" data-reload>Refresh</button>
+          <button class="setup-btn" data-reload>Refresh</button>
+          <button class="setup-btn setup-btn--primary" data-exit-setup>Open Overview</button>
         </div>
       </section>`;
   }
@@ -333,6 +339,7 @@ const SetupView = (() => {
   function _bindStep() {
     _el.querySelectorAll('[data-next]').forEach(btn => btn.addEventListener('click', () => { _step = btn.dataset.next; _draw(); }));
     _el.querySelectorAll('[data-prev]').forEach(btn => btn.addEventListener('click', () => { _step = btn.dataset.prev; _draw(); }));
+    _el.querySelectorAll('[data-exit-setup]').forEach(btn => btn.addEventListener('click', () => Router.navigate('/overview')));
     _el.querySelector('[data-reload]')?.addEventListener('click', async () => { await _load(); _draw(); });
     _el.querySelector('[data-provider-select]')?.addEventListener('change', () => _drawProviderFields());
     _el.querySelector('[data-channel-type]')?.addEventListener('change', () => _drawChannelFields());
