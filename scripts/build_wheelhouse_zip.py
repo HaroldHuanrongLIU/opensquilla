@@ -615,6 +615,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {{
         --find-links $PackageDir `
         "{wheel_target}"
 }}
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla installation failed with exit code $LASTEXITCODE."
+}}
 
 $OpenSquillaBin = Resolve-OpenSquilla
 if (-not $OpenSquillaBin) {{
@@ -622,6 +625,9 @@ if (-not $OpenSquillaBin) {{
 }}
 
 & $OpenSquillaBin onboard --if-needed
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
+}}
 
 Write-Host ""
 Write-Host "OpenSquilla is installed."
@@ -726,6 +732,9 @@ if (-not (Test-Path $VenvPython)) {
     Write-Host "Creating local OpenSquilla environment..."
     New-Item -ItemType Directory -Path $VenvRoot -Force | Out-Null
     & $PythonBin -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSquilla environment creation failed with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Installing OpenSquilla from local wheelhouse..."
@@ -734,8 +743,14 @@ Write-Host "Installing OpenSquilla from local wheelhouse..."
     --no-index `
     --find-links $PackageDir `
     "__TARGET__"
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSquilla installation failed with exit code $LASTEXITCODE."
+}
 
 & $OpenSquillaBin onboard --if-needed
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
+}
 
 Write-Host ""
 Write-Host "Starting OpenSquilla gateway."
@@ -744,6 +759,15 @@ Write-Host "Press Ctrl+C in this terminal to stop the gateway."
 & $OpenSquillaBin gateway run
 """
     return script.replace("__TARGET__", target)
+
+
+def render_start_cmd() -> str:
+    return (
+        "@echo off\r\n"
+        "title OpenSquilla Gateway\r\n"
+        'cd /d "%~dp0"\r\n'
+        'powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+    )
 
 
 def render_readme(
@@ -776,7 +800,22 @@ def render_readme(
             "`opensquilla configure <section>` for one area."
         )
     if windows_target:
-        command_section = f"""## Windows PowerShell
+        if portable:
+            command_section = f"""## Windows
+
+Double-click `Start OpenSquilla.cmd`.
+
+Or run from PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+{windows_command}
+```
+
+Keep the terminal open. Closing the terminal stops the gateway.
+"""
+        else:
+            command_section = f"""## Windows PowerShell
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -872,6 +911,12 @@ def prepare_release_tree(
         start_sh.write_text(render_start_sh(profile), encoding="utf-8")
         start_sh.chmod(start_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         (release_root / "start.ps1").write_text(render_start_ps1(profile), encoding="utf-8")
+        if platform_tag.startswith("windows-"):
+            (release_root / "Start OpenSquilla.cmd").write_text(
+                render_start_cmd(),
+                encoding="utf-8",
+                newline="",
+            )
     else:
         install_sh = release_root / "install.sh"
         install_sh.write_text(
