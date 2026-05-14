@@ -31,7 +31,11 @@ from opensquilla.engine.session_sanitize import (
     session_payload_chars,
 )
 from opensquilla.engine.thinking import drop_reasoning
-from opensquilla.engine.tool_result_store import ToolResultRecord, ToolResultStore
+from opensquilla.engine.tool_result_store import (
+    ToolResultRecord,
+    ToolResultStore,
+    ToolResultStoreBudgetError,
+)
 from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
 from opensquilla.engine.tool_truncation import estimate_tokens as get_approx_tokens
 from opensquilla.engine.tool_truncation import truncate_result
@@ -735,12 +739,41 @@ class Agent:
     ) -> ToolResultRecord | None:
         if not self.config.tool_result_store_dir:
             return None
+        session_id = self.config.tool_result_store_session_id or self._session_key
+        session_key = self.config.tool_result_store_session_key or self._session_key
+        agent_id = self.config.tool_result_store_agent_id
+        if not agent_id and session_key:
+            from opensquilla.session.keys import parse_agent_id
+
+            agent_id = parse_agent_id(session_key)
+        if not session_id or not session_key or not agent_id:
+            self.config.metadata["tool_result_store_skips"] = (
+                self.config.metadata.get("tool_result_store_skips", 0) + 1
+            )
+            return None
         try:
             record = ToolResultStore(self.config.tool_result_store_dir).write(
                 content,
                 tool_use_id=tool_use_id,
                 tool_name=tool_name,
+                session_id=session_id,
+                session_key=session_key,
+                agent_id=agent_id,
+                max_bytes=self.config.tool_result_store_max_bytes,
+                disk_budget_bytes=self.config.tool_result_store_disk_budget_bytes,
+                retention_seconds=self.config.tool_result_store_retention_seconds,
             )
+        except ToolResultStoreBudgetError as exc:
+            self.config.metadata["tool_result_store_skips"] = (
+                self.config.metadata.get("tool_result_store_skips", 0) + 1
+            )
+            logger.info(
+                "tool_result_store.skipped",
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                reason=str(exc),
+            )
+            return None
         except Exception as exc:  # pragma: no cover - storage must not break turns
             logger.warning(
                 "tool_result_store.write_failed",
@@ -2852,6 +2885,16 @@ class Agent:
                 self.config.tool_result_compression_summary_input_max_chars
             ),
             tool_result_store_dir=self.config.tool_result_store_dir,
+            tool_result_store_session_id=self.config.tool_result_store_session_id,
+            tool_result_store_session_key=self.config.tool_result_store_session_key,
+            tool_result_store_agent_id=self.config.tool_result_store_agent_id,
+            tool_result_store_max_bytes=self.config.tool_result_store_max_bytes,
+            tool_result_store_disk_budget_bytes=(
+                self.config.tool_result_store_disk_budget_bytes
+            ),
+            tool_result_store_retention_seconds=(
+                self.config.tool_result_store_retention_seconds
+            ),
         )
         return Agent(
             provider=self.provider,

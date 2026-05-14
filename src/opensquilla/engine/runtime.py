@@ -1765,6 +1765,24 @@ class TurnRunner:
                     60_000,
                 ),
                 tool_result_store_dir=str(media_root_from_config(self._config) / "tool-results"),
+                tool_result_store_session_id=session_id_for_log or session_key,
+                tool_result_store_session_key=session_key,
+                tool_result_store_agent_id=agent_id,
+                tool_result_store_max_bytes=getattr(
+                    _agent_token_cfg,
+                    "tool_result_store_max_bytes",
+                    8 * 1024 * 1024,
+                ),
+                tool_result_store_disk_budget_bytes=getattr(
+                    _agent_token_cfg,
+                    "tool_result_store_disk_budget_bytes",
+                    256 * 1024 * 1024,
+                ),
+                tool_result_store_retention_seconds=getattr(
+                    _agent_token_cfg,
+                    "tool_result_store_retention_seconds",
+                    7 * 24 * 60 * 60,
+                ),
                 metadata=turn.metadata,
             )
             tool_result_summarizer_provider = self._resolve_tool_result_summarizer_provider(
@@ -2229,6 +2247,9 @@ class TurnRunner:
                         ),
                         "tool_result_store_writes": int(
                             turn.metadata.get("tool_result_store_writes", 0) or 0
+                        ),
+                        "tool_result_store_skips": int(
+                            turn.metadata.get("tool_result_store_skips", 0) or 0
                         ),
                     },
                 )
@@ -3752,6 +3773,10 @@ class TurnRunner:
                 )
                 savings_telemetry.tool_result_store_writes = metadata.get(
                     "tool_result_store_writes",
+                    0,
+                )
+                savings_telemetry.tool_result_store_skips = metadata.get(
+                    "tool_result_store_skips",
                     0,
                 )
 

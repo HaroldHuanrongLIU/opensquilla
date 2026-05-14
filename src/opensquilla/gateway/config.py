@@ -1034,6 +1034,9 @@ class AgentTokenSavingConfig(BaseSettings):
     tool_result_compression_summary_max_tokens: int = Field(default=1024, ge=64)
     tool_result_compression_summary_timeout_seconds: float = Field(default=20.0, gt=0.0)
     tool_result_compression_summary_input_max_chars: int = Field(default=60_000, ge=1000)
+    tool_result_store_max_bytes: int = Field(default=8 * 1024 * 1024, ge=0)
+    tool_result_store_disk_budget_bytes: int = Field(default=256 * 1024 * 1024, ge=0)
+    tool_result_store_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
 
     @property
     def effective_tool_result_compression_mode(self) -> Literal["off", "truncate", "summarize"]:

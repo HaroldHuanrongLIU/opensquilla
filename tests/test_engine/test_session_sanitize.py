@@ -164,6 +164,9 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
             context_window_tokens=200,
             tool_result_compression_max_share=0.25,
             tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:session-1",
+            tool_result_store_agent_id="main",
         ),
     )
     messages = [
@@ -242,9 +245,78 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
         for line in old_result.content.splitlines()
         if line.startswith("tool_result_handle:")
     )
-    record = ToolResultStore(tmp_path / "tool-results").read(handle)
+    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
     assert record.content == raw_old_output
     assert record.tool_name == "execute_code"
+
+
+@pytest.mark.asyncio
+async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+            tool_result_compression_max_share=0.25,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:session-1",
+            tool_result_store_agent_id="main",
+        ),
+    )
+    raw_output = "single bulky output\n" + ("x" * 4000)
+
+    result = await agent._compress_tool_result(
+        ToolResult(
+            tool_use_id="tool-1",
+            tool_name="execute_code",
+            content=raw_output,
+        )
+    )
+
+    assert "[tool_result_projection]" in result.content
+    assert "tool_result_handle:" in result.content
+    handle = next(
+        line.split(":", 1)[1].strip()
+        for line in result.content.splitlines()
+        if line.startswith("tool_result_handle:")
+    )
+    from opensquilla.engine.tool_result_store import ToolResultStore
+
+    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
+    assert record.content == raw_output
+    assert record.session_key == "agent:main:webchat:session-1"
+    assert record.agent_id == "main"
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_result_projection_skips_raw_handle_when_store_over_budget(
+    tmp_path,
+) -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+            tool_result_compression_max_share=0.25,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:session-1",
+            tool_result_store_agent_id="main",
+            tool_result_store_max_bytes=16,
+        ),
+    )
+
+    result = await agent._compress_tool_result(
+        ToolResult(
+            tool_use_id="tool-1",
+            tool_name="execute_code",
+            content="single bulky output\n" + ("x" * 4000),
+        )
+    )
+
+    assert "[tool_result_projection]" not in result.content
+    assert "tool_result_handle:" not in result.content
+    assert agent.config.metadata["tool_result_store_skips"] == 1
+    assert not list((tmp_path / "tool-results").rglob("content.txt"))
 
 
 def test_agent_aggregate_tool_result_budget_uses_total_not_single_result_size() -> None:

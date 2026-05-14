@@ -274,6 +274,12 @@ class AgentConfig:
     tool_result_compression_summary_timeout_seconds: float = 20.0
     tool_result_compression_summary_input_max_chars: int = 60_000
     tool_result_store_dir: str | None = None
+    tool_result_store_session_id: str | None = None
+    tool_result_store_session_key: str | None = None
+    tool_result_store_agent_id: str | None = None
+    tool_result_store_max_bytes: int | None = 8 * 1024 * 1024
+    tool_result_store_disk_budget_bytes: int | None = 256 * 1024 * 1024
+    tool_result_store_retention_seconds: int | None = 7 * 24 * 60 * 60
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def resolve_thinking(self, prompt: str | None = None) -> tuple[bool, int]:
