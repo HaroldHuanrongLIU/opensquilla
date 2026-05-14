@@ -1,7 +1,8 @@
 /** OpenSquilla Web UI — Token usage floating widget (pill + card + drag). */
 
 const TokenWidget = (() => {
-  const CNY_RATE = 7.25;
+  // See static/js/constants.js — keep this in sync via SquillaConstants.
+  const CNY_RATE = (window.SquillaConstants && window.SquillaConstants.CNY_RATE) || 7.25;
 
   function _esc(s) {
     return String(s)

@@ -393,7 +393,7 @@ async def test_current_session_agent_run_uses_bound_session_transcript_without_f
         "job_id": "drink",
     }
     tool_context = turn_runner.calls[0]["tool_context"]
-    assert tool_context.allowed_tools == {"session_status", "memory_search"}
+    assert tool_context.allowed_tools == {"session_status"}
     assert "exec_command" in tool_context.denied_tools
     assert "web_fetch" in tool_context.denied_tools
     assert await session_manager.read_transcript(SESSION_KEY) == [

@@ -466,6 +466,13 @@
   border-color: color-mix(in srgb, #16a34a 45%, var(--border));
   color: #15803d;
 }
+.usage-source--provider_billed_prorated {
+  /* Same green family as provider_billed but dashed border + slightly muted
+     hue to disclose the value is a computed split, not a per-model receipt. */
+  border-color: color-mix(in srgb, #16a34a 35%, var(--border));
+  border-style: dashed;
+  color: #166534;
+}
 .usage-source--opensquilla_estimate {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   color: var(--accent);
@@ -612,14 +619,29 @@
 .usage-expand__row {
   display: grid;
   /* Model name takes the slack on wide screens; share-bar capped at 280px so
-     it stays a glanceable indicator (not a hero element) at any width. */
-  grid-template-columns: minmax(220px, 1.6fr) minmax(180px, 280px) 110px 100px;
+     it stays a glanceable indicator (not a hero element) at any width. The
+     Source cell discloses when a per-model cost is pro-rated vs direct billed. */
+  grid-template-columns: minmax(220px, 1.6fr) minmax(180px, 280px) 110px 100px auto;
   align-items: center;
   gap: var(--sp-4);
   padding: 6px var(--sp-2) 6px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
   animation: usage-expand-row-in 280ms ease both;
   animation-delay: calc(40ms * var(--i, 0));
+}
+.usage-expand__source {
+  display: flex;
+  justify-content: flex-end;
+}
+.usage-expand__notice {
+  margin: 4px 0 8px 0;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  background: color-mix(in srgb, #16a34a 6%, transparent);
+  border-left: 2px solid color-mix(in srgb, #16a34a 45%, var(--border));
+  border-radius: 3px;
 }
 .usage-expand__row:last-child { border-bottom: 0; }
 .usage-expand__model {
@@ -693,13 +715,14 @@
     grid-template-columns: 1fr 90px 90px;
     grid-template-areas:
       "model tokens cost"
-      "share share share";
+      "share share source";
     gap: 4px var(--sp-2);
   }
   .usage-expand__model { grid-area: model; }
   .usage-expand__tokens { grid-area: tokens; }
   .usage-expand__cost { grid-area: cost; }
   .usage-expand__share { grid-area: share; }
+  .usage-expand__source { grid-area: source; }
 }
 @media (prefers-reduced-motion: reduce) {
   .usage-expand__row { animation: none; }

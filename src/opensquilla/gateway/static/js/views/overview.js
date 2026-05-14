@@ -51,9 +51,9 @@ const OverviewView = (() => {
             <div class="ov-stat__value" id="ov-tokens">${UI.skeleton('120px', '1.6rem')}</div>
             <div class="ov-stat__hint" id="ov-cost-line">—</div>
           </button>
-          <button class="ov-stat" data-nav="/sessions" type="button">
+          <button class="ov-stat" data-nav="/sessions" type="button" title="Total sessions across all statuses">
             <div class="ov-stat__icon">${icons.sessions()}</div>
-            <div class="ov-stat__label">Active sessions</div>
+            <div class="ov-stat__label">Total sessions</div>
             <div class="ov-stat__value" id="ov-sessions">${UI.skeleton('80px', '1.6rem')}</div>
             <div class="ov-stat__hint">view all →</div>
           </button>
@@ -236,9 +236,13 @@ const OverviewView = (() => {
       const costLine = _el.querySelector('#ov-cost-line');
       if (costLine) {
         if (data.totalCostUsd != null) {
+          // CNY rate sourced from SquillaConstants — kept in sync across
+          // overview, usage, and token-widget. Disclosed as baked-in.
+          const cnyRate = (window.SquillaConstants && window.SquillaConstants.CNY_RATE) || 7.25;
           const usd = '$' + Number(data.totalCostUsd).toFixed(4);
-          const cny = '¥' + (Number(data.totalCostUsd) * 7.25).toFixed(4);
+          const cny = '¥' + (Number(data.totalCostUsd) * cnyRate).toFixed(4);
           costLine.textContent = cur === 'CNY' ? `${cny} · ${usd}` : `${usd} · ${cny}`;
+          costLine.title = `CNY value uses baked-in rate ${cnyRate} (see SquillaConstants).`;
         } else {
           costLine.textContent = '—';
         }

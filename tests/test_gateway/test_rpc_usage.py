@@ -54,6 +54,86 @@ def test_usage_status_tracker_only_path_surfaces_cache_totals() -> None:
     assert row["estimatedCostUsd"] == row["costUsd"]
 
 
+def test_usage_status_tracker_row_source_matches_breakdown_when_billed() -> None:
+    """Phase 8 Option D consistency guard (Codex stop-time finding):
+    when the tracker has real per-call billed_cost data, the tracker-only
+    row's cost_source must NOT be hard-coded as 'opensquilla_estimate'
+    while the per-model breakdown items show 'provider_billed' — that
+    self-contradiction confused users into questioning the dashboard."""
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:billed",
+        input_tokens=29213,
+        output_tokens=400,
+        model_id="anthropic/claude-4.7-opus",
+        cache_read_tokens=11588,
+        cache_write_tokens=17772,
+        billed_cost=0.1254,
+    )
+    tracker.add(
+        "agent:webchat:billed",
+        input_tokens=9323,
+        output_tokens=0,
+        model_id="z-ai/glm-5.1",
+        billed_cost=0.0111,
+    )
+
+    ctx = _ctx(session_manager=None, usage_tracker=tracker)
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    # Row now reports the real billed total + provider_billed source.
+    assert row["costSource"] == "provider_billed"
+    assert row["cost_source"] == "provider_billed"
+    assert row["costUsd"] == 0.1365
+    assert row["billedCostUsd"] == 0.1365
+    # Per-model breakdown items also provider_billed; sum equals row cost.
+    breakdown = row["modelBreakdown"]
+    assert all(item["costSource"] == "provider_billed" for item in breakdown)
+    breakdown_sum = sum(item["costUsd"] for item in breakdown)
+    assert breakdown_sum == row["costUsd"]
+
+
+def test_usage_status_tracker_row_source_mixed_when_some_models_unbilled() -> None:
+    """Mix of billed + unbilled models in the tracker → row gets 'mixed'
+    source (not provider_billed and not opensquilla_estimate). The row
+    cost must equal the breakdown sum (billed for billed models +
+    estimate for unbilled), not just the billed-only portion — otherwise
+    the row visibly under-reports against its own breakdown.
+    """
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:mixed",
+        input_tokens=1000,
+        output_tokens=50,
+        model_id="claude-opus-4-7",
+        billed_cost=0.05,
+    )
+    tracker.add(
+        "agent:webchat:mixed",
+        input_tokens=2000,
+        output_tokens=80,
+        model_id="deepseek-v4-pro",
+        # no billed_cost — provider didn't return a price for this call
+    )
+
+    ctx = _ctx(session_manager=None, usage_tracker=tracker)
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    assert row["costSource"] == "mixed"
+    # billed_cost_usd reflects only the truly billed portion.
+    assert row["billedCostUsd"] == 0.05
+    # KEY INVARIANT (Codex stop-time finding): row.cost_usd == sum of
+    # breakdown costs — i.e. billed (for billed models) + estimate
+    # (for unbilled models). Previously set to billed_cost only, which
+    # under-reported by the unbilled portion.
+    breakdown_sum = sum(item["costUsd"] for item in row["modelBreakdown"])
+    assert row["costUsd"] == breakdown_sum
+    # And the unbilled model contributed a non-zero estimate.
+    assert row["costUsd"] > 0.05
+
+
 class _FakeSessionManager:
     def __init__(self, sessions):
         self._sessions = sessions

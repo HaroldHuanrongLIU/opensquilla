@@ -17,6 +17,10 @@ const SessionsView = (() => {
   let _searchVal = '';
   // agent_id → agent entry from agents.list, used for orphan-agent detection.
   let _agentsById = new Map();
+  // Set true only after a successful agents.list response. Orphan chip rendering
+  // is gated on this so a transient registry failure does not flood the table
+  // with false "Orphaned" badges (the map would be empty during the failure).
+  let _agentsLoaded = false;
 
   function render(el) {
     _el = el;
@@ -74,14 +78,22 @@ const SessionsView = (() => {
 
     _el.querySelector('#sess-refresh').addEventListener('click', _loadData);
     _el.querySelector('#sess-new').addEventListener('click', _openNewSessionModal);
+    // Debounce search input so each keystroke doesn't force a full
+    // _applyFilter + _renderTable on a 200+ row dataset.
+    let _searchDebounceId = null;
     _el.querySelector('#sess-search').addEventListener('input', (e) => {
-      _searchVal = e.target.value.trim().toLowerCase();
-      _page = 0;
-      _selected.clear();
-      _applyFilter();
-      _renderTable();
-      _renderPagination();
-      _renderBulkBar();
+      const value = e.target.value.trim().toLowerCase();
+      if (_searchDebounceId !== null) clearTimeout(_searchDebounceId);
+      _searchDebounceId = setTimeout(() => {
+        _searchDebounceId = null;
+        _searchVal = value;
+        _page = 0;
+        _selected.clear();
+        _applyFilter();
+        _renderTable();
+        _renderPagination();
+        _renderBulkBar();
+      }, 180);
     });
     _el.querySelector('#sess-page-size').addEventListener('change', (e) => {
       _pageSize = Number(e.target.value);
@@ -115,15 +127,22 @@ const SessionsView = (() => {
     await _rpc.waitForConnection();
     // Fetch sessions and agents in parallel so the orphan-agent badge is
     // always rendered against fresh registry state.
+    // Explicit limit=200 keeps backend default (50) intact for CLI/channel
+    // consumers — only this WebUI surface opts into the larger page size.
     const [sessRes, agentsRes] = await Promise.allSettled([
-      _rpc.call('sessions.list'),
+      _rpc.call('sessions.list', { limit: 200 }),
       _rpc.call('agents.list'),
     ]);
     if (!_el) return;
     if (agentsRes.status === 'fulfilled') {
       const list = agentsRes.value?.agents || [];
       _agentsById = new Map(list.map(a => [a.id, a]));
+      _agentsLoaded = true;
     }
+    // Note: on agentsRes rejection we deliberately DO NOT clear _agentsLoaded
+    // or _agentsById — a transient registry hiccup keeps the last known map,
+    // avoiding spurious orphan chips. _agentsLoaded only flips back to false
+    // if the view is destroyed.
     if (sessRes.status === 'fulfilled') {
       _allSessions = sessRes.value?.sessions || [];
       _selected.clear();
@@ -141,9 +160,15 @@ const SessionsView = (() => {
     if (!_searchVal) {
       _filtered = [..._allSessions];
     } else {
+      // Search now also matches user-meaningful metadata (display_name,
+      // subject, derived_title) so a renamed session like "Bug triage" is
+      // findable by name — previously only key/model were searched.
       _filtered = _allSessions.filter(s =>
         String(s.key || '').toLowerCase().includes(_searchVal) ||
-        String(s.model || '').toLowerCase().includes(_searchVal)
+        String(s.model || '').toLowerCase().includes(_searchVal) ||
+        String(s.display_name || s.displayName || '').toLowerCase().includes(_searchVal) ||
+        String(s.subject || '').toLowerCase().includes(_searchVal) ||
+        String(s.derived_title || s.derivedTitle || '').toLowerCase().includes(_searchVal)
       );
     }
     _sortData();
@@ -153,7 +178,7 @@ const SessionsView = (() => {
     _filtered.sort((a, b) => {
       let va = a[_sortCol] ?? '';
       let vb = b[_sortCol] ?? '';
-      if (_sortCol === 'size_bytes' || _sortCol === 'message_count' || _sortCol === 'entry_count') {
+      if (_sortCol === 'message_count') {
         va = Number(va) || 0;
         vb = Number(vb) || 0;
       } else {
@@ -189,7 +214,7 @@ const SessionsView = (() => {
         <div class="stat-value">${total}</div>
         <div class="stat-hint">${running} running · ${done} done · ${errored} errored</div>
       </div>
-      <div class="stat">
+      <div class="stat" title="Sessions currently running">
         <div class="stat-label">Active</div>
         <div class="stat-value">
           ${running}${running ? '<span class="dot ok"></span>' : ''}
@@ -199,13 +224,11 @@ const SessionsView = (() => {
       <div class="stat">
         <div class="stat-label">Messages</div>
         <div class="stat-value mono">${totalMessages.toLocaleString()}</div>
-        <div class="stat-hint">across all sessions</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Storage</div>
-        <div class="stat-value mono">${_fmtBytes(totalSize)}</div>
-        <div class="stat-hint">${agents.size} agent${agents.size === 1 ? '' : 's'}</div>
+        <div class="stat-hint">${agents.size} agent${agents.size === 1 ? '' : 's'} · across all sessions</div>
       </div>`;
+    // Storage KPI removed: backend rpc_sessions.py sets size_bytes=None on every
+    // row, so the aggregate was always 0 B and the card displayed dead data.
+    // Agent count merged into the Messages hint to preserve that signal.
   }
 
   function _renderTable() {
@@ -235,16 +258,19 @@ const SessionsView = (() => {
       return;
     }
 
+    // Note: backend RPC payload (rpc_sessions.py:623-624) still emits BOTH
+    // message_count and entry_count keys for CLI compatibility — cli/sessions_cmd.py
+    // and cli/chat_cmd.py read both via `or` fallback. The frontend only renders
+    // one column to avoid showing identical numbers twice.
     const cols = [
       { key: 'select', label: '' },
       { key: 'key', label: 'Session key' },
       { key: 'status', label: 'Status' },
       { key: 'message_count', label: 'Msgs' },
-      { key: 'entry_count', label: 'Entries' },
       { key: 'updated_at', label: 'Modified' },
       { key: '_actions', label: '' },
     ];
-    const sortable = ['key', 'updated_at', 'message_count', 'entry_count'];
+    const sortable = ['key', 'updated_at', 'message_count'];
 
     const allOnPage = slice.length > 0 && slice.every(s => _selected.has(s.key));
 
@@ -282,7 +308,6 @@ const SessionsView = (() => {
         </td>
         <td><span class="chip ${statusChip}">${_esc(statusTip)}</span></td>
         <td class="sess-mono">${row.message_count != null ? Number(row.message_count).toLocaleString() : '—'}</td>
-        <td class="sess-mono sess-dim">${row.entry_count != null ? Number(row.entry_count).toLocaleString() : '—'}</td>
         <td class="sess-mono sess-dim">${_esc(modified)}</td>
         <td class="sess-table__cell--actions">
           <button class="sess-iconbtn" data-open-key="${_esc(row.key)}" title="Open chat">${icons.chat()}</button>
@@ -457,17 +482,27 @@ const SessionsView = (() => {
     if (keys.length === 0) return;
     UI.modal(
       'Delete sessions',
-      `<p>Delete <strong>${keys.length}</strong> session${keys.length === 1 ? '' : 's'}? This cannot be undone.</p>`,
+      `<p>Delete <strong>${keys.length}</strong> session${keys.length === 1 ? '' : 's'}? This cannot be undone.</p>
+       <p class="sess-modal__warn"><small>The transcript will not be flushed to disk; use <code>/reset</code> first if you want a backup.</small></p>`,
       [
         {
           label: 'Delete all', cls: 'btn-danger', onClick: async () => {
-            let failed = 0;
-            for (const key of keys) {
-              try { await _rpc.call('sessions.delete', { key }); }
-              catch { failed++; }
+            // Backend sessions.delete (rpc_sessions.py:1466) accepts {keys:[...]}
+            // for batch deletion and returns {deleted: [...], errors: [...]}.
+            // One round-trip instead of N preserves partial-failure semantics
+            // via the errors[] array.
+            try {
+              const res = await _rpc.call('sessions.delete', { keys });
+              const errCount = (res && res.errors && res.errors.length) || 0;
+              const okCount = (res && res.deleted && res.deleted.length) ?? (keys.length - errCount);
+              if (errCount > 0) {
+                UI.toast(`Deleted ${okCount}, ${errCount} failed`, 'warn');
+              } else {
+                UI.toast(`Deleted ${okCount} session${okCount === 1 ? '' : 's'}`, 'info');
+              }
+            } catch (err) {
+              UI.toast('Bulk delete failed: ' + (err?.message || 'unknown error'), 'err');
             }
-            if (failed > 0) UI.toast(`${failed} deletion(s) failed`, 'err');
-            else UI.toast(`Deleted ${keys.length} session${keys.length === 1 ? '' : 's'}`, 'info');
             _selected.clear();
             _loadData();
           }
@@ -480,7 +515,8 @@ const SessionsView = (() => {
   function _deleteSession(key) {
     UI.modal(
       'Delete session',
-      `<p>Delete session <strong>${_esc(key)}</strong>? This cannot be undone.</p>`,
+      `<p>Delete session <strong>${_esc(key)}</strong>? This cannot be undone.</p>
+       <p class="sess-modal__warn"><small>The transcript will not be flushed to disk; use <code>/reset</code> first if you want a backup.</small></p>`,
       [
         {
           label: 'Delete', cls: 'btn-danger', onClick: () => {
@@ -676,6 +712,15 @@ const SessionsView = (() => {
       </div>`;
     }
     if (agentId === 'main') return '';
+    // Only mark a row "Orphaned" once we have actually loaded the registry and
+    // confirmed the id is missing. Before first successful agents.list (e.g.
+    // during a transient RPC failure) show the agent id as plain text so a
+    // network blip doesn't flood the table with false orphan warnings.
+    if (!_agentsLoaded) {
+      return `<div class="sess-key__sub">
+        <span class="sess-key__agent">${_esc(agentId)}</span>
+      </div>`;
+    }
     return `<div class="sess-key__sub">
       <span class="sess-key__agent sess-key__agent--orphan" title="Agent '${_esc(agentId)}' is no longer registered">
         ${_esc(agentId)}

@@ -118,9 +118,109 @@ def test_chat_new_session_uses_current_agent_namespace() -> None:
 
     assert "function _agentIdFromSessionKey(key)" in source
     assert "return _webchatSessionKey(_agentIdFromSessionKey(_sessionKey)," in source
-    assert 'label: \'New chat\'' in source
     assert 'title="New chat session in the current agent"' in source
     assert "New chat session in the current agent: " in source
+
+
+def test_chat_slash_menu_loads_web_chat_catalog_from_rpc() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _SLASH_CMDS = [" not in source
+    assert "let _slashCmds = [];" in source
+    assert "let _slashCommandMap = new Map();" in source
+    assert "let _slashCatalogLoaded = false;" in source
+    assert "async function _loadSlashCommands()" in source
+    assert "_rpc.call('commands.list_for_surface', { surface: 'web_chat' })" in source
+    assert "_slashCommandMap.set(_slashCommandKey(cmd.name), cmd);" in source
+    assert "cmd.aliases || []" in source
+    assert "_loadSlashCommands();" in source
+
+
+def test_chat_slash_input_supports_literal_slash_escape() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("    // Reset abort flag for new message", send_start)
+    send_prefix = source[send_start:send_end]
+
+    assert "let isLiteralSlash = false;" in send_prefix
+    assert "if (text.startsWith('//')) {" in send_prefix
+    assert "isLiteralSlash = true;" in send_prefix
+    assert "text = text.slice(1);" in send_prefix
+    assert "if (!isLiteralSlash && text.startsWith('/')) {" in send_prefix
+    assert "await _executeSlashCommand(text)" in send_prefix
+    assert "if (val.startsWith('//')) { _closeSlashMenu(); return; }" in source
+
+
+def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("    // Reset abort flag for new message", send_start)
+    send_prefix = source[send_start:send_end]
+
+    flag_idx = send_prefix.index("let isLiteralSlash = false;")
+    literal_idx = send_prefix.index("if (text.startsWith('//')) {")
+    flag_set_idx = send_prefix.index("isLiteralSlash = true;")
+    streaming_idx = send_prefix.index("if (_isStreaming) {")
+    execute_idx = send_prefix.index("await _executeSlashCommand(text)")
+    real_slash_guard = "if (!isLiteralSlash && text.startsWith('/')) {"
+    streaming_block_end = send_prefix.index(f"\n\n    {real_slash_guard}", streaming_idx)
+    streaming_block = send_prefix[streaming_idx:streaming_block_end]
+
+    assert flag_idx < literal_idx < streaming_idx
+    assert literal_idx < flag_set_idx < streaming_idx
+    assert "text = text.slice(1);" in send_prefix[literal_idx:streaming_idx]
+    assert real_slash_guard in streaming_block
+    assert "Wait for the current response before running" in streaming_block
+    assert "_executeSlashCommand" not in streaming_block
+    assert streaming_idx < execute_idx
+    assert real_slash_guard in send_prefix[streaming_idx:execute_idx]
+
+
+def test_chat_slash_executor_handles_unknown_without_chat_send() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    exec_start = source.index("async function _executeSlashCommand(text)")
+    exec_end = source.index("  /* ── Send Message", exec_start)
+    executor = source[exec_start:exec_end]
+
+    assert "_slashCommandMap.get(_slashCommandKey(cmdText))" in executor
+    assert "Unsupported command" in executor
+    assert "return true;" in executor
+    assert "chat.send" not in executor
+
+
+def test_chat_usage_slash_commands_call_usage_rpcs() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    select_start = source.index("function _selectSlashCmd(cmd, args = '')")
+    select_end = source.index("  async function _executeSlashCommand(text)", select_start)
+    selector = source[select_start:select_end]
+
+    assert "case 'usage_status':" in selector
+    assert (
+        "const usageMethod = args.trim().toLowerCase() === 'cost' "
+        "? 'usage.cost' : 'usage.status';"
+    ) in selector
+    assert "_rpc.call(usageMethod)" in selector
+    assert "Usage cost" in source
+
+
+def test_chat_usage_slash_status_reads_top_level_and_totals_fields() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    select_start = source.index("function _selectSlashCmd(cmd, args = '')")
+    usage_start = source.index("case 'usage_status':", select_start)
+    usage_end = source.index("          .catch((err) => UI.toast('Usage failed:", usage_start)
+    usage_block = source[usage_start:usage_end]
+
+    for field_name in (
+        "result?.totalTokens",
+        "result?.total_tokens",
+        "result?.totalCostUsd",
+        "result?.total_cost_usd",
+        "totals.tokens",
+        "totals.total_tokens",
+        "totals.cost",
+        "totals.cost_usd",
+    ):
+        assert field_name in usage_block
 
 
 def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None:

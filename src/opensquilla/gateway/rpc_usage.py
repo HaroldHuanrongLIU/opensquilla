@@ -173,9 +173,33 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
             cache_write_tokens=getattr(usage, "cache_write_tokens", 0) or 0,
             ephemeral=True,
         )
-        cost_fields["cost_usd"] = usage.cost
-        cost_fields["estimated_cost_usd"] = usage.cost
-        cost_fields["cost_source"] = "opensquilla_estimate"
+        # Option D: read aggregate billed/cost_source from SessionUsage so the
+        # row matches the per-model breakdown items. Without this, a
+        # tracker-only row would always show cost_source=opensquilla_estimate
+        # while individual breakdown chips could be provider_billed — a
+        # visible self-contradiction in the UI ("row says estimated but
+        # every model says actual").
+        usage_billed = float(getattr(usage, "billed_cost", 0.0) or 0.0)
+        usage_estimate = float(usage.cost or 0.0)
+        # ``total_cost`` mixes per-model billed (where available) with
+        # estimates (where not), so a "mixed" session row matches the
+        # breakdown sum instead of under-reporting the unbilled portion.
+        usage_total = float(getattr(usage, "total_cost", usage_estimate) or 0.0)
+        usage_cost_source = str(
+            getattr(usage, "cost_source", "opensquilla_estimate") or "opensquilla_estimate"
+        )
+        if usage_billed > 0:
+            # Real billed available — surface the mixed total (billed +
+            # estimate-fallback for any unbilled model) as the row's
+            # canonical cost so it matches the breakdown sum exactly.
+            cost_fields["cost_usd"] = usage_total
+            cost_fields["billed_cost_usd"] = usage_billed
+            cost_fields["estimated_cost_usd"] = usage_estimate
+            cost_fields["cost_source"] = usage_cost_source  # provider_billed or mixed
+        else:
+            cost_fields["cost_usd"] = usage_estimate
+            cost_fields["estimated_cost_usd"] = usage_estimate
+            cost_fields["cost_source"] = "opensquilla_estimate"
         row = _usage_row(
             session_key=session_key,
             model=usage.model_id or config_model,
@@ -192,6 +216,122 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
     return rows
 
 
+_BILLED_COST_SOURCES = frozenset({"provider_billed", "mixed"})
+
+
+def _reconcile_breakdown_to_row(row: dict[str, Any]) -> None:
+    """Make per-model breakdown costs sum to the row's displayed total.
+
+    **Fallback path** (Phase 8 / Option D): when the in-memory tracker
+    has captured real per-call ``billed_cost`` per model (commit 80490d1
+    + 2065a45), the breakdown items already carry actual provider-billed
+    figures and their sum already equals ``row.cost_usd`` by construction
+    (since the row's ``billed_cost_usd`` and the per-model billed totals
+    are accumulated from the same ``ProviderDoneEvent.billed_cost`` source
+    in ``agent.py:1068``). In that case this function is a no-op — see
+    the early-return guard below.
+
+    The pro-rate path below remains for **disk-loaded sessions**: after a
+    gateway restart, the in-memory ``UsageTracker._per_model`` is empty;
+    only the aggregate ``billed_cost_usd`` survives on the persisted
+    session row. If we still want to render *some* per-model breakdown
+    (e.g. via tracker re-population from a future turn), and that
+    breakdown happens to come back as estimate-only, the row total
+    (billed) and the breakdown items (estimate) will drift due to the
+    cache-blind pricing-table estimate (no cache_read pricing field in
+    ``engine.pricing.ModelPrice``; see ``pricing.py:175-178``). Pro-rate
+    each item's cost so the breakdown sums to the row's billed total
+    while preserving the relative share implied by the estimates, and
+    mark each item with ``cost_source: provider_billed_prorated`` so the
+    UI can disclose that the figure is a computed split, not a per-model
+    billing receipt.
+
+    No-op when:
+    - breakdown has 0 or 1 items (single-item rows already match by construction
+      via the cost rollup path);
+    - row is estimate-only (sums equal by construction);
+    - row cost is 0 (no billed total to spread);
+    - **all items already carry ``provider_billed`` and their sum matches the
+      row total within 0.001 (Option D fast-path)**.
+    """
+    breakdown = row.get("modelBreakdown")
+    if not isinstance(breakdown, list) or len(breakdown) <= 1:
+        return
+    cost_source = str(row.get("cost_source") or row.get("costSource") or "none")
+    if cost_source not in _BILLED_COST_SOURCES:
+        return
+    row_cost = float(row.get("cost_usd") or row.get("costUsd") or 0.0)
+    if row_cost <= 0.0:
+        return
+
+    def _item_cost(item: Mapping[str, Any]) -> float:
+        return float(item.get("costUsd") or item.get("cost_usd") or 0.0)
+
+    # Option D fast-path: pro-rate exists to correct drift between row.cost_usd
+    # and the breakdown sum. If they already agree within 1/10th of a cent,
+    # there is no drift to correct — no matter the per-item source. This
+    # covers two cases:
+    #   - Pure billed: every item is provider_billed and matches by construction.
+    #   - Mixed (Option D extension): some items provider_billed, others
+    #     opensquilla_estimate; row uses SessionUsage.total_cost which sums
+    #     billed-where-available plus estimate-where-not, so the breakdown
+    #     sum matches and rebadging would be misleading.
+    # Without this guard, mixed rows would falsely rebadge every item as
+    # ``provider_billed_prorated`` and trigger the "split is estimated"
+    # disclosure even though each item's individual source is already the
+    # correct truth.
+    items_for_check = [item for item in breakdown if isinstance(item, Mapping)]
+    if items_for_check:
+        items_sum = sum(_item_cost(item) for item in items_for_check)
+        # 0.001 ≈ 1/10th of a cent; chosen because cost rollup rounds to 6
+        # decimals (1e-6) and accumulating ~hundreds of float operations
+        # rarely overshoots 1e-3. Tighter than that risks false-positives
+        # under benign rounding; looser would let real drift slip through.
+        if abs(items_sum - row_cost) <= 0.001:
+            return
+
+    estimated_sum = sum(_item_cost(item) for item in breakdown if isinstance(item, Mapping))
+    dict_items = [item for item in breakdown if isinstance(item, dict)]
+
+    def _stamp(item: dict, cost: float, estimate: float | None) -> None:
+        item["costUsd"] = cost
+        item["cost_usd"] = cost
+        item["billedCostUsd"] = cost
+        item["billed_cost_usd"] = cost
+        if estimate is not None:
+            item["estimatedCostUsd"] = round(estimate, 6)
+            item["estimated_cost_usd"] = round(estimate, 6)
+        item["costSource"] = "provider_billed_prorated"
+        item["cost_source"] = "provider_billed_prorated"
+
+    if estimated_sum <= 0.0:
+        # All-zero estimates: split row cost equally. Absorb rounding loss
+        # into the last item so the breakdown sums exactly to row_cost.
+        n = len(dict_items)
+        if n == 0:
+            return
+        equal = round(row_cost / float(n), 6)
+        running = 0.0
+        for idx, item in enumerate(dict_items):
+            share = round(row_cost - running, 6) if idx == n - 1 else equal
+            _stamp(item, share, None)
+            running += share
+        return
+
+    scale = row_cost / estimated_sum
+    running = 0.0
+    last_idx = len(dict_items) - 1
+    for idx, item in enumerate(dict_items):
+        original = _item_cost(item)
+        if idx == last_idx:
+            # Last item absorbs the rounding remainder so sum == row_cost exactly.
+            prorated = round(row_cost - running, 6)
+        else:
+            prorated = round(original * scale, 6)
+        _stamp(item, prorated, original)
+        running += prorated
+
+
 def _append_tracker_only_rows(
     rows: list[dict[str, Any]],
     tracker_rows: list[dict[str, Any]],
@@ -204,6 +344,11 @@ def _append_tracker_only_rows(
     sessions that hit the billing path lose their breakdown on the next status
     fetch — the "auto · N models" UI never surfaces for auto-routed sessions
     even though the data is still in memory.
+
+    Also reconciles per-model cost figures to the row total via
+    ``_reconcile_breakdown_to_row`` so the expand-row sum equals the visible
+    session cost for billed sessions (otherwise cache-discount blind estimates
+    inflate the breakdown).
     """
     tracker_by_key = {tr["session"]: tr for tr in tracker_rows}
     seen = set()
@@ -216,6 +361,7 @@ def _append_tracker_only_rows(
             and not row.get("modelBreakdown")
         ):
             row["modelBreakdown"] = tracker_row["modelBreakdown"]
+        _reconcile_breakdown_to_row(row)
     return rows + [row for row in tracker_rows if row["session"] not in seen]
 
 

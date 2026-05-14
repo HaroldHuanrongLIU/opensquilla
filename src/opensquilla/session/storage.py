@@ -635,6 +635,39 @@ class SessionStorage:
             row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def count_transcript_entries_batch(
+        self, session_ids: list[str]
+    ) -> dict[str, int]:
+        """Count transcript entries for many sessions in one round trip.
+
+        Used by ``sessions.list`` (rpc_sessions.py) to avoid the N+1 pattern
+        where the previous implementation awaited ``count_transcript_entries``
+        once per row. Returns ``{session_id: count}`` with missing ids
+        explicitly defaulted to 0. The single-id ``count_transcript_entries``
+        is kept for backward compatibility with other callers.
+
+        Chunk size 500 stays well below SQLite's default
+        ``SQLITE_MAX_VARIABLE_NUMBER`` (999 since 3.32) with headroom.
+        """
+        if not session_ids:
+            return {}
+        chunk = 500
+        result: dict[str, int] = {}
+        for i in range(0, len(session_ids), chunk):
+            batch = session_ids[i : i + chunk]
+            placeholders = ",".join(["?"] * len(batch))
+            sql = (
+                f"SELECT session_id, COUNT(*) FROM transcript_entries "
+                f"WHERE session_id IN ({placeholders}) GROUP BY session_id"
+            )
+            async with self.conn.execute(sql, batch) as cur:
+                rows = await cur.fetchall()
+            for sid, cnt in rows:
+                result[sid] = cnt
+        for sid in session_ids:
+            result.setdefault(sid, 0)
+        return result
+
     async def delete_transcript(self, session_id: str) -> None:
         await self.conn.execute(
             "DELETE FROM transcript_entries WHERE session_id = ?", (session_id,)

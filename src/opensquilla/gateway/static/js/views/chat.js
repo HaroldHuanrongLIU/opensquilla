@@ -194,11 +194,9 @@ const ChatView = (() => {
   let _slashOpen = false;
   let _slashIdx = 0;
   let _filteredCmds = [];
-  const _SLASH_CMDS = [
-    { cmd: '/new',     label: 'New chat',        desc: 'Start a fresh chat session in the current agent' },
-    { cmd: '/reset',   label: 'Reset session',   desc: 'Clear session history' },
-    { cmd: '/compact', label: 'Compact context',  desc: 'Compact session context' },
-  ];
+  let _slashCmds = [];
+  let _slashCommandMap = new Map();
+  let _slashCatalogLoaded = false;
 
   // Tool icon mapping
   const _TOOL_EMOJI = {
@@ -912,6 +910,7 @@ const ChatView = (() => {
     _subscribeSession();
     _loadHistory();
     _loadFeatureToggles();
+    _loadSlashCommands();
 
     // Autofocus chat input
     if (_textarea) _textarea.focus();
@@ -1889,11 +1888,53 @@ const ChatView = (() => {
 
   /* ── Slash Command Menu ─────────────────────────────────────────────── */
 
+  function _slashCommandKey(value) {
+    const raw = String(value || '').trim().split(/\s+/, 1)[0].toLowerCase();
+    if (!raw) return '';
+    return raw.startsWith('/') ? raw : '/' + raw;
+  }
+
+  function _normalizeSlashCommand(cmd) {
+    const name = cmd?.name || cmd?.cmd || '';
+    return {
+      ...cmd,
+      name,
+      cmd: name,
+      label: cmd?.label || name,
+      desc: cmd?.description || cmd?.desc || cmd?.usage || '',
+      aliases: Array.isArray(cmd?.aliases) ? cmd.aliases : [],
+    };
+  }
+
+  async function _loadSlashCommands() {
+    if (!_rpc) return;
+    try {
+      await _rpc.waitForConnection();
+      const res = await _rpc.call('commands.list_for_surface', { surface: 'web_chat' });
+      _slashCmds = (Array.isArray(res?.commands) ? res.commands : []).map(_normalizeSlashCommand);
+      _slashCommandMap = new Map();
+      _slashCmds.forEach((cmd) => {
+        _slashCommandMap.set(_slashCommandKey(cmd.name), cmd);
+        (cmd.aliases || []).forEach((alias) => {
+          _slashCommandMap.set(_slashCommandKey(alias), cmd);
+        });
+      });
+      _slashCatalogLoaded = true;
+      _handleSlashInput();
+    } catch {
+      _slashCmds = [];
+      _slashCommandMap = new Map();
+      _slashCatalogLoaded = false;
+    }
+  }
+
   function _handleSlashInput() {
+    if (!_textarea) return;
     const val = _textarea.value;
+    if (val.startsWith('//')) { _closeSlashMenu(); return; }
     if (val.startsWith('/') && !val.includes(' ')) {
       const query = val.slice(1).toLowerCase();
-      _filteredCmds = _SLASH_CMDS.filter(c => c.cmd.slice(1).startsWith(query));
+      _filteredCmds = _slashCmds.filter(c => c.cmd.slice(1).startsWith(query));
       if (_filteredCmds.length > 0) {
         _slashOpen = true;
         _slashIdx = 0;
@@ -1934,12 +1975,15 @@ const ChatView = (() => {
     }
   }
 
-  function _selectSlashCmd(cmd) {
+  function _selectSlashCmd(cmd, args = '') {
     _closeSlashMenu();
     _textarea.value = '';
     _autoResizeTextarea();
 
-    switch (cmd.cmd) {
+    const action = cmd?.execution?.action || cmd.cmd || cmd.name;
+    const commandName = cmd?.cmd || cmd?.name || '';
+    switch (action) {
+      case 'new_chat':
       case '/new': {
         _unsubscribeSession();
         const key = _genKey();
@@ -1958,7 +2002,13 @@ const ChatView = (() => {
         UI.toast('New chat session in the current agent: ' + key, 'info');
         break;
       }
+      case 'reset_session':
+      case 'sessions.reset':
       case '/reset':
+        if (commandName === '/new') {
+          _selectSlashCmd({ ...cmd, execution: { action: 'new_chat' } }, args);
+          return;
+        }
         _rpc.call('sessions.reset', { key: _sessionKey })
           .then(() => {
             _messages = [];
@@ -1971,6 +2021,8 @@ const ChatView = (() => {
           })
           .catch((err) => UI.toast('Reset failed: ' + err.message, 'err'));
         break;
+      case 'compact_context':
+      case 'sessions.contextCompact':
       case '/compact':
         _rpc.call('sessions.contextCompact', { key: _sessionKey })
           .then((result) => {
@@ -1986,7 +2038,46 @@ const ChatView = (() => {
           })
           .catch((err) => UI.toast('Compact failed: ' + err.message, 'err'));
         break;
+      case 'usage_status':
+      case 'usage.status':
+      case '/usage': {
+        if (args.trim().toLowerCase() === 'page') {
+          UI.toast('Usage page is available from the sidebar', 'info');
+          break;
+        }
+        const usageMethod = args.trim().toLowerCase() === 'cost' ? 'usage.cost' : 'usage.status';
+        _rpc.call(usageMethod)
+          .then((result) => {
+            if (usageMethod === 'usage.cost') {
+              const total = result?.totalCostUsd ?? result?.total_cost_usd ?? result?.totals?.cost ?? result?.totals?.cost_usd;
+              UI.toast(total != null ? `Usage cost: $${Number(total).toFixed(6)}` : 'Usage cost unavailable', 'info');
+              return;
+            }
+            const totals = result?.totals || {};
+            const tokens = Number(result?.totalTokens ?? result?.total_tokens ?? totals.tokens ?? totals.total_tokens ?? totals.totalTokens ?? 0);
+            const cost = result?.totalCostUsd ?? result?.total_cost_usd ?? totals.cost ?? totals.cost_usd ?? totals.costUsd;
+            UI.toast(
+              `Usage: ${tokens.toLocaleString()} tokens` + (cost != null ? ` · $${Number(cost).toFixed(6)}` : ''),
+              'info'
+            );
+          })
+          .catch((err) => UI.toast('Usage failed: ' + err.message, 'err'));
+        break;
+      }
     }
+  }
+
+  async function _executeSlashCommand(text) {
+    if (!_slashCatalogLoaded) await _loadSlashCommands();
+    const [cmdText, ...rest] = text.trim().split(/\s+/);
+    const cmd = _slashCommandMap.get(_slashCommandKey(cmdText));
+    if (!cmd) {
+      _closeSlashMenu();
+      UI.toast('Unsupported command: ' + cmdText, 'warn', 2500);
+      return true;
+    }
+    _selectSlashCmd(cmd, rest.join(' '));
+    return true;
   }
 
   /* ── Session Message Subscription ───────────────────────────────────── */
@@ -2686,18 +2777,29 @@ const ChatView = (() => {
 
   /* ── Send Message ───────────────────────────────────────────────────── */
 
-  function _onSend() {
-    const text = _textarea.value.trim();
-    const hasPayload = text || _pendingAttachments.length > 0;
+  async function _onSend() {
+    let text = _textarea.value.trim();
+    let hasPayload = text || _pendingAttachments.length > 0;
+    let isLiteralSlash = false;
 
     if (_hasPendingAttachmentWork()) {
       UI.toast('Wait for file attachment processing to finish', 'warn', 2500);
       return;
     }
 
+    if (text.startsWith('//')) {
+      isLiteralSlash = true;
+      text = text.slice(1);
+      hasPayload = text || _pendingAttachments.length > 0;
+    }
+
     // While a turn is streaming, Send enqueues (Proposal C). Use ESC or the
     // Stop button to actually halt the current response.
     if (_isStreaming) {
+      if (!isLiteralSlash && text.startsWith('/')) {
+        UI.toast(`Wait for the current response before running ${text.split(/\s+/, 1)[0]}.`, 'warn', 2500);
+        return;
+      }
       if (!hasPayload) return; // empty + streaming = no-op
       if (_pendingQueue.length >= _MAX_PENDING) {
         UI.toast(
@@ -2722,17 +2824,12 @@ const ChatView = (() => {
       return;
     }
 
-    if (!hasPayload || !_sessionKey) return;
-
-    // Intercept slash commands
-    if (text.startsWith('/')) {
-      const cmdText = text.split(' ')[0].toLowerCase();
-      const match = _SLASH_CMDS.find(c => c.cmd === cmdText);
-      if (match) {
-        _selectSlashCmd(match);
-        return;
-      }
+    if (!isLiteralSlash && text.startsWith('/')) {
+      const handled = await _executeSlashCommand(text);
+      if (handled) return;
     }
+
+    if (!hasPayload || !_sessionKey) return;
 
     // Reset abort flag for new message
     _aborted = false;

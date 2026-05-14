@@ -580,14 +580,28 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         [s.session_key for s in sessions],
     )
 
+    # Batch transcript counts in one round-trip to avoid N+1 against
+    # count_transcript_entries. Storage layers that don't implement the batch
+    # method fall back gracefully to the legacy per-row path so old FakeStorage
+    # / channel-only test doubles keep working.
+    entry_counts: dict[str, int] = {}
+    batch_count = getattr(storage, "count_transcript_entries_batch", None)
+    if callable(batch_count):
+        try:
+            entry_counts = await batch_count([s.session_id for s in sessions])
+        except Exception:
+            log.warning("sessions.list.count_batch_failed", exc_info=True)
+            entry_counts = {}
+
     result = []
     for s in sessions:
         # Fetch entry count for metadata
-        entry_count = 0
-        try:
-            entry_count = await storage.count_transcript_entries(s.session_id)
-        except Exception:
-            pass
+        entry_count = entry_counts.get(s.session_id, 0)
+        if not entry_count and not entry_counts:
+            try:
+                entry_count = await storage.count_transcript_entries(s.session_id)
+            except Exception:
+                pass
 
         row = {
             "key": s.session_key,

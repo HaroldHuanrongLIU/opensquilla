@@ -14,7 +14,9 @@ const UsageView = (() => {
   let _chartMode = 'tokens';  // 'tokens' | 'cost'
   let _range = _normalizeRange(localStorage.getItem('opensquilla-usage-range'));
 
-  const CNY_RATE = 7.25;
+  // Single source of truth: window.SquillaConstants.CNY_RATE (constants.js).
+  // Captured into a local for hot paths so we don't dereference globals per row.
+  const CNY_RATE = (window.SquillaConstants && window.SquillaConstants.CNY_RATE) || 7.25;
 
   function render(el) {
     _el = el;
@@ -27,6 +29,9 @@ const UsageView = (() => {
             <span class="usage-stage__eyebrow">Control · Analytics</span>
             <h2 class="usage-stage__title">Usage</h2>
             <p class="usage-stage__subtitle">Tokens, cost, and per-model spend across every session.</p>
+            <!-- Surface the undated/legacy filter notice in the page toolbar instead of
+                 burying it in the chart legend — it applies to the whole view's filtered set. -->
+            <small class="usage-range-notice" id="usage-range-hint" aria-live="polite"></small>
           </div>
           <div class="usage-stage__actions">
             <div class="usage-currency" role="group" aria-label="Currency">
@@ -82,7 +87,6 @@ const UsageView = (() => {
             <span class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--input"></span>Input</span>
             <span class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--output"></span>Output</span>
             <span class="usage-chart__legend-spacer"></span>
-            <span class="usage-chart__caption" id="usage-range-hint"></span>
             <span class="usage-chart__caption" id="usage-chart-caption">Top sessions by total tokens</span>
           </div>
           <div id="usage-chart" class="usage-bars"></div>
@@ -137,6 +141,17 @@ const UsageView = (() => {
 
     const id = setInterval(_loadData, 60000);
     _intervals.push(id);
+
+    // Resume immediately when the tab becomes visible, instead of waiting up
+    // to 60s for the next interval. The polling early-return inside _loadData
+    // skips fetches while hidden; this listener pairs with that to make the
+    // pause/resume cycle feel instantaneous to the user.
+    if (typeof document !== 'undefined') {
+      _onVisibilityChange = () => {
+        if (document.visibilityState === 'visible') _loadData();
+      };
+      document.addEventListener('visibilitychange', _onVisibilityChange);
+    }
   }
 
   function destroy() {
@@ -144,6 +159,10 @@ const UsageView = (() => {
     _unsubs = [];
     _intervals.forEach(id => clearInterval(id));
     _intervals = [];
+    if (_onVisibilityChange && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', _onVisibilityChange);
+    }
+    _onVisibilityChange = null;
     _sessions = [];
     _el = null;
     _rpc = null;
@@ -214,7 +233,14 @@ const UsageView = (() => {
     return Date.now() - (Number(activeRange) * 86400000);
   }
 
+  // Per-render cache: _renderUsageSections sets this once at the top so that
+  // _renderMetrics / _renderTable / _renderChart / _renderModelBreakdown all
+  // share one filtered array instead of recomputing the filter 5 times.
+  // Cleared at the end of the render pass — outside that window we always
+  // recompute from _sessions to avoid stale reads.
+  let _visibleCache = null;
   function _visibleSessions() {
+    if (_visibleCache !== null) return _visibleCache;
     const cutoff = _rangeCutoffMs(_range);
     if (cutoff == null) return _sessions;
     return _sessions.filter(row => {
@@ -256,14 +282,20 @@ const UsageView = (() => {
   }
 
   function _costSourceClass(source) {
-    const known = ['provider_billed', 'opensquilla_estimate', 'mixed', 'unavailable', 'none'];
-    return known.includes(source) ? source : 'none';
+    const known = ['provider_billed', 'provider_billed_prorated', 'opensquilla_estimate', 'mixed', 'unavailable', 'none'];
+    if (known.includes(source)) return source;
+    return 'none';
   }
 
   function _costSourceLabel(source, ephemeral) {
     if (ephemeral) return 'Ephemeral';
     switch (source) {
       case 'provider_billed': return 'Actual';
+      // Same "Actual" label: the total is still the real billed amount; only
+      // the per-model split is estimated. The badge stays visually distinct
+      // via .usage-source--provider_billed_prorated (dashed border) and the
+      // tooltip explains the nuance.
+      case 'provider_billed_prorated': return 'Actual';
       case 'opensquilla_estimate': return 'Estimated';
       case 'mixed': return 'Mixed';
       case 'unavailable': return 'Unpriced';
@@ -271,11 +303,24 @@ const UsageView = (() => {
     }
   }
 
+  function _costSourceTooltip(source, ephemeral) {
+    if (ephemeral) return 'Ephemeral session — cost not yet persisted';
+    switch (source) {
+      case 'provider_billed': return 'Actual — cost billed by the provider';
+      case 'provider_billed_prorated': return 'Total is real billed; per-model split is estimated.';
+      case 'opensquilla_estimate': return 'Estimated — derived locally from token counts';
+      case 'mixed': return 'Mixed — partial billing data, rest estimated';
+      case 'unavailable': return 'Unpriced — no pricing table entry for this model';
+      default: return 'No cost recorded';
+    }
+  }
+
   function _renderCostSourceBadge(row) {
     const source = _costSource(row);
     const ephemeral = Boolean(_rowVal(row, 'cost_ephemeral', 'costEphemeral'));
     const label = _costSourceLabel(source, ephemeral);
-    return `<span class="usage-source usage-source--${_costSourceClass(source)}${ephemeral ? ' usage-source--ephemeral' : ''}" title="${_esc(source)}">${_esc(label)}</span>`;
+    const tooltip = _costSourceTooltip(source, ephemeral);
+    return `<span class="usage-source usage-source--${_costSourceClass(source)}${ephemeral ? ' usage-source--ephemeral' : ''}" title="${_esc(tooltip)}">${_esc(label)}</span>`;
   }
 
   function _sourceCompositionHint(rows) {
@@ -311,34 +356,45 @@ const UsageView = (() => {
 
   // Cache last data for currency re-render
   let _lastStatus = null;
-  let _lastCost = null;
+  // visibilitychange listener handle so destroy() can detach cleanly.
+  let _onVisibilityChange = null;
 
   async function _loadData() {
     if (!_el) return;
+    // Skip polling while the tab is hidden. The 60s interval still fires but
+    // costs ~nothing; we resume on visibilitychange via the listener below.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     await _rpc.waitForConnection();
 
-    Promise.all([
-      _rpc.call('usage.status'),
-      _rpc.call('usage.cost').catch(() => null)
-    ]).then(([status, cost]) => {
+    // usage.cost is a backend RPC still consumed by CLI / chat slash / HTTP /api/usage,
+    // but this view derives every visible metric from usage.status.sessions. Calling
+    // both used to double the polling cost for no rendering benefit.
+    _rpc.call('usage.status').then(status => {
       if (!_el) return;
       _lastStatus = status;
-      _lastCost = cost;
       _sessions = status.sessions || [];
       _renderUsageSections();
     }).catch(err => UI.toast('Failed to load usage: ' + err.message, 'err'));
   }
 
   function _renderUsageSections() {
-    _renderMetrics(_lastStatus, _lastCost);
-    _renderTable();
-    _renderChart();
-    _renderChartCaption();
-    _renderRangeHint();
-    _renderModelBreakdown();
+    // Cache the filtered session list once per render batch so the 5 leaf
+    // renderers don't each recompute it. See note on `_visibleCache` above.
+    _visibleCache = null;
+    _visibleCache = _visibleSessions();
+    try {
+      _renderMetrics(_lastStatus);
+      _renderTable();
+      _renderChart();
+      _renderChartCaption();
+      _renderRangeHint();
+      _renderModelBreakdown();
+    } finally {
+      _visibleCache = null;
+    }
   }
 
-  function _renderMetrics(status, cost) {
+  function _renderMetrics(status) {
     if (!_el) return;
 
     const visibleRows = _visibleSessions();
@@ -382,6 +438,12 @@ const UsageView = (() => {
         currencyHint = `≈ ¥${(Number(totalCostUsd) * CNY_RATE).toFixed(4)} CNY`;
       }
       costHintEl.textContent = [currencyHint, sourceHint].filter(Boolean).join(' · ');
+      // Disclose that CNY values use a baked-in rate so users don't mistake
+      // the estimate for live FX. Source: static/js/constants.js (CNY_RATE).
+      const rateSetAt = (window.SquillaConstants && window.SquillaConstants.CNY_RATE_SET_AT) || '';
+      costHintEl.title = `CNY values use baked-in rate ${CNY_RATE}` +
+        (rateSetAt ? ` (set ${rateSetAt}). ` : '. ') +
+        'Verify against current FX for accounting use.';
     }
   }
 
@@ -494,9 +556,18 @@ const UsageView = (() => {
   function _renderChartCaption() {
     const cap = _el && _el.querySelector('#usage-chart-caption');
     if (!cap) return;
-    cap.textContent = _chartMode === 'cost'
+    // N = pool the chart actually plots (visible + non-zero token rows). Without
+    // this, users with 25+ sessions couldn't tell that 5+ were silently dropped.
+    const pool = _visibleSessions().filter(r => {
+      const inp = Number(_rowVal(r, 'input_tokens', 'inputTokens') || 0);
+      const out = Number(_rowVal(r, 'output_tokens', 'outputTokens') || 0);
+      return (inp + out) > 0;
+    });
+    const shown = Math.min(20, pool.length);
+    const suffix = pool.length > shown ? ` · showing ${shown} of ${pool.length}` : '';
+    cap.textContent = (_chartMode === 'cost'
       ? 'Top sessions by cost'
-      : 'Top sessions by total tokens';
+      : 'Top sessions by total tokens') + suffix;
   }
 
   function _renderChart() {
@@ -600,7 +671,9 @@ const UsageView = (() => {
     const bd = row.modelBreakdown;
     const label = _modelDisplayLabel(row);
     const sessionKey = _rowVal(row, 'session', 'sessionKey', 'key') || '';
-    if (bd && bd.length > 0) {
+    // Only show the expand caret when there is meaningful breakdown to reveal.
+    // A single-model breakdown duplicates the visible row, so the caret was noise.
+    if (bd && bd.length > 1) {
       return `<button class="usage-model-toggle" data-session="${_esc(sessionKey)}">
         <span>${_esc(label)}</span><span class="usage-model-caret">▾</span>
       </button>`;
@@ -615,6 +688,13 @@ const UsageView = (() => {
       (acc, m) => acc + (Number(m.inputTokens) || 0) + (Number(m.outputTokens) || 0),
       0,
     );
+    // Detect when the backend pro-rated the per-model costs so we can surface
+    // a single disclosure at the top of the breakdown instead of one badge per
+    // row only (badges still appear per row for hover detail).
+    const anyProrated = bd.some(m => {
+      const src = String(m.costSource || m.cost_source || '');
+      return src === 'provider_billed_prorated';
+    });
 
     const container = document.createElement('div');
     container.className = 'usage-expand';
@@ -629,6 +709,15 @@ const UsageView = (() => {
       <span class="usage-expand__total">${totalTokens.toLocaleString()} tokens · ${_fmtCost(totalCost)}</span>
     `;
     container.appendChild(head);
+
+    if (anyProrated) {
+      const notice = document.createElement('div');
+      notice.className = 'usage-expand__notice';
+      notice.setAttribute('role', 'note');
+      notice.textContent =
+        'Per-model split is estimated; total is the actual billed amount.';
+      container.appendChild(notice);
+    }
 
     const list = document.createElement('div');
     list.className = 'usage-expand__list';
@@ -658,6 +747,7 @@ const UsageView = (() => {
         </div>
         <div class="usage-expand__tokens" role="cell">${tokens.toLocaleString()}</div>
         <div class="usage-expand__cost" role="cell">${_fmtCost(cost)}</div>
+        <div class="usage-expand__source" role="cell">${_renderCostSourceBadge(m)}</div>
       `;
       list.appendChild(rowEl);
     });
@@ -682,7 +772,9 @@ const UsageView = (() => {
         const expandTr = document.createElement('tr');
         expandTr.className = 'usage-expand-row';
         const td = document.createElement('td');
-        td.colSpan = 7;
+        // colSpan must equal the visible header column count (cols.length).
+        // Previously hardcoded 7 while header had 8 cols, leaving one cell unspanned.
+        td.colSpan = (typeof cols !== 'undefined' && cols.length) ? cols.length : 8;
         td.appendChild(_buildExpandedContent(row));
         expandTr.appendChild(td);
         tr.after(expandTr);
@@ -803,8 +895,10 @@ const UsageView = (() => {
       row.model || '',
     ]);
     const csv = [headers, ...rows].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+    // Filename embeds the baked-in CNY rate so the cost_cny column is
+    // self-describing if the file outlives the conversation it came from.
     const suffix = _range === 'all' ? 'all' : `${_range}d`;
-    _download(`opensquilla-usage-${suffix}.csv`, 'text/csv', csv);
+    _download(`opensquilla-usage-${suffix}-cny${CNY_RATE}.csv`, 'text/csv', csv);
   }
 
   function _download(filename, mime, content) {
