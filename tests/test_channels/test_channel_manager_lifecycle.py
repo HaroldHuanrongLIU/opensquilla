@@ -9,7 +9,7 @@ from opensquilla.channels.manager import ChannelManager
 
 class _FailingChannel:
     async def start(self) -> None:
-        raise RuntimeError("Install Feishu support with `opensquilla[feishu]`")
+        raise RuntimeError("Feishu adapter dependency missing — reinstall OpenSquilla")
 
 
 class _SlowChannel:
@@ -32,8 +32,10 @@ async def test_start_all_retains_start_exception_details():
     assert results == {"feishu": False}
     assert manager.start_errors()["feishu"] == {
         "error_type": "RuntimeError",
-        "error": "Install Feishu support with `opensquilla[feishu]`",
-        "exception": "RuntimeError('Install Feishu support with `opensquilla[feishu]`')",
+        "error": "Feishu adapter dependency missing — reinstall OpenSquilla",
+        "exception": (
+            "RuntimeError('Feishu adapter dependency missing — reinstall OpenSquilla')"
+        ),
     }
 
 

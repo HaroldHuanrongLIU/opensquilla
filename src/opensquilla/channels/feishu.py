@@ -160,9 +160,7 @@ def _import_lark_oapi() -> Any:
         import lark_oapi as lark  # type: ignore[import-not-found, import-untyped]
     except ImportError as exc:
         raise RuntimeError(
-            "Feishu websocket mode requires lark-oapi. Use the latest recommended "
-            "portable package, or install Feishu support with "
-            "`pip install 'opensquilla[feishu]'` / `uv sync --extra feishu`."
+            "Feishu adapter dependency missing — reinstall OpenSquilla"
         ) from exc
     return lark
 

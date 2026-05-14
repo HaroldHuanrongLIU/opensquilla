@@ -105,7 +105,7 @@ class _QQClientFallback:
     """
 
     async def start(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
-        raise RuntimeError("qq-botpy is not installed; install opensquilla[qq]")
+        raise RuntimeError("QQ adapter dependency missing — reinstall OpenSquilla")
 
     async def close(self) -> None:  # noqa: D401
         return None
