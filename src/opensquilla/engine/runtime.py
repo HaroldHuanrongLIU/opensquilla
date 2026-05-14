@@ -1995,6 +1995,37 @@ class TurnRunner:
                         event = replace(event, text=normalized_text)
                         done_event = event
                         yield TextDeltaEvent(text=notice_delta)
+                    contract = getattr(tool_context, "run_contract", None)
+                    if contract is not None and contract.required_artifacts:
+                        from opensquilla.run_contract import (
+                            EnforcementMode,
+                            artifact_missing_message,
+                            validate_required_artifacts,
+                        )
+
+                        validation = validate_required_artifacts(
+                            contract.required_artifacts,
+                            turn_artifacts,
+                        )
+                        turn.metadata["required_artifacts_result"] = {
+                            "ok": validation.ok,
+                            "missing": validation.missing,
+                        }
+                        if not validation.ok:
+                            message = artifact_missing_message(validation.missing)
+                            if contract.enforcement_mode is EnforcementMode.HARD:
+                                error_event = ErrorEvent(
+                                    message=message,
+                                    code="required_artifact_missing",
+                                )
+                                error_message = message
+                                pending_error_event = error_event
+                                done_event = None
+                                continue
+                            yield WarningEvent(
+                                code="required_artifact_missing",
+                                message=message,
+                            )
                     # Hallucination check: emit Warning BEFORE yielding Done
                     # so CLI/SDK consumers that stop reading on terminal events
                     # still see it.

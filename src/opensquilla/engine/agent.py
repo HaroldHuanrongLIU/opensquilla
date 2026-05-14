@@ -2739,6 +2739,7 @@ class Agent:
         )
 
         parent_session_key = self._session_key or "unknown"
+        parent_ctx = current_tool_context.get()
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -2754,6 +2755,8 @@ class Agent:
             channel_id=f"subagent:{parent_session_key}",
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
+            run_contract=parent_ctx.run_contract if parent_ctx is not None else None,
+            run_budget_state=parent_ctx.run_budget_state if parent_ctx is not None else None,
         )
 
         async def _subagent_tool_handler(tc: ToolCall) -> ToolResult:
