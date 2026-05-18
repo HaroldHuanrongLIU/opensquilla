@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -45,3 +46,75 @@ def test_compose_gateway_environment_has_openrouter_key() -> None:
         assert "OPENROUTER_API_KEY" in keys, (
             f"OPENROUTER_API_KEY missing from environment list: {env}"
         )
+
+
+def _load_dockerfile() -> str:
+    return (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+
+def test_dockerfile_gateway_port_matches_compose() -> None:
+    """Dockerfile's container gateway port must match compose's 18791.
+
+    Drift here — e.g. the Dockerfile keeping EXPOSE 18790 while compose
+    publishes 18791 — makes the documented `docker compose` path
+    unreachable.
+    """
+    dockerfile = _load_dockerfile()
+    compose = _load_compose()
+
+    ports = [str(p) for p in compose["services"]["gateway"]["ports"]]
+    assert any("18791:18791" in p for p in ports), (
+        f"compose.yaml must publish 18791:18791, got: {ports}"
+    )
+
+    assert "18790" not in dockerfile, (
+        "Dockerfile still references the stale 18790 gateway port; "
+        "it must use 18791 to match compose.yaml"
+    )
+    assert "OPENSQUILLA_GATEWAY_PORT=18791" in dockerfile
+    assert "EXPOSE 18791" in dockerfile
+    assert "http://127.0.0.1:18791/healthz" in dockerfile
+
+
+def test_compose_persists_state_via_named_volume() -> None:
+    """Gateway config and state must persist via a Docker named volume
+    mounted at the image's OPENSQUILLA_STATE_DIR.
+
+    The container runs as a non-root user, so a host bind mount to
+    /root/.opensquilla never receives anything the gateway writes — config
+    and state would silently vanish on every container recreate.
+    """
+    compose = _load_compose()
+    dockerfile = _load_dockerfile()
+
+    match = re.search(r"OPENSQUILLA_STATE_DIR=(\S+)", dockerfile)
+    assert match, "Dockerfile must pin OPENSQUILLA_STATE_DIR for a stable volume target"
+    state_dir = match.group(1)
+    assert state_dir.startswith("/"), (
+        f"OPENSQUILLA_STATE_DIR must be an absolute path, got: {state_dir!r}"
+    )
+
+    # This is a static shape test: it pins the Dockerfile/compose text, not a
+    # built image. The mkdir/chown assertions are coupled to the current
+    # command spelling — update them alongside any Dockerfile rewording.
+    # The image pre-creates the state root owned by the non-root user so a
+    # freshly initialized named volume inherits writable ownership.
+    assert f"mkdir -p {state_dir}" in dockerfile, (
+        f"Dockerfile must create the state root {state_dir}"
+    )
+    assert re.search(
+        rf"chown\b[^\n]*opensquilla:opensquilla[^\n]*{re.escape(state_dir)}", dockerfile
+    ), f"Dockerfile must chown {state_dir} to the non-root opensquilla user"
+
+    gateway_volumes = [str(v) for v in compose["services"]["gateway"]["volumes"]]
+    assert f"opensquilla-state:{state_dir}" in gateway_volumes, (
+        f"gateway must mount the 'opensquilla-state' named volume at {state_dir}, "
+        f"got: {gateway_volumes}"
+    )
+    assert not any("/root/" in v for v in gateway_volumes), (
+        "compose must not mount into /root — the container runs as a non-root user"
+    )
+
+    assert "opensquilla-state" in compose.get("volumes", {}), (
+        "compose must declare the top-level 'opensquilla-state' named volume"
+    )

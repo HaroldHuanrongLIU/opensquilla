@@ -10,23 +10,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- Cron: tool `schedule` parameter is now structured (`{kind, ...}`); backend
-  natural-language schedule parsing has been removed. CLI `--expression`
-  continues to accept a 5-field cron string via an RPC compatibility shim.
-
 ### Fixed
 
-## [0.2.0rc1] - 2026-05-17
+## [0.2.0rc1] - 2026-05-18
 
 ### Added
+
+- Planned for this preview, pending PR #29 before the tag: `opensquilla migrate`
+  imports existing OpenClaw/Hermes homes into OpenSquilla with dry-run previews,
+  explicit `--apply`, source auto-detection, migration reports, memory/persona
+  conflict handling, skill compatibility reporting, and MCP/channel config
+  mapping.
+- `opensquilla chat` is now an early usable interactive CLI chat surface with a
+  persistent terminal UI, streaming output, queued input, slash-mode discovery,
+  prompt/status chrome, tool-call feedback, inline approval handling, and
+  deterministic live prompt output.
+- Cron automation now spans CLI, WebUI, RPC, channel, and webhook surfaces:
+  structured schedule creation, timezone-aware cron/every/at schedules,
+  exact/jitter controls, manual runs, channel delivery, webhook delivery, and
+  failure destinations.
+- Feishu and Discord channel support now includes capability manifests, safer
+  DM/group policy metadata, native file/artifact paths, attachment ingestion,
+  Feishu websocket/webhook handling, Discord thread/group handling, and clearer
+  channel health/status reporting.
+- OpenSquilla can run as an inbound MCP server bridge for session workflows:
+  clients can list sessions, resolve/read conversation history, send messages,
+  and wait for session events through the gateway.
+- Generated artifact delivery is more complete across WebUI and channels,
+  including traceable generated-file delivery, recovered fallback delivery,
+  channel-safe artifact text, and Unicode-safe PDF report rendering.
+- Memory surfaces now separate curated memory from raw transcript search, recall
+  prior-session evidence, keep manual Dream runs on configured memory
+  workspaces, and let compaction continue when memory flush degrades.
+- Release/install support now includes tag-pinned preview URLs, reproducible
+  wheel/portable release guidance, source install scripts, Windows portable
+  hardening, ONNX/router recovery messaging, and Docker/compose alignment on
+  the gateway port.
 
 ### Changed
 
 - Release installation docs now use version-pinned `0.2.0rc1` asset URLs for
   preview installs and reserve `/releases/latest/download/` aliases for stable
   releases.
+- Cron tool calls now require structured schedule input (`{kind, ...}`) instead
+  of backend natural-language schedule parsing. CLI cron flags still accept
+  standard user-facing forms such as `--cron`, `--every`, `--at`, and
+  `--expression` through RPC compatibility paths.
+- Tool dispatch now runs through a policy pipeline with side-effect-aware
+  concurrency: safe/read-only tools can batch, while mutating or
+  side-effecting tools stay serialized, keyed, or capped.
+- Long-running agent turns now use staged `TurnRunner` execution, provider
+  request-budget compaction, prompt-cache anchor preservation, bounded
+  tool-result storage, approval-aware retry handling, and recovery paths for
+  malformed or non-executable tool calls.
+- Channel adapters now declare normalized capability and error-taxonomy
+  metadata so unsupported, degraded, retryable, and fatal channel behavior is
+  surfaced more consistently.
+- WebUI chat, sessions, usage, setup, cron, and search surfaces now share more
+  runtime-backed state for recency ordering, per-turn token metrics, provider
+  badges, setup form behavior, and session cancellation/readback.
+- The default gateway/release documentation now centers on port `18791`, and
+  preview release URLs are tag-pinned until a stable release can use latest
+  aliases.
 
 ### Fixed
+
+- Failed or aborted turns are kept out of later provider context, reducing
+  cascading failures after a bad turn.
+- Approval-gated tool retries wait for operator decisions instead of exposing
+  pending approval state as ordinary model-visible tool output.
+- Provider-context tool markers are protected from becoming executable tool
+  state.
+- High-volume tool and chat turns recover more reliably from request-tail bloat,
+  current-turn tool overflow, and provider payload budget pressure.
+- Channel replies avoid leaking provider compaction markers, and channel cron
+  delivery now reports failures explicitly.
+- WebUI reliability fixes cover recency ordering, table boundaries, mobile and
+  composer layout, duplicate visible toasts, setup form resilience, search
+  provider badges, and session cancellation counters.
+- Generated files that were omitted from normal delivery can be recovered
+  through the artifact fallback path.
+- Feishu-delivered PDF reports now render Unicode text instead of black or
+  placeholder glyph blocks.
 
 ## [0.1.0rc1] - 2026-05-12
 

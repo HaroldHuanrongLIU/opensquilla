@@ -1,3 +1,5 @@
+> ⚠️ **NOTE:** Installer links and download URLs in this README point to the upcoming **v0.2.0** release and are not live yet.
+
 # OpenSquilla — Token-Efficient AI Agent
 
 <p align="center">
@@ -5,32 +7,56 @@
 </p>
 
 <p align="center">
+  <b>Same budget, more capability, better results.</b><br>
+  A microkernel AI agent for your CLI, Web UI, and chat channels.
+</p>
+
+<p align="center">
+  <a href="https://github.com/opensquilla/opensquilla/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/opensquilla/opensquilla/ci.yml?style=for-the-badge" alt="CI"></a>
   <a href="https://opensquilla.ai/"><img src="https://img.shields.io/badge/website-opensquilla.ai-blue?style=for-the-badge" alt="Website"></a>
   <a href="https://github.com/opensquilla/opensquilla/releases"><img src="https://img.shields.io/github/v/release/opensquilla/opensquilla?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge" alt="Apache 2.0 License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12%2B-blue?style=for-the-badge" alt="Python 3.12+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge" alt="Apache 2.0 License"></a>
 </p>
+
+---
 
 ## Overview
 
-OpenSquilla is a token-efficient, microkernel AI agent — same budget,
-more capability, better results. It combines smart routing, persistent
-memory, a secure sandbox, built-in web search, and local embeddings
-under a single model loop.
-Every entry point — Web UI, CLI, and chat channels — runs through a
-shared `TurnRunner`, and a pluggable provider layer lets it speak to
+OpenSquilla is a token-efficient, microkernel AI agent. A local model
+router sends each turn to the cheapest model that can handle it, while
+persistent memory, a layered sandbox, built-in web search, and
+on-device embeddings round out a single shared turn loop.
+
+Every entry point — Web UI, CLI, and chat channels — runs through that
+same loop, so tool dispatch, retries, and decision logging behave
+identically everywhere. A pluggable provider layer speaks to
 OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
-and roughly twenty other LLM providers without changes to your code or
-config schema.
+and 20+ other LLM providers with no change to your code or config
+schema.
+
+OpenSquilla is in active preview (0.2.0 Preview 1).
+
+---
 
 ## Installation
 
-OpenSquilla runs on Windows, macOS, and Linux. Pick the install path that
-matches your use case; per-path prerequisites are summarized below.
+OpenSquilla runs on Windows, macOS, and Linux. Pick the path that
+matches your use case.
+
+Windows portable and Quick terminal install give you a prebuilt
+**release** — no Git required. The other two — Install from source
+and Develop from source — build **from a Git checkout** (`git clone` +
+Git LFS).
+
+Preview install commands use version-pinned download URLs; stable
+releases can use the `/releases/latest/download/` aliases once `0.2.0`
+is published.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
 | [Windows portable](#windows-portable-no-python) | Windows users | No Python toolchain; one-zip launch |
-| [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Stable release wheel from a terminal |
+| [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Release wheel from a terminal |
 | [Install from source](#install-from-source) | Users tracking `main` | Run from a checkout, not edit it |
 | [Develop from source](#develop-from-source) | Contributors | Edit, test, or debug the source |
 
@@ -41,13 +67,20 @@ matches your use case; per-path prerequisites are summarized below.
 | Python 3.12+ | bundled | via `uv` | via `uv` or system | via `uv` |
 | Git + Git LFS | — | — | required | required |
 | `uv` | — | installed if missing | recommended | required |
-| Windows VC++ runtime | auto-installed | recommended | auto-installed | recommended |
 
-`SquillaRouter` is included by default in every path. Set
-`OPENSQUILLA_INSTALL_PROFILE=core` (or pass `--router disabled` at onboard)
-only when you intentionally want to skip it. On Windows, see
-[Troubleshooting → Visual C++ runtime](#windows-visual-c-runtime) if
-startup prints `DLL load failed`.
+The default `recommended` profile installs **SquillaRouter** —
+OpenSquilla's on-device model router — and its model assets;
+`OPENSQUILLA_INSTALL_PROFILE=core` omits those dependencies. The
+separate `--router disabled` onboarding flag keeps the dependencies
+installed but turns the router off at runtime.
+
+On Windows, SquillaRouter's bundled ONNX runtime also needs the Visual
+C++ runtime. The Windows portable launcher and the from-source
+PowerShell installer install it automatically via `winget`; the
+**Quick terminal install** (`uv tool install`) path does not — if
+startup logs a `DLL load failed` error, install it manually (see
+[Troubleshooting](#troubleshooting)). OpenSquilla keeps running with
+direct single-model routing until it is installed.
 
 Install links: [Git](https://git-scm.com/downloads) ·
 [Git LFS](https://git-lfs.com/) ·
@@ -55,25 +88,21 @@ Install links: [Git](https://git-scm.com/downloads) ·
 
 ### Windows portable (no Python)
 
-The fastest path on Windows. The zip ships a bundled CPython runtime, so
-no separate Python install is required.
-
-OpenSquilla 0.2.0 Preview 1 is distributed as a GitHub pre-release.
-Preview install commands use version-pinned download URLs. Stable releases
-can use `/releases/latest/download/` aliases after `0.2.0` is published.
+The fastest path on Windows — the zip ships a bundled CPython runtime,
+so no separate Python install is required.
 
 1. Download the 0.2.0 Preview 1 portable zip:
    <https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/OpenSquilla-0.2.0rc1-windows-x64-py312-recommended-portable.zip>
-2. Extract it to Downloads, Documents, or another writable folder.
-3. Right-click `Start OpenSquilla.cmd` → **Run as administrator**.
-4. Complete onboarding, then open <http://127.0.0.1:18791/control/>.
+2. Extract it to a writable folder such as Downloads or Documents,
+   then right-click `Start OpenSquilla.cmd` and choose **Run as
+   administrator**.
+3. Complete the first-run setup, then open <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> OpenSquilla preview builds are unsigned. Administrator launch is
-> the supported path. If SmartScreen appears, choose **More info** →
-> **Run anyway**. If Smart App Control or enterprise policy blocks the
-> unsigned app, use [Quick terminal install](#quick-terminal-install) instead.
-> References: [SmartScreen][ms-smartscreen] · [Smart App Control][ms-sac].
+> Preview builds are unsigned; administrator launch is the supported
+> path. If SmartScreen appears, choose **More info** → **Run anyway**.
+> If Smart App Control or enterprise policy blocks the unsigned app,
+> use [Quick terminal install](#quick-terminal-install) instead.
 
 <details>
 <summary>Advanced portable usage</summary>
@@ -87,8 +116,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 If `OPENROUTER_API_KEY` is set and no local config exists, the launcher
-writes an env-reference config and starts the gateway without prompting.
-If unset, the onboarding wizard lets you pick any supported provider.
+writes an env-reference config and starts the gateway without
+prompting. If unset, the onboarding wizard lets you pick any supported
+provider.
 
 The portable zip does not install a global `opensquilla` command. For a
 terminal where `opensquilla …` works, run `OpenSquilla Shell.cmd`, or
@@ -100,30 +130,43 @@ call the bundled launcher directly:
 
 </details>
 
-[ms-smartscreen]: https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/
-[ms-sac]: https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview
-
 ### Quick terminal install
 
-Terminal install on Windows, macOS, or Linux. The installer bootstraps
-`uv` if needed, then installs the version-pinned release wheel. It does
-not run onboarding or start the gateway. This path is release-only; use
-[Install from source](#install-from-source) for `main`, development
-branches, or local checkouts.
+The recommended path on Windows, macOS, and Linux. `uv` installs
+OpenSquilla into its own isolated environment and manages its own
+Python — no system Python required. This path installs published
+releases only; for `main`, development branches, or local checkouts
+use [Install from source](#install-from-source).
 
-**Linux / macOS**
+**1. Install `uv`** — skip if `uv --version` already works.
+
+Linux / macOS:
 
 ```sh
-curl -LsSf https://opensquilla.ai/install.sh | bash -s -- --version v0.2.0rc1
+curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
 ```
 
-**Windows PowerShell**
+Windows PowerShell:
 
 ```powershell
-$env:OPENSQUILLA_VERSION="v0.2.0rc1"; irm https://opensquilla.ai/install.ps1 | iex
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+$env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-After installation:
+**2. Install OpenSquilla** — the same command on every platform.
+
+```sh
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/opensquilla-0.2.0rc1-py3-none-any.whl"
+```
+
+This installs the OpenSquilla wheel from the release URL, then lets
+`uv` download the dependencies declared by the selected extras. The
+default `recommended` extra includes SquillaRouter runtime dependencies
+such as ONNX Runtime, LightGBM, NumPy, and tokenizers, so a first install
+needs network access unless those wheels are already cached.
+
+**3. Configure and run.**
 
 ```sh
 opensquilla onboard
@@ -131,45 +174,12 @@ opensquilla gateway run
 ```
 
 > [!NOTE]
-> If `opensquilla` is not found immediately after a fresh `uv` install,
-> open a new terminal. On Linux/macOS you can also run
-> `. "$HOME/.local/bin/env"`; on Windows PowerShell you can run
-> `$env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path`.
+> If `opensquilla` is not found right after a fresh `uv` install, open
+> a new terminal, or re-run the PATH line from step 1.
 
-### Manual uv install
-
-Use this path if you prefer to audit every command instead of running a
-remote installer script. `uv` manages Python automatically — no system
-Python required.
-
-**Linux / macOS**
-
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-. "$HOME/.local/bin/env"
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/opensquilla-0.2.0rc1-py3-none-any.whl"
-```
-
-**Windows PowerShell**
-
-```powershell
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-$env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/opensquilla-0.2.0rc1-py3-none-any.whl"
-```
-
-Then run:
-
-```sh
-opensquilla onboard
-opensquilla gateway run
-```
-
-For stable releases, the wheel can use the stable alias:
+Once `0.2.0` is published as a stable release, the wheel URL can use
+the version-independent alias
 `https://github.com/opensquilla/opensquilla/releases/latest/download/opensquilla-latest-py3-none-any.whl`.
-
-After install, see [Configuration](#configuration) for provider setup
-and runtime options.
 
 ### Install from source
 
@@ -188,9 +198,6 @@ modify the code.
    git lfs pull --include="src/opensquilla/squilla_router/models/**"
    ```
 
-   `git lfs install` and the LFS pull are both idempotent — safe to
-   re-run.
-
 2. **Run the installer**
 
    **macOS / Linux**
@@ -205,20 +212,19 @@ modify the code.
    powershell -ExecutionPolicy Bypass -File .\scripts\install_source.ps1
    ```
 
-   PowerShell 7 users can substitute `pwsh` for `powershell`. The
-   script installs `.[recommended]` (SquillaRouter + memory + local
+   The script installs `.[recommended]` (SquillaRouter + memory + local
    models) into a dedicated user environment via `uv tool install`,
    falling back to `python -m pip install --user` when `uv` is
    unavailable. Open a new terminal if `opensquilla` is not on `PATH`
    after install.
 
-3. **(optional) Install advanced extras** into the same command. Most
-   channel adapters work directly from the base install — Feishu,
-   Telegram, DingTalk, QQ, WeCom, Slack, and Discord need no extra
-   step. The available opt-in extras are:
+3. **(optional) Install advanced extras.** Most channels — Feishu,
+   Telegram, DingTalk, QQ, WeCom, Slack, and Discord — work from the
+   base install. The opt-in extras are:
 
    - `matrix` — Matrix channel (pulls in `matrix-nio`)
-   - `matrix-e2e` — Matrix channel with end-to-end encryption (pulls in `matrix-nio[e2e]`; requires libolm)
+   - `matrix-e2e` — Matrix channel with end-to-end encryption (requires
+     libolm)
    - `document-extras` — PDF generation via WeasyPrint
 
    ```sh
@@ -232,34 +238,9 @@ modify the code.
 4. **Configure and run** — see [Configuration](#configuration).
 
 <details>
-<summary>Installer environment variables and PATH checks</summary>
+<summary>Install from source — terminal prerequisites and installer options</summary>
 
-```sh
-OPENSQUILLA_INSTALL_PROFILE=core   bash scripts/install_source.sh   # minimal runtime, no SquillaRouter
-OPENSQUILLA_INSTALL_DRY_RUN=1      bash scripts/install_source.sh   # print the plan only
-```
-
-```powershell
-$env:OPENSQUILLA_INSTALL_PROFILE="core"
-$env:OPENSQUILLA_INSTALL_DRY_RUN="1"
-```
-
-To verify which `opensquilla` your shell will run:
-
-```sh
-command -v opensquilla    # macOS / Linux
-where.exe opensquilla     # Windows
-```
-
-If `opensquilla` is not on `PATH`, run `uv tool update-shell` (uv
-install) or add the Python user-scripts directory to `PATH` (pip
-fallback). After reinstalling from a local checkout, restart the
-gateway so it loads the updated package.
-
-</details>
-
-<details>
-<summary>Install prerequisites from a terminal</summary>
+**Install prerequisites (Git, Git LFS, uv) from a terminal**
 
 Windows PowerShell:
 
@@ -270,7 +251,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | ie
 git lfs install
 ```
 
-macOS (Homebrew, optional — see <https://brew.sh/>):
+macOS (Homebrew):
 
 ```sh
 brew install git git-lfs uv
@@ -285,23 +266,22 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git lfs install
 ```
 
-Fedora:
+On Fedora use `sudo dnf install -y git git-lfs`; on Arch use
+`sudo pacman -S --needed git git-lfs`; then install `uv` with the
+`curl` command above. PATH changes from these installers apply to new
+terminal sessions.
+
+**Installer environment variables and PATH checks**
 
 ```sh
-sudo dnf install -y git git-lfs
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git lfs install
+OPENSQUILLA_INSTALL_PROFILE=core   bash scripts/install_source.sh   # minimal runtime, no SquillaRouter
+OPENSQUILLA_INSTALL_DRY_RUN=1      bash scripts/install_source.sh   # print the plan only
 ```
 
-Arch:
-
-```sh
-sudo pacman -S --needed git git-lfs
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git lfs install
-```
-
-PATH changes from these installers apply to new terminal sessions.
+Verify which `opensquilla` your shell runs with `command -v
+opensquilla` (macOS/Linux) or `where.exe opensquilla` (Windows). If it
+is not on `PATH`, run `uv tool update-shell`. After reinstalling from a
+local checkout, restart the gateway so it loads the updated package.
 
 </details>
 
@@ -313,17 +293,16 @@ Unlike [Install from source](#install-from-source), this path requires
 against the live source tree.
 
 ```sh
-uv sync --extra recommended
+uv sync --extra recommended --extra dev
 uv run opensquilla --help
 ```
 
-The `recommended` extra includes SquillaRouter for development too.
-Use `uv sync` without `--extra recommended` only when intentionally
-testing a minimal environment. Install additional extras into the same
-environment you run:
+The `recommended` extra includes SquillaRouter for development too;
+the `dev` extra installs the test, lint, and typecheck tools. Install
+additional extras into the same environment you run:
 
 ```sh
-uv sync --extra recommended --extra matrix
+uv sync --extra recommended --extra dev --extra matrix
 uv run opensquilla channels status matrix --json
 ```
 
@@ -332,35 +311,29 @@ In this mode, prefix every `opensquilla` command in
 development checkout through a user-local `opensquilla` command — that
 command runs in a different Python environment.
 
+---
+
 ## Configuration
 
-### First-run config
+### First-run setup
 
-`opensquilla onboard` is the human first-run setup command. It writes
+`opensquilla onboard` is the interactive first-run wizard. It writes
 the active config file and keeps provider secrets in environment
-variables when you pass `--api-key-env`. `opensquilla onboard
---if-needed` is the idempotent entrypoint for repeatable scripts and
-already-configured users; it skips only when a real config file exists
-and the required provider setup is complete. Environment variables are
-treated as candidate inputs until the config references them. The
-router defaults to `recommended`, which enables SquillaRouter on
-supported providers; pass `--router disabled` for direct single-model
-routing, or `--router openrouter-mix` to keep the built-in OpenRouter
-mixed-model routes.
-
-Useful invocations:
+variables when you pass `--api-key-env`. The router defaults to
+`recommended` (SquillaRouter on supported providers); pass
+`--router disabled` for direct single-model routing.
 
 ```sh
 opensquilla onboard                # full interactive wizard
-opensquilla onboard --if-needed    # idempotent: script and repeat-install guard
-opensquilla onboard --minimal      # provider only, skip channels and search
+opensquilla onboard --if-needed    # idempotent: safe for scripts and re-installs
+opensquilla onboard --minimal      # provider only; skip channels and search
 ```
 
-In SSH, CI, or any environment without a TTY, the interactive flow
-exits with code 2. Use the non-interactive form — keep the secret in
-the environment and pass its **name**, not its value:
+In SSH, CI, or any environment without a TTY, use the non-interactive
+form — keep the secret in the environment and pass its **name**, not
+its value:
 
-**macOS / Linux**
+**Linux / macOS**
 
 ```sh
 export OPENROUTER_API_KEY="sk-..."
@@ -374,66 +347,27 @@ $env:OPENROUTER_API_KEY="sk-..."
 opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
 ```
 
-To persist the key on macOS or Linux, add the same `export` line to
-your shell profile. On Windows, use `setx OPENROUTER_API_KEY "sk-..."`
-and reopen PowerShell. OpenRouter is only an example; substitute any
-supported provider and its API-key variable.
+OpenRouter is only an example — substitute any supported provider and
+its API-key variable.
 
-> [!NOTE]
-> On Windows, if the bundled router cannot initialize `onnxruntime`,
-> OpenSquilla keeps running with a safe direct-route fallback. See
-> [Troubleshooting → Visual C++ runtime](#windows-visual-c-runtime) to
-> restore the bundled router.
-
-**(optional)** Re-configure one section later without redoing the
-whole wizard:
+Re-configure one section later without redoing the whole wizard (these
+examples assume the relevant API key is already in the environment):
 
 ```sh
-opensquilla configure provider --provider openai --model gpt-4o
+opensquilla configure provider --provider openai --model gpt-4o --api-key-env OPENAI_API_KEY
 opensquilla configure router --router recommended
-opensquilla configure search   --search-provider brave
-opensquilla configure image-generation --image-provider openrouter --api-key-env OPENROUTER_API_KEY
-opensquilla configure channels                # interactive section
-opensquilla configure channels --channel-type feishu --name feishu-main \
-  --field app_id=cli_... --field app_secret=...
+opensquilla configure search   --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure channels
 ```
 
 Sections: `provider`, `router`, `channels`, `search`,
-`image-generation`, `memory-embedding`. The Web UI also exposes a
-setup flow at `/control/setup` for provider, router tiers, optional
-channels, and extras. Prefer `opensquilla configure <section>` over
-provider-specific aliases for later edits.
-
-Messaging-channel saves are config changes, not runtime-connectivity
-proof. Restart the gateway after channel edits, then verify the live
-adapter state:
-
-```sh
-opensquilla gateway restart
-opensquilla channels status <name> --json
-```
-
-Treat a channel as connected only when the status payload reports
-`enabled=true`, `configured=true`, and `connected=true`. Feishu
-defaults to websocket mode and does not need a public URL in that
-mode; Feishu webhook mode, Slack, and WeCom require a public,
-provider-reachable URL.
-
-The same JSON status payload also includes two support surfaces.
-`capability_profile` covers transport-level facts such as group chat,
-mentions, native file upload, replies, threads, cards, and reactions.
-`platform_manifest` covers provider-level boundaries such as files,
-attachments, docs, drive, wiki, permissions, and scope diagnostics.
-Unsupported or config-required rows are intentional: they prevent the
-product from claiming Feishu-style doc/wiki/drive behavior on
-providers whose adapter or platform does not expose that surface yet.
-Real tenant smoke tests remain opt-in and credential-gated.
+`image-generation`, `memory-embedding`. The Web UI exposes the same
+flow at `/control/setup`.
 
 **Config load order:** `OPENSQUILLA_GATEWAY_CONFIG_PATH` →
 `./opensquilla.toml` → `~/.opensquilla/config.toml` → built-in
-defaults. Onboarding writes the file at the path the runtime will
-read; environment values for individual secrets always win over file
-values.
+defaults. Environment values for individual secrets always win over
+file values.
 
 ### Run
 
@@ -445,80 +379,117 @@ opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
 Open the Web UI at <http://127.0.0.1:18791/control/> and check health
-with `curl http://127.0.0.1:18791/health`. Press `Ctrl+C` to stop the
+with `curl http://127.0.0.1:18791/health`. Press `Ctrl+C` to stop a
 foreground gateway.
 
-### Public network binding (optional)
+Other command groups include `sessions`, `skills`, `memory`, `cron`,
+`channels`, `providers`, `models`, and `cost`. Run `opensquilla --help`
+or `opensquilla <group> --help` for details.
 
-To make the Web UI reachable from another machine, bind the gateway to
-all interfaces and use the host's public IP address:
+<details>
+<summary>Advanced configuration — verify a channel, public network binding, Docker</summary>
+
+**Connect and verify a messaging channel**
+
+Channel saves are config changes, not runtime-connectivity proof.
+Restart the gateway after channel edits, then verify the live channel:
+
+```sh
+opensquilla gateway restart
+opensquilla channels status <name> --json
+```
+
+Treat a channel as connected only when the status payload reports
+`enabled=true`, `configured=true`, and `connected=true`. Feishu
+defaults to websocket mode and Telegram to polling — neither needs a
+public URL. Feishu webhook mode, Telegram webhook mode, Slack, and
+WeCom require a public, provider-reachable URL.
+
+**Public network binding**
+
+To reach the Web UI from another machine, bind the gateway to all
+interfaces and use the host's public IP:
 
 ```sh
 opensquilla gateway run --listen 0.0.0.0 --port 18791
-# or, for a background process:
-opensquilla gateway start --listen 0.0.0.0 --port 18791 --json
 ```
 
-Then open `http://<public-ip>:18791/control/` and verify the public
-health endpoint:
+Public access also requires the host firewall or cloud security group
+to allow inbound TCP on that port. Do not expose the gateway with
+`[auth] mode = "none"` — configure token auth before binding to
+`0.0.0.0`.
+
+**Docker**
+
+The compose path runs an `opensquilla:local` image you build yourself.
+Build it from a source checkout with the Git LFS router assets pulled
+(see [Install from source](#install-from-source) for the clone and
+`git lfs pull`):
 
 ```sh
-curl http://<public-ip>:18791/health
+docker build -t opensquilla:local .
 ```
 
-If another gateway is already bound to `18791`, stop it first or
-choose a different `--port`. Public access also requires the host
-firewall or cloud security group to allow inbound TCP on that port.
-Do not expose the gateway publicly with `[auth] mode = "none"`;
-configure token auth before binding to `0.0.0.0`.
+`./start.sh` (or `start.ps1` on Windows) then runs `docker compose
+up -d` and tails the gateway logs. Docker avoids a host Python
+toolchain — not the local image build.
 
-### Docker and portable paths (optional)
+</details>
 
-`./start.sh` (or `start.ps1` on Windows) wraps `docker compose up -d`
-and tails the gateway logs — convenient if you do not want a Python
-toolchain on the host. Windows release zips that bundle a CPython
-runtime are produced by the **Windows Release Assets** workflow;
-portable users extract the zip and run its bundled launcher without a
-system Python install.
+Provider tiers, sandbox tuning, image generation, and concurrency
+settings live in `opensquilla.toml.example`.
 
-### Further tuning
+---
 
-Provider-specific config, tier profiles, sandbox tuning, image
-generation, and concurrency settings are managed through
-`opensquilla onboard`, `opensquilla configure`, and
-`opensquilla.toml.example`.
+## What's New in 0.2.0 Preview 1
 
-## Troubleshooting
+This preview expands OpenSquilla across migration, CLI chat, channels,
+scheduling, and long-running tool work:
 
-### Windows: Visual C++ runtime
+- **Migration path from existing agent homes** — planned for this preview via
+  PR #29: `opensquilla migrate` previews and applies imports from existing
+  OpenClaw/Hermes homes, including memory, persona files, skills, MCP/channel
+  config, and migration reports.
+- **Usable chat CLI** — `opensquilla chat` now has a persistent terminal UI,
+  streaming output, queued input, slash-mode discovery, tool/status strips, and
+  more deterministic live prompt behavior.
+- **Cross-surface cron automation** — cron jobs now cover structured schedules,
+  timezone-aware exact/every/cron runs, channel or webhook delivery, failure
+  destinations, manual runs, and WebUI/CLI/RPC parity.
+- **Better Feishu and Discord channels** — channel adapters expose clearer
+  capability metadata, safer DM/group handling, native file and artifact paths,
+  and improved attachment/thread behavior while privileged actions stay scoped.
+- **Sturdier long-running turns** — failed turns are kept out of provider
+  replay, malformed tool calls are handled more safely, and approval-gated
+  retries wait for operator decisions.
+- **Smarter context and tool budgeting** — provider-budget compaction, prompt
+  cache preservation, bounded tool results, and side-effect-aware concurrency
+  make large tool-heavy sessions more predictable.
+- **Web UI and release polish** — recency ordering, table layout, mobile
+  controls, duplicate notifications, setup forms, release URLs, and install
+  paths are tightened for the preview.
 
-If startup logs `DLL load failed while importing
-onnxruntime_pybind11_state`, OpenSquilla keeps running with a safe
-router fallback, but the bundled SquillaRouter runtime is inactive
-until the Visual C++ Redistributable for Visual Studio 2015–2022
-(x64) is installed.
+Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
+[release notes](https://opensquilla.ai/news/).
 
-The Windows installers attempt to install the redistributable via `winget`.
-If that fails or `winget` is not present, install it manually and
-restart PowerShell: <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
+---
 
-To keep a first install quiet and direct while the runtime is being
-fixed:
+## Key Features
 
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router disabled --minimal
-opensquilla gateway run
-```
+| Capability | What it does |
+| --- | --- |
+| **Token-efficient routing** | `SquillaRouter` — a local LightGBM + ONNX classifier in the `recommended` extra — scores each turn on length, language, code, keywords, and semantic embeddings, then routes it across four tiers (T0–T3) to the cheapest capable model. Classification runs on-device; your prompt never leaves the machine to make that decision. |
+| **Adaptive reasoning and prompts** | OpenSquilla requests extended reasoning only for turns the router scores as complex, and the system prompt scales with task complexity — lightweight for trivial turns, full instructions for complex ones. |
+| **20+ LLM providers** | The provider registry targets 20+ LLM backends — OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu, SiliconFlow, vLLM, LM Studio, and more, with primary-plus-fallback selection; first-run onboarding exposes the verified subset. |
+| **On-demand skills and MCP** | 15 bundled skills (coding, GitHub, cron, pptx/docx/xlsx/pdf, summarization, tmux, weather, and more) load only when the task needs them. OpenSquilla is an MCP client, and can also run as an MCP server — `opensquilla mcp-server run` needs the `mcp` extra (install `opensquilla[recommended,mcp]`). Skills can be authored, installed, and published from the CLI. |
+| **Persistent local memory** | A curated `MEMORY.md` plus dated Markdown notes, searched with SQLite full-text keyword search and `sqlite-vec` semantic recall. Embeddings run on-device via bundled ONNX, or swap to OpenAI/Ollama. Optional exponential decay and opt-in "dream" consolidation are available. |
+| **Layered security sandbox** | Three policy tiers (Standard / Strict / Locked) on a permission matrix. Bubblewrap isolates code execution on Linux; the macOS Seatbelt backend currently renders profiles only (execution pending), and there is no sandbox backend on Windows yet. A denial ledger auto-pauses autonomous runs after repeated denials, rejected outputs are purged, and skill metadata and tool results are XML-escaped against prompt injection. |
+| **Built-in tools** | File read/write/edit, shell and background processes, git, web search (Brave or DuckDuckGo) and fetch behind an SSRF guard, spreadsheet/PPTX/PDF authoring, image generation, and text-to-speech. |
+| **Unified gateway** | A Starlette ASGI server on `127.0.0.1:18791` with WebSocket RPC and an embedded control console (`/control/`). Web UI, CLI, and channels for Terminal, WebSocket, Slack, Telegram, Discord, Feishu, DingTalk, WeCom, Matrix, and QQ all share one `TurnRunner`. |
+| **Durable sessions, subagents, and scheduling** | SQLite-backed session, transcript, and replay storage with per-agent workspaces. Agents spawn depth-bounded subagents, and a `SchedulerEngine` with an in-tree cron parser runs recurring jobs via `opensquilla cron`. |
+| **Operator controls** | Human-in-the-loop approvals can pause sensitive tool calls for a decision; per-turn and per-session token and cost rollups (`opensquilla cost`) and diagnostics are available from the CLI and Web UI. |
 
-After installing the redistributable and reopening PowerShell, restore
-the recommended router (re-set `OPENROUTER_API_KEY` in the new session
-if you only used `$env:`):
-
-```powershell
-opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router recommended
-opensquilla gateway restart
-```
+---
 
 ## Benchmark Results
 
@@ -529,71 +500,53 @@ PinchBench 1.2.1 average results across 25 tasks:
 | OpenSquilla | Model router (Opus4.7, GLM5.1, DS4 Flash) | 0.9251 | 1,721,328 | 61,475 | $0.688 |
 | OpenClaw | Claude Opus 4.7 | 0.9255 | 3,066,243 | 50,890 | $6.233 |
 
-## Key Features
+Score is the mean across the 25 tasks; token counts and cost are
+totals for the full run.
 
-- **Token-efficient routing** — local `SquillaRouter` (LightGBM + ONNX
-  BGE classifier, `recommended` extra) routes each turn across four
-  tiers (T0–T3). Hybrid features (length, language, code blocks,
-  keywords + semantic embeddings) pick the cheapest model that can
-  handle the turn; classification runs on-device, so your prompt never
-  leaves the machine to make the decision.
-- **Adaptive reasoning and prompts** — reasoning-token billing only
-  kicks in when the turn needs deep thought, and the system prompt
-  scales with task complexity (lightweight for trivial turns, full
-  instructions for complex ones). No paying reasoning tokens for "hello".
-- **On-demand skills** — built-in MCP client plus 15
-  bundled skills (coding agents, GitHub, cron,
-  pptx/docx/xlsx/pdf toolkits, summarization, tmux, weather, and more);
-  only the skills needed for the current task are loaded into context,
-  avoiding steady-state token waste.
-- **Four-tier cognitive memory** — working (current task) → episodic
-  (experience and causality) → semantic (facts and rules) → raw (audit
-  and retraining base), mirroring human cognition.
-- **Hybrid memory search + local embeddings** — Markdown source-of-truth
-  memory with FTS keyword search alongside `sqlite-vec` semantic recall.
-  Bundled ONNX inference runs on CPU so embeddings stay on your machine;
-  optionally swap to OpenAI- or Ollama-hosted embeddings.
-- **Adaptive recall and consolidation** — frequently used memories
-  auto-promote and dated ones decay exponentially (with an "evergreen"
-  opt-out); periodic Dream consolidation merges scattered episodic
-  traces into structured knowledge, mirroring sleep consolidation, with
-  bounded prompt-injection budgets throughout.
-- **Layered security sandbox** — three policy tiers (Standard / Strict
-  / Locked) on a permission-tier matrix, with Bubblewrap on Linux
-  executing code in isolated environments (the macOS Seatbelt backend
-  currently renders SBPL profiles only; process execution is pending).
-  A denial ledger auto-pauses autonomous execution after repeated
-  sandbox denials, rejected outputs are purged via intent + stale-output
-  caches so the agent can't recover them through a side channel, and
-  all skill metadata and tool results are XML-escaped to close common
-  prompt-injection vectors.
-- **Unified gateway across all entry points** — Starlette ASGI server on
-  `127.0.0.1:18791` with WebSocket RPC and an embedded control console
-  (`/control/`). Web UI, CLI, and first-class adapters for Terminal,
-  WebSocket, Slack, Telegram, Discord, Feishu, DingTalk, WeCom,
-  Matrix, and QQ all converge on a shared `TurnRunner` for
-  consistent tool dispatch, retry, and decision logging.
-- **20+ LLM providers** — OpenRouter, OpenAI, Anthropic, Ollama,
-  DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu,
-  SiliconFlow, Volcengine, BytePlus, MiniMax, vLLM, LM Studio, OVMS, and
-  more, with a primary-plus-fallback selector.
-- **Durable sessions, agents, and scheduling** — SQLite-backed session,
-  transcript, and replay storage with per-agent workspaces and a
-  `reset`/flush contract that proves persistence before destructive
-  rewrites; `SchedulerEngine` with an in-tree `CronExpression` parser
-  plus stagger, reaper, and heartbeat services exposed via the
-  `opensquilla cron` CLI.
+---
+
+## Troubleshooting
+
+<details>
+<summary>Windows: <code>DLL load failed</code> / Visual C++ runtime</summary>
+
+If startup logs `DLL load failed while importing
+onnxruntime_pybind11_state`, OpenSquilla keeps running with direct
+single-model routing, but the bundled `SquillaRouter` runtime stays
+inactive until the Visual C++ Redistributable for Visual Studio
+2015–2022 (x64) is installed.
+
+The Windows portable launcher and the from-source PowerShell installer
+attempt to install the redistributable via `winget`. If you used Quick
+terminal install, or `winget` is unavailable, install it manually and
+restart PowerShell: <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
+Then restore the recommended router:
+
+```powershell
+opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router recommended
+opensquilla gateway restart
+```
+
+</details>
+
+---
 
 ## Credits
 
-OpenSquilla is a token-efficient AI Agent inspired by
-[OpenClaw](https://github.com/openclaw/openclaw). Bundled third-party content is fully attributed
-in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+OpenSquilla is inspired by
+[OpenClaw](https://github.com/openclaw/openclaw). Bundled third-party
+content is attributed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+---
 
 ## Contributing
 
-OpenSquilla is an open-source project and we welcome contributions of
-every kind — bug reports, feature ideas, documentation, new provider or
-channel adapters, skills, and core runtime work. Open an issue or a
-pull request on [GitHub](https://github.com/opensquilla/opensquilla)
-to get involved.
+Contributions of every kind are welcome — bug reports, feature ideas,
+documentation, new provider or channel adapters, skills, and core
+runtime work. See [`CONTRIBUTING.md`](CONTRIBUTING.md), then open an
+issue or pull request on
+[GitHub](https://github.com/opensquilla/opensquilla).
+
+[Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) ·
+[Support](SUPPORT.md) · [License](LICENSE) (Apache-2.0)

@@ -7,10 +7,11 @@ services:
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       TZ: ${TZ:-UTC}
     volumes:
-      # POSIX: $HOME/.opensquilla.
-      # Windows: set OPENSQUILLA_HOST_HOME=C:\Users\<you> before `docker compose up`,
-      # or use WSL2 with $HOME naturally.
-      - ${OPENSQUILLA_HOST_HOME:-${HOME}}/.opensquilla:/root/.opensquilla
+      # Config, state, logs, and workspace persist in a Docker-managed
+      # named volume mounted at the image's OPENSQUILLA_STATE_DIR. The
+      # image pre-creates that path owned by the non-root container user,
+      # so persistence works consistently on Linux, macOS, Windows, and WSL2.
+      - opensquilla-state:/var/lib/opensquilla
     ports:
       - "127.0.0.1:18791:18791"
     healthcheck:
@@ -20,3 +21,6 @@ services:
       start_period: 10s
       retries: 3
     restart: unless-stopped
+
+volumes:
+  opensquilla-state:

@@ -181,11 +181,6 @@ def test_release_sop_documents_github_only_validation_boundary() -> None:
 def test_readme_documents_quick_and_manual_terminal_install_commands() -> None:
     text = Path("README.md").read_text(encoding="utf-8")
 
-    assert "curl -LsSf https://opensquilla.ai/install.sh | bash -s -- --version v0.2.0rc1" in text
-    assert (
-        '$env:OPENSQUILLA_VERSION="v0.2.0rc1"; '
-        "irm https://opensquilla.ai/install.ps1 | iex"
-    ) in text
     assert 'uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com' in text
     assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in text
     assert '. "$HOME/.local/bin/env"' in text

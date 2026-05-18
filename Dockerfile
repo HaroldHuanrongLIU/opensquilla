@@ -6,9 +6,9 @@
 #   * Inside the container the gateway binds to 0.0.0.0 because the Docker
 #     network namespace needs a wildcard bind for `-p host:container`
 #     publishing to work. The defense-in-depth lives at the HOST-SIDE `-p`
-#     binding: the documented default `docker run -p 127.0.0.1:18790:18790`
+#     binding: the documented default `docker run -p 127.0.0.1:18791:18791`
 #     keeps the gateway reachable only from the host's loopback.
-#   * Network exposure is opt-in via `-p 0.0.0.0:18790:18790` — see the
+#   * Network exposure is opt-in via `-p 0.0.0.0:18791:18791` — see the
 #     "Network exposure" section in README.md for the warning.
 #   * The S19 boot WARNING (`gateway.bind.public`) fires on every container
 #     start because the in-container bind is a wildcard by design — that is
@@ -27,7 +27,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # that would make the container reachable only from itself. The safe
 # default for HOST-side exposure lives at `docker run -p`, not here.
 ENV OPENSQUILLA_LISTEN=0.0.0.0 \
-    OPENSQUILLA_GATEWAY_PORT=18790
+    OPENSQUILLA_GATEWAY_PORT=18791
 
 WORKDIR /app
 
@@ -72,15 +72,23 @@ PY
 
 RUN pip install ".[recommended]"
 
+# Persisted state root. The gateway writes config, state, logs, and the
+# workspace under OPENSQUILLA_STATE_DIR — mounting a volume here (see
+# compose.yaml) is what makes a container's setup survive a recreate.
+ENV OPENSQUILLA_STATE_DIR=/var/lib/opensquilla
+
 # Run as a non-root user — avoids shipping root creds into production.
+# The state root is created and owned by that user before the USER drop,
+# so a freshly initialized volume inherits writable, non-root ownership.
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin opensquilla \
-    && chown -R opensquilla:opensquilla /app
+    && mkdir -p /var/lib/opensquilla \
+    && chown -R opensquilla:opensquilla /app /var/lib/opensquilla
 USER opensquilla
 
-EXPOSE 18790
+EXPOSE 18791
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl --fail --silent --show-error http://127.0.0.1:18790/healthz || exit 1
+    CMD curl --fail --silent --show-error http://127.0.0.1:18791/healthz || exit 1
 
 ENTRYPOINT ["opensquilla"]
 CMD ["gateway", "run"]
