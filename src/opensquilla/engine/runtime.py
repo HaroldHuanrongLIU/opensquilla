@@ -1873,6 +1873,7 @@ class TurnRunner:
                 extra_messages=extra_msgs,
                 semantic_input=semantic_input,
                 effective_runtime_message=effective_runtime_message,
+                input_provenance=input_provenance,
                 session_key=session_key,
                 run_kind=run_kind,
                 heartbeat_ack_max_chars=heartbeat_ack_max_chars,

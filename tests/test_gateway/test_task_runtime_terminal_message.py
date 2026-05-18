@@ -17,13 +17,14 @@ def _make_envelope(
     session_key: str = "agent-1::sess-1",
     *,
     metadata: dict[str, Any] | None = None,
+    input_provenance: dict[str, Any] | None = None,
 ) -> RouteEnvelope:
     return RouteEnvelope(
         source_kind=SourceKind.WEB,
         source_name="test",
         agent_id="agent-1",
         session_key=session_key,
-        input_provenance={"kind": "test"},
+        input_provenance=input_provenance or {"kind": "test"},
         metadata=metadata or {},
     )
 
@@ -93,6 +94,55 @@ async def test_mark_terminal_emits_additive_terminal_message_for_timeout_payload
     assert record.terminal_reason == "timeout"
     assert record.error_class == "TimeoutError"
     assert record.error_message == "Gateway task timeout: Stream idle for more than 60s"
+
+
+@pytest.mark.asyncio
+async def test_successful_parent_task_persists_subagent_group_outcome_details() -> None:
+    outcome = {
+        "total": 2,
+        "succeeded": 1,
+        "failed": 1,
+        "timeout": 0,
+        "cancelled": 0,
+        "abandoned": 0,
+        "non_success": 1,
+        "failed_children": [
+            {
+                "child_session_key": "agent:worker:subagent:failed",
+                "task_id": "task-failed",
+                "status": "failed",
+                "terminal_reason": "tool_error",
+                "error_class": "RuntimeError",
+                "error_message": "boom",
+            }
+        ],
+    }
+
+    async def _success_handler(run: Any) -> None:
+        assert run.input_provenance["subagent_group_outcome"] == outcome
+
+    runtime = _make_runtime(_success_handler)
+    handle = await runtime.enqueue(
+        _make_envelope(
+            input_provenance={
+                "kind": "internal_system",
+                "source_tool": "subagent_completion",
+                "runtime_partial_failure_disclosure_required": True,
+                "subagent_group_outcome": outcome,
+            },
+            metadata={"existing": "metadata"},
+        ),
+        "synthesize",
+    )
+
+    record = await runtime.wait(handle.task_id, timeout=2.0)
+
+    assert record.status == AgentTaskStatus.SUCCEEDED
+    assert record.details is not None
+    assert record.details["source_name"] == "test"
+    assert record.details["metadata"] == {"existing": "metadata"}
+    assert record.details["input_provenance"]["source_tool"] == "subagent_completion"
+    assert record.details["subagent_group_outcome"] == outcome
 
 
 def test_subagent_completion_payload_adds_terminal_message_for_non_success() -> None:

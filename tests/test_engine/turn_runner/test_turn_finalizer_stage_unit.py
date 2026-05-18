@@ -180,6 +180,7 @@ def _make_input(
     done_event: DoneEvent | None = None,
     runtime_message: str = "hi",
     input_mode: str = "user",
+    input_provenance: dict[str, Any] | None = None,
     resolved_model: str = "claude-sonnet-4.5",
     agent_id: str = "agent:main",
     session_key: str = "agent:main:s1",
@@ -196,7 +197,7 @@ def _make_input(
         done_event=done_event,
         runtime_message=runtime_message,
         input_mode=input_mode,
-        input_provenance=None,
+        input_provenance=input_provenance,
         resolved_model=resolved_model,
         agent_id=agent_id,
         session_key=session_key,
@@ -271,6 +272,37 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
     assert len(recs["session_totals"].calls) == 1
     assert recs["session_totals"].calls[0]["done_event"] is done
     assert recs["transcript_append"].calls[0]["token_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_disclosed_subagent_outcome_persists_once_and_captures_same_text() -> None:
+    disclosure = "Subagents: 1/2 succeeded; failures: child failed."
+    final_text = f"Parent synthesis.\n\n{disclosure}"
+    input_provenance = {
+        "kind": "internal_system",
+        "runtime_partial_failure_disclosure_required": True,
+        "subagent_group_outcome": {
+            "total": 2,
+            "succeeded": 1,
+            "failed": 1,
+            "non_success": 1,
+            "failed_children": [{"child_session_key": "child", "status": "failed"}],
+        },
+    }
+    stage, recs = _make_stage()
+    inp = _make_input(
+        final_text_parts=[final_text],
+        done_event=DoneEvent(text=final_text, output_tokens=5),
+        input_provenance=input_provenance,
+    )
+
+    outcome = await stage.run(inp)
+
+    assert outcome.output.final_text == final_text
+    assert recs["transcript_append"].calls[0]["content"] == final_text
+    assert recs["transcript_append"].calls[0]["content"].count(disclosure) == 1
+    assert recs["turn_memory_capture"].calls[0]["final_text"] == final_text
+    assert recs["turn_memory_capture"].calls[0]["input_provenance"] == input_provenance
 
 
 @pytest.mark.asyncio

@@ -219,6 +219,9 @@
 .sess-table__cell--check { width: 36px; }
 .sess-table__cell--actions { white-space: nowrap; text-align: right; width: 1px; }
 .sess-table__cell--key {
+  min-width: 240px;
+}
+.sess-table__key-content {
   display: flex;
   align-items: center;
   gap: 8px;

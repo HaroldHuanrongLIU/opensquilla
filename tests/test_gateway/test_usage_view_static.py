@@ -132,3 +132,12 @@ def test_usage_view_model_expansion_uses_visible_sessions() -> None:
     body = source[start:end]
 
     assert "_visibleSessions().find" in body
+
+
+def test_usage_expand_row_colspan_tracks_session_table_columns() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+
+    assert "const USAGE_SESSION_TABLE_COLUMNS" in source
+    assert "USAGE_SESSION_TABLE_COLUMNS.forEach" in source
+    assert "td.colSpan = USAGE_SESSION_TABLE_COLUMNS.length" in source
+    assert "td.colSpan = (typeof cols" not in source

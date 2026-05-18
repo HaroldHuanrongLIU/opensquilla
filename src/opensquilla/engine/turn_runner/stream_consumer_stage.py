@@ -249,6 +249,9 @@ class StreamConsumerStageInput:
     # Mutable shared accumulators (passed by reference)
     state: _StreamState
 
+    # Original input provenance for runtime-generated disclosures.
+    input_provenance: dict[str, Any] | None = None
+
 # ---------------------------------------------------------------------------
 # Per-event handler classes
 # ---------------------------------------------------------------------------
@@ -429,9 +432,6 @@ class _DoneHandler:
             _should_add_artifact_delivery_failure_notice,
         )
         from opensquilla.engine.types import (
-            TextDeltaEvent as _TextDeltaEvent,
-        )
-        from opensquilla.engine.types import (
             WarningEvent as _WarningEvent,
         )
 
@@ -500,14 +500,24 @@ class _DoneHandler:
             turn_artifacts=state.turn_artifacts,
             final_text=accumulated_text,
         ):
-            separator = "\n\n" if accumulated_text.strip() else ""
-            notice_delta = separator + _artifact_delivery_failure_notice()
-            state.final_text_parts.append(notice_delta)
-            state.current_text_parts.append(notice_delta)
-            normalized_text = "".join(state.final_text_parts)
-            event = replace(event, text=normalized_text)
-            state.done_event = event
-            extra_yields.append(_TextDeltaEvent(text=notice_delta))
+            event, notice_event = _append_done_notice_delta(
+                event,
+                state,
+                _artifact_delivery_failure_notice(),
+                accumulated_text=accumulated_text,
+            )
+            extra_yields.append(notice_event)
+
+        accumulated_text = "".join(state.final_text_parts)
+        disclosure = _subagent_partial_failure_disclosure(inp.input_provenance)
+        if disclosure is not None:
+            event, notice_event = _append_done_notice_delta(
+                event,
+                state,
+                disclosure,
+                accumulated_text=accumulated_text,
+            )
+            extra_yields.append(notice_event)
 
         accumulated_text = "".join(state.final_text_parts)
         if _claims_image_without_tool_use(
@@ -523,6 +533,97 @@ class _DoneHandler:
                 )
             )
         return event, extra_yields
+
+
+def _append_done_notice_delta(
+    event: DoneEvent,
+    state: _StreamState,
+    notice: str,
+    *,
+    accumulated_text: str,
+) -> tuple[DoneEvent, AgentEvent]:
+    from opensquilla.engine.types import TextDeltaEvent as _TextDeltaEvent
+
+    separator = "\n\n" if accumulated_text.strip() else ""
+    notice_delta = separator + notice
+    state.final_text_parts.append(notice_delta)
+    state.current_text_parts.append(notice_delta)
+    event = replace(event, text="".join(state.final_text_parts))
+    state.done_event = event
+    return event, _TextDeltaEvent(text=notice_delta)
+
+
+def _subagent_partial_failure_disclosure(
+    input_provenance: dict[str, Any] | None,
+) -> str | None:
+    if not isinstance(input_provenance, dict):
+        return None
+    required = input_provenance.get("runtime_partial_failure_disclosure_required") is True
+    outcome = input_provenance.get("subagent_group_outcome")
+    if not isinstance(outcome, dict):
+        if required:
+            raise RuntimeError(
+                "subagent partial failure disclosure required but outcome metadata is missing"
+            )
+        return None
+    non_success = _int_value(outcome.get("non_success"))
+    if non_success <= 0:
+        return None
+    total = _int_value(outcome.get("total"))
+    succeeded = _int_value(outcome.get("succeeded"))
+    failures = _format_subagent_failure_children(outcome.get("failed_children"))
+    suffix = f"; failures: {failures}" if failures else ""
+    return f"Subagents: {succeeded}/{total} succeeded{suffix}."
+
+
+def _format_subagent_failure_children(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for child in value[:3]:
+        if not isinstance(child, dict):
+            continue
+        child_id = _first_text(
+            child.get("child_session_key"),
+            child.get("task_id"),
+            child.get("agent_id"),
+            default="unknown child",
+        )
+        status = _first_text(child.get("status"), default="non-success")
+        reason = _first_text(child.get("terminal_reason"), default="")
+        detail = f"{child_id} {status}"
+        if reason:
+            detail = f"{detail} ({reason})"
+        error = _format_subagent_failure_error(child)
+        if error:
+            detail = f"{detail}: {error}"
+        parts.append(detail)
+    remaining = len(value) - len(parts)
+    if remaining > 0:
+        parts.append(f"{remaining} more")
+    return "; ".join(parts)
+
+
+def _format_subagent_failure_error(child: dict[str, Any]) -> str:
+    error_class = _first_text(child.get("error_class"), default="")
+    error_message = _first_text(child.get("error_message"), default="")
+    if error_class and error_message:
+        return f"{error_class}: {error_message}"
+    return error_message or error_class
+
+
+def _first_text(*values: Any, default: str) -> str:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return default
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 class _CompactionHandler:
     """Persist compaction and refresh memory snapshot + system prompt.

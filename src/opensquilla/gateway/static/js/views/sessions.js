@@ -306,9 +306,11 @@ const SessionsView = (() => {
       html += `<tr class="${isSel ? 'is-selected' : ''}">
         <td class="sess-table__cell--check"><label class="sess-check"><input type="checkbox" class="sess-row-check" data-key="${_esc(row.key)}" ${checked} /><span></span></label></td>
         <td class="sess-table__cell--key">
-          <span class="dot ${statusCls}" title="${_esc(statusTip)}"></span>
-          <button type="button" class="sess-key-link" data-open-key="${_esc(row.key)}" title="Open chat">${_esc(row.key)}</button>
-          ${agentMeta}
+          <div class="sess-table__key-content">
+            <span class="dot ${statusCls}" title="${_esc(statusTip)}"></span>
+            <button type="button" class="sess-key-link" data-open-key="${_esc(row.key)}" title="Open chat">${_esc(row.key)}</button>
+            ${agentMeta}
+          </div>
         </td>
         <td><div class="sess-status-stack"><span class="chip ${statusChip}">${_esc(statusTip)}</span>${runBadge}</div></td>
         <td class="sess-mono">${row.message_count != null ? Number(row.message_count).toLocaleString() : '—'}</td>

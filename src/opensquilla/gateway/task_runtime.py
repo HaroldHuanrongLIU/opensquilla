@@ -1063,6 +1063,7 @@ class TaskRuntime:
             terminal_reason=terminal_reason,
             error_class=error_class,
             error_message=error_message,
+            **await self._terminal_details_update(task),
         )
         payload: dict[str, Any] = {
             "task_id": task.task_id,
@@ -1144,6 +1145,32 @@ class TaskRuntime:
             await self._terminal_listener(event)
         except Exception:
             return
+
+    async def _terminal_details_update(self, task: _RuntimeTask) -> dict[str, Any]:
+        outcome = _subagent_group_outcome_from_provenance(task.envelope.input_provenance)
+        if outcome is None:
+            return {}
+        existing = await self._storage.get_agent_task(task.task_id)
+        current_details = getattr(existing, "details", None)
+        details = dict(current_details) if isinstance(current_details, dict) else {}
+        details["subagent_group_outcome"] = outcome
+        disclosure_required = task.envelope.input_provenance.get(
+            "runtime_partial_failure_disclosure_required"
+        )
+        if disclosure_required is True:
+            details["runtime_partial_failure_disclosure_required"] = True
+        return {"details": details}
+
+
+def _subagent_group_outcome_from_provenance(
+    input_provenance: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(input_provenance, dict):
+        return None
+    outcome = input_provenance.get("subagent_group_outcome")
+    if not isinstance(outcome, dict):
+        return None
+    return dict(outcome)
 
 
 def _loop_time_ms() -> int:

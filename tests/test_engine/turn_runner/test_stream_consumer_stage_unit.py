@@ -193,6 +193,7 @@ def _make_input(
     session_manager_present: bool = True,
     private_memory_allowed: bool = True,
     sync_manager: Any | None = None,
+    input_provenance: dict[str, Any] | None = None,
 ) -> StreamConsumerStageInput:
     return StreamConsumerStageInput(
         agent=SimpleNamespace(),
@@ -205,6 +206,7 @@ def _make_input(
         extra_messages=None,
         semantic_input="hi",
         effective_runtime_message="hello there",
+        input_provenance=input_provenance,
         session_key="agent:main:s1",
         run_kind="default",
         heartbeat_ack_max_chars=300,
@@ -445,6 +447,117 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
     assert len(recs["memory_sync_notify"].calls) == 1
     assert recs["memory_sync_notify"].calls[0]["runtime_message"] == "hello there"
     assert recs["memory_sync_notify"].calls[0]["sync_manager_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_injects_partial_failure_disclosure_before_done() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Parent synthesis."),
+            DoneEvent(text="Parent synthesis."),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input(
+        input_provenance={
+            "kind": "internal_system",
+            "runtime_partial_failure_disclosure_required": True,
+            "subagent_group_outcome": {
+                "total": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "timeout": 0,
+                "cancelled": 0,
+                "abandoned": 0,
+                "non_success": 1,
+                "failed_children": [
+                    {
+                        "child_session_key": "agent:worker:subagent:failed",
+                        "task_id": "task-failed",
+                        "agent_id": "worker-b",
+                        "status": "failed",
+                        "terminal_reason": "tool_error",
+                        "error_class": "RuntimeError",
+                        "error_message": "boom",
+                    }
+                ],
+            },
+        }
+    )
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["TextDeltaEvent", "TextDeltaEvent", "DoneEvent"]
+    disclosure = yielded[1]
+    assert isinstance(disclosure, TextDeltaEvent)
+    assert "Subagents: 1/2 succeeded" in disclosure.text
+    assert "agent:worker:subagent:failed" in disclosure.text
+    assert "RuntimeError: boom" in disclosure.text
+    done = yielded[2]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "".join(inp.state.final_text_parts)
+    assert "Subagents: 1/2 succeeded" in done.text
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_injects_disclosure_for_all_failed_group() -> None:
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="No usable result.")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input(
+        input_provenance={
+            "kind": "internal_system",
+            "runtime_partial_failure_disclosure_required": True,
+            "subagent_group_outcome": {
+                "total": 2,
+                "succeeded": 0,
+                "failed": 2,
+                "timeout": 0,
+                "cancelled": 0,
+                "abandoned": 0,
+                "non_success": 2,
+                "failed_children": [
+                    {
+                        "child_session_key": "agent:worker:subagent:a",
+                        "status": "failed",
+                        "terminal_reason": "error",
+                    },
+                    {
+                        "child_session_key": "agent:worker:subagent:b",
+                        "status": "failed",
+                        "terminal_reason": "error",
+                    },
+                ],
+            },
+        }
+    )
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["TextDeltaEvent", "DoneEvent"]
+    disclosure = yielded[0]
+    assert isinstance(disclosure, TextDeltaEvent)
+    assert "Subagents: 0/2 succeeded" in disclosure.text
+    done = yielded[1]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "".join(inp.state.final_text_parts)
+    assert "Subagents: 0/2 succeeded" in done.text
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_fails_when_disclosure_required_without_outcome() -> None:
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="Parent synthesis.")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input(
+        input_provenance={
+            "kind": "internal_system",
+            "runtime_partial_failure_disclosure_required": True,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="outcome metadata is missing"):
+        await _drain(stage, inp)
 
 
 @pytest.mark.asyncio

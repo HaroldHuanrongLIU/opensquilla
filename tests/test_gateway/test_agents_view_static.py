@@ -79,6 +79,20 @@ def test_sessions_view_css_has_orphan_chip_styles() -> None:
     assert ".sess-key__agent--orphan" in css
 
 
+def test_sessions_table_keeps_table_cells_structural() -> None:
+    source = SESSIONS_JS.read_text(encoding="utf-8")
+    css = SESSIONS_CSS.read_text(encoding="utf-8")
+
+    assert '<td class="sess-table__cell--key">' in source
+    assert '<div class="sess-table__key-content">' in source
+    key_cell_rule = css[
+        css.index(".sess-table__cell--key {") : css.index("}", css.index(".sess-table__cell--key {"))
+    ]
+    assert "display:" not in key_cell_rule
+    assert ".sess-table__key-content" in css
+    assert "display: flex" in css[css.index(".sess-table__key-content") :]
+
+
 def test_components_js_exposes_drawer_and_combobox() -> None:
     source = COMPONENTS_JS.read_text(encoding="utf-8")
 

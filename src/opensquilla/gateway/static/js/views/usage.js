@@ -17,6 +17,16 @@ const UsageView = (() => {
   // Single source of truth: window.SquillaConstants.CNY_RATE (constants.js).
   // Captured into a local for hot paths so we don't dereference globals per row.
   const CNY_RATE = (window.SquillaConstants && window.SquillaConstants.CNY_RATE) || 7.25;
+  const USAGE_SESSION_TABLE_COLUMNS = [
+    { key: 'session', label: 'Session' },
+    { key: 'input_tokens', label: 'Input' },
+    { key: 'output_tokens', label: 'Output' },
+    { key: 'cache_read_tokens', label: 'Cache R' },
+    { key: 'cache_write_tokens', label: 'Cache W' },
+    { key: 'cost_usd', label: 'Cost' },
+    { key: 'cost_source', label: 'Source' },
+    { key: 'model', label: 'Model' },
+  ];
 
   function render(el) {
     _el = el;
@@ -468,21 +478,10 @@ const UsageView = (() => {
         .join(' · ');
     }
 
-    const cols = [
-      { key: 'session', label: 'Session' },
-      { key: 'input_tokens', label: 'Input' },
-      { key: 'output_tokens', label: 'Output' },
-      { key: 'cache_read_tokens', label: 'Cache R' },
-      { key: 'cache_write_tokens', label: 'Cache W' },
-      { key: 'cost_usd', label: 'Cost' },
-      { key: 'cost_source', label: 'Source' },
-      { key: 'model', label: 'Model' },
-    ];
-
     const sortable = ['session', 'input_tokens', 'output_tokens', 'cost_usd', 'model'];
 
     let html = '<table class="usage-table"><thead><tr>';
-    cols.forEach(col => {
+    USAGE_SESSION_TABLE_COLUMNS.forEach(col => {
       if (sortable.includes(col.key)) {
         const arrow = _sortCol === col.key ? (_sortAsc ? ' ▲' : ' ▼') : '';
         html += `<th class="usage-th-sort" data-sort="${col.key}">${col.label}<span class="usage-table__arrow">${arrow}</span></th>`;
@@ -493,7 +492,7 @@ const UsageView = (() => {
     html += '</tr></thead><tbody>';
 
     if (sorted.length === 0) {
-      html += `<tr><td colspan="${cols.length}" class="usage-empty-row">
+      html += `<tr><td colspan="${USAGE_SESSION_TABLE_COLUMNS.length}" class="usage-empty-row">
         <div class="state">
           <div class="state-icon">${icons.usage()}</div>
           <div class="state-title">No usage data yet</div>
@@ -772,9 +771,7 @@ const UsageView = (() => {
         const expandTr = document.createElement('tr');
         expandTr.className = 'usage-expand-row';
         const td = document.createElement('td');
-        // colSpan must equal the visible header column count (cols.length).
-        // Previously hardcoded 7 while header had 8 cols, leaving one cell unspanned.
-        td.colSpan = (typeof cols !== 'undefined' && cols.length) ? cols.length : 8;
+        td.colSpan = USAGE_SESSION_TABLE_COLUMNS.length;
         td.appendChild(_buildExpandedContent(row));
         expandTr.appendChild(td);
         tr.after(expandTr);
