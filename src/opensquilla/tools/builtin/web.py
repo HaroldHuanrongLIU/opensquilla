@@ -133,15 +133,16 @@ def _fetch_root() -> Path:
 
 
 def _resolve_fetch_output_path(digest: str, output_path: str | None) -> Path:
-    root = _fetch_root()
     if output_path is None:
+        root = _fetch_root()
         return root / f"{digest}.bin"
 
     raw = output_path.strip()
     if not raw:
         raise ToolError("output_path must not be empty")
 
-    reject_foreign_host_path(raw, platform=os.name, workspace=_fetch_workspace_dir())
+    reject_foreign_host_path(raw, platform=os.name)
+    root = _fetch_root()
     requested = Path(raw).expanduser()
     if requested.drive and not requested.is_absolute():
         raise ToolError("output_path must be an absolute path or a relative .fetch path")

@@ -18,7 +18,6 @@ from opensquilla.scheduler.payloads import make_agent_turn_payload
 from opensquilla.scheduler.persistence import JobStore
 from opensquilla.scheduler.types import CronJob, ScheduleKind, SessionTarget
 
-
 # --- validate_tz ---------------------------------------------------------
 
 

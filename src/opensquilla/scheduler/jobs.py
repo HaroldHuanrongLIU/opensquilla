@@ -6,7 +6,6 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-
 from zoneinfo import ZoneInfo
 
 from .parser import parse_cron

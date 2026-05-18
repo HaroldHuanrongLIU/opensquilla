@@ -45,7 +45,7 @@ def test_pulse_restart_preserves_monotonic_elapsed() -> None:
 class _RecordingLive:
     """Recorder for Rich Live constructions inside the renderer."""
 
-    instances: list["_RecordingLive"] = []
+    instances: list[_RecordingLive] = []
 
     def __init__(self, renderable=None, **kwargs):
         self.renderable = renderable
@@ -151,7 +151,9 @@ def test_finalize_does_not_re_render_response_as_panel(monkeypatch) -> None:
     monkeypatch.setattr(stream_module.console, "file", io.StringIO(), raising=False)
 
     with StreamingRenderer() as renderer:
-        renderer.append_text("# heading\n\nbody with **markdown**\n\n| a | b |\n|---|---|\n| 1 | 2 |")
+        renderer.append_text(
+            "# heading\n\nbody with **markdown**\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+        )
         renderer.finalize(usage=None)
 
     panels = [obj for obj in captured if isinstance(obj, Panel)]

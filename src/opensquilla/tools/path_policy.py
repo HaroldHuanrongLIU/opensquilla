@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from opensquilla.tools.types import ToolError
 
@@ -50,7 +50,12 @@ def is_foreign_host_path(path: str, *, platform: str) -> bool:
 
 
 def foreign_host_path_error(path: str, *, workspace: Path | None = None) -> ToolError:
-    name = PurePosixPath(str(path).replace("\\", "/")).name or Path(path).name or "<filename>"
+    text = str(path)
+    name = (
+        PurePosixPath(text.replace("\\", "/")).name
+        or PureWindowsPath(text).name
+        or "<filename>"
+    )
     details = [
         "foreign_host_path: requested path is from another host/platform",
         f"requested path: {path}",

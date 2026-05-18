@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from opensquilla.scheduler.ops import SchedulerOps
 from opensquilla.scheduler.payloads import make_agent_turn_payload
 from opensquilla.scheduler.persistence import JobStore

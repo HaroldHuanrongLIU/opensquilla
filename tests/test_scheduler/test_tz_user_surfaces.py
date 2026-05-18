@@ -11,11 +11,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.rpc_cron import _handle_cron_add, _handle_cron_update, _job_to_wire
-from opensquilla.scheduler.payloads import AGENT_TURN_KIND, SYSTEM_EVENT_KIND
+from opensquilla.scheduler.payloads import AGENT_TURN_KIND
 from opensquilla.scheduler.types import CronJob, DeliveryConfig, SessionTarget
 
 

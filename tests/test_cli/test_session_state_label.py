@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from opensquilla.cli.repl.session_state import PromptState, _model_alias
 
 

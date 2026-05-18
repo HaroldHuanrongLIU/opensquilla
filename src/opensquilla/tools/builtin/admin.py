@@ -110,15 +110,20 @@ class _SchedulerProtocol(Protocol):
         session_target: SessionTarget = SessionTarget.ISOLATED,
         session_key: str = "",
         timeout_seconds: float = 600.0,
-        wake_mode: str = "now",
+        wake_mode: Any = "now",
         max_retries: int = 3,
         origin_session_key: str = "",
         delivery: DeliveryConfig | None = None,
         tool_policy: dict[str, Any] | None = None,
-        **extra: Any,
+        tz: str = "",
+        jitter_seconds: float | None = None,
+        creator_session_key: str = "",
+        creator_sender_id: str = "",
     ) -> Any: ...
 
     async def update_job(self, job_id: str, **patch: Any) -> Any: ...
+
+    async def get_job(self, job_id: str) -> Any | None: ...
 
     async def remove_job(self, job_id: str) -> bool: ...
 
@@ -427,9 +432,7 @@ async def cron(
     caller_session_key = (
         ctx.session_key if ctx is not None and ctx.session_key else ""
     )
-    caller_sender_id = (
-        ctx.sender_id if ctx is not None and getattr(ctx, "sender_id", "") else ""
-    )
+    caller_sender_id = str(getattr(ctx, "sender_id", "") or "") if ctx is not None else ""
 
     if not is_owner_caller:
         if not caller_session_key:

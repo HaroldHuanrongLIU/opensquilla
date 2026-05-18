@@ -67,39 +67,48 @@ def test_windows_installer_bootstraps_vc_redist_for_router_runtime() -> None:
     assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in ps1
 
 
-def test_readme_splits_user_paths_and_documents_preview_release_package() -> None:
+def test_readme_splits_user_paths_and_documents_release_install_options() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
-    release_section = readme.split("### Preview release package", 1)[1]
-    release_section = release_section.split("### Install from source", 1)[0]
-    release_section_normalized = " ".join(release_section.split())
+    windows_section = readme.split("### Windows portable (no Python)", 1)[1]
+    windows_section = windows_section.split("### Install with uv", 1)[0]
+    uv_section = readme.split("### Install with uv", 1)[1]
+    uv_section = uv_section.split("### Install from source", 1)[0]
 
     assert (
-        "| New user | [Preview release package](#preview-release-package) | "
-        "Recommended |"
+        "| Windows user | [Windows portable](#windows-portable-no-python) | Recommended |"
         in readme
     )
     assert (
-        "| Command-line user | [Install from source](#install-from-source) | "
-        "Available now |"
+        "| Command-line user | [Install with uv](#install-with-uv) | Recommended |"
         in readme
     )
     assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
     assert (
-        "Download the preview package if you want to try OpenSquilla as a "
-        "local app without cloning the repository or installing Git, Git LFS, "
-        "or `uv`." in normalized
+        "Use this on Windows, macOS, or Linux if you prefer a terminal install."
+        in normalized
     )
-    assert "Current preview packages:" in readme
-    assert "windows-x64-py312-recommended-portable.zip" in readme
-    assert "macos-arm64-py312-recommended-portable.zip" not in readme
-    assert "recommended-wheelhouse.zip" not in release_section
+    assert "OpenSquilla-windows-x64-portable.zip" in windows_section
+    assert "Start OpenSquilla.cmd" in windows_section
+    assert "Run as administrator" in windows_section
+    assert "SmartScreen" in windows_section
+    assert "Smart App Control" in windows_section
+    assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in uv_section
+    assert '. "$HOME/.local/bin/env"' in uv_section
+    assert "irm https://astral.sh/uv/install.ps1 | iex" in uv_section
+    assert "opensquilla-latest-py3-none-any.whl" in uv_section
+    assert "opensquilla onboard" in uv_section
+    assert "opensquilla gateway run" in uv_section
+    for forbidden in (
+        "macos-arm64-py312-recommended-portable.zip",
+        "macos-x64-py312-recommended-portable.zip",
+        "linux-x64-py312-recommended-portable.zip",
+        "linux-aarch64-py312-recommended-portable.zip",
+    ):
+        assert forbidden not in readme
+    assert "recommended-wheelhouse.zip" not in uv_section
+    assert "### Preview release package" not in readme
     assert "Public release packages are not published yet." not in readme
-    assert (
-        "For a source checkout instead of a package, use the next section."
-        in release_section_normalized
-    )
-    assert release_section.count("Install from source") == 0
 
 
 def test_readme_documents_router_defaults_and_feishu_as_channel_extra() -> None:
@@ -212,10 +221,14 @@ def test_readme_explains_setup_details_vs_development_path() -> None:
         "install path."
         in normalized
     )
-    assert "Use the preview release package when you only want to run OpenSquilla." in normalized
     assert (
-        "Use Install from source when a package is not available for your "
-        "platform or when you want to run the current source tree."
+        "Use Windows portable or Install with uv when you only want to run "
+        "OpenSquilla."
+        in normalized
+    )
+    assert (
+        "Use Install from source when you want the current source tree instead "
+        "of a published release artifact."
         in normalized
     )
     assert (

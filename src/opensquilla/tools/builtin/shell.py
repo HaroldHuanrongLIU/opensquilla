@@ -290,12 +290,7 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
 def _effective_workdir(workdir: str | None) -> str | None:
     ctx = current_tool_context.get()
     if workdir:
-        workspace = (
-            Path(ctx.workspace_dir).expanduser().resolve(strict=False)
-            if ctx is not None and ctx.workspace_dir
-            else None
-        )
-        reject_foreign_host_path(workdir, platform=os.name, workspace=workspace)
+        reject_foreign_host_path(workdir, platform=os.name)
         raw = Path(workdir).expanduser()
         if not raw.is_absolute() and ctx and ctx.workspace_dir:
             return str((Path(ctx.workspace_dir).expanduser().resolve() / raw).resolve())

@@ -58,6 +58,8 @@ def test_setup_file_logging_can_be_disabled(tmp_path, monkeypatch) -> None:
     opensquilla_logger = logging.getLogger("opensquilla")
     original_opensquilla_level = opensquilla_logger.level
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENSQUILLA_LOG_FILE_ENABLED", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LOG_LEVEL", raising=False)
 
     _setup_file_logging(GatewayConfig(log_file_enabled=False))
     assert not (tmp_path / "debug.log").exists()

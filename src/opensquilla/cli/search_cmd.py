@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import typer
@@ -10,7 +11,6 @@ from rich.table import Table
 
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
-from opensquilla.cli.ui import console as ui_console
 from opensquilla.cli.ui import warning_panel
 from opensquilla.onboarding.config_store import (
     default_config_path,
@@ -175,7 +175,8 @@ def search_configure(
     )
     typer.echo(f"Search provider configured: {provider}")
     typer.echo(f"Config: {persist.path}")
+    warning_console = Console(file=sys.stdout, width=160, force_terminal=False)
     for warning in env_reference_warnings(result.config):
-        ui_console.print(warning_panel(warning))
+        warning_console.print(warning_panel(warning))
     if persist.backup_path:
         typer.echo(f"Backup: {persist.backup_path}")

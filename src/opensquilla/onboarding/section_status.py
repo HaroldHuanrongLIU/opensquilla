@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Any, cast
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.onboarding.image_generation_specs import (
@@ -176,7 +177,8 @@ def _image_generation_credential_state(
     providers = getattr(getattr(cfg, "image_generation", None), "providers", None)
     provider_cfg = getattr(providers, provider_id, None) if providers is not None else None
 
-    if provider_cfg is not None and getattr(provider_cfg, "api_key", ""):
+    provider_cfg_any = cast(Any, provider_cfg)
+    if provider_cfg_any is not None and provider_cfg_any.api_key:
         return SectionStatus.OK
 
     # An ``api_key_env`` value that matches the spec default arrives from
@@ -254,5 +256,3 @@ def _configured_image_generation_provider_ids(cfg: GatewayConfig) -> list[str]:
             seen.add(provider_id)
             result.append(provider_id)
     return result
-
-

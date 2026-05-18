@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from io import StringIO
-from unittest.mock import patch
 
 from rich.console import Console
 
 from opensquilla.cli.repl.stream import StreamingRenderer, _summarize_args
-
 
 # ---------------------------------------------------------------------------
 # _summarize_args unit tests
@@ -63,7 +61,6 @@ def test_summarize_no_args() -> None:
 def _make_renderer_with_capture() -> tuple[StreamingRenderer, StringIO]:
     """Return a renderer that prints to a captured buffer."""
     buf = StringIO()
-    capture_console = Console(file=buf, highlight=False, force_terminal=False)
     renderer = StreamingRenderer()
     # Patch the module-level console used by _ToolCallStrip
     renderer._strip._flush_run  # access to confirm strip exists
@@ -110,7 +107,7 @@ def test_third_call_prints_cumulative_line() -> None:
     # Row 1, row 2, ×3 (cumulative); flush() at end emits "×3 total Xs"
     assert any("×3" in line and "cumulative" in line for line in lines), lines
     # The cumulative line must appear before any total line
-    cumulative_idx = next(i for i, l in enumerate(lines) if "cumulative" in l)
+    cumulative_idx = next(i for i, line in enumerate(lines) if "cumulative" in line)
     assert cumulative_idx == 2
 
 
@@ -125,10 +122,10 @@ def test_fourth_call_same_name_suppressed() -> None:
     )
     # Row 1, row 2, ×3 cumulative — row 4 suppressed, flush emits total
     # No 4th normal row printed — only the coalesced cumulative on row 3
-    cumulative_lines = [l for l in lines if "cumulative" in l]
+    cumulative_lines = [line for line in lines if "cumulative" in line]
     assert len(cumulative_lines) == 1, f"Expected exactly 1 cumulative line, got: {lines}"
     # The ×N total line (from flush) mentions ×4
-    total_lines = [l for l in lines if "total" in l]
+    total_lines = [line for line in lines if "total" in line]
     assert len(total_lines) == 1
     assert "×4" in total_lines[0]
 

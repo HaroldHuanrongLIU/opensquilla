@@ -29,12 +29,12 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 import structlog
 
+from opensquilla.memory.source_paths import is_memory_source_path
 from opensquilla.memory.types import (
     DEFAULT_MEMORY_SEARCH_MIN_SCORE,
     DEFAULT_MEMORY_SEARCH_RESULTS,
     normalize_memory_search_min_score,
 )
-from opensquilla.memory.source_paths import is_memory_source_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 

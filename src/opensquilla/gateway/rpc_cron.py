@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, TypeGuard
 
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
 from opensquilla.scheduler.parser import (
@@ -397,7 +397,7 @@ def _resolve_wake_mode(params: dict[str, Any], current: Any = "now") -> str:
     return value
 
 
-def _is_webhook_delivery(delivery_raw: Any) -> bool:
+def _is_webhook_delivery(delivery_raw: Any) -> TypeGuard[dict[str, Any]]:
     if not isinstance(delivery_raw, dict):
         return False
     mode = delivery_raw.get("mode")
@@ -570,7 +570,7 @@ async def _handle_cron_add(params: dict | None, ctx: RpcContext) -> dict[str, An
 
     # Webhook delivery bypasses session-based channel inference entirely.
     if _is_webhook_delivery(delivery_raw):
-        delivery = _build_webhook_delivery(delivery_raw)
+        webhook_delivery = _build_webhook_delivery(delivery_raw)
         return await _finalize_cron_add(
             scheduler=scheduler,
             params=params,
@@ -580,7 +580,7 @@ async def _handle_cron_add(params: dict | None, ctx: RpcContext) -> dict[str, An
             session_target=session_target,
             target_session_key=target_session_key,
             origin_session_key=origin_session_key,
-            delivery=delivery,
+            delivery=webhook_delivery,
             schedule_kind=schedule_kind,
             schedule_value=schedule_value,
             schedule_tz=schedule_tz,
@@ -589,7 +589,7 @@ async def _handle_cron_add(params: dict | None, ctx: RpcContext) -> dict[str, An
     # Infer or parse delivery config
     user_overrides = _parse_delivery_overrides(delivery_raw)
 
-    delivery = None
+    delivery: DeliveryConfig | None = None
     try:
         from opensquilla.scheduler.delivery import infer_delivery
 

@@ -22,7 +22,6 @@ from opensquilla.scheduler.types import (
     SessionTarget,
 )
 
-
 # --- pure unit tests on the resolver --------------------------------------
 
 

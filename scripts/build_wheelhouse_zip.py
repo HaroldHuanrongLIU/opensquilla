@@ -79,7 +79,6 @@ TEXT_RELEASE_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-RECOMMENDED_PURE_SOURCE_WHEELS = ("jieba>=0.42",)
 
 
 @dataclass(frozen=True)
@@ -167,21 +166,6 @@ def python_runtime_target_triple(platform_tag: str) -> str:
         return triples[platform_tag]
     except KeyError as exc:
         raise SystemExit(f"No bundled Python runtime mapping for platform: {platform_tag}") from exc
-
-
-def pip_platform_tag(platform_tag: str) -> str:
-    tags = {
-        "linux-arm64": "manylinux2014_aarch64",
-        "linux-x64": "manylinux2014_x86_64",
-        "macos-arm64": "macosx_12_0_arm64",
-        "macos-x64": "macosx_10_13_x86_64",
-        "windows-arm64": "win_arm64",
-        "windows-x64": "win_amd64",
-    }
-    try:
-        return tags[platform_tag]
-    except KeyError as exc:
-        raise SystemExit(f"No pip platform mapping for platform: {platform_tag}") from exc
 
 
 def python_runtime_asset_name(
@@ -312,6 +296,10 @@ def build_wheel(repo_root: Path, wheel_dir: Path, env: dict[str, str]) -> Path:
     return find_built_wheel(wheel_dir)
 
 
+def pip_command(*args: str) -> list[str]:
+    return ["uv", "run", "--with", "pip", "python", "-m", "pip", *args]
+
+
 def build_wheelhouse_command(
     package_dir: Path,
     wheel_path: Path,
@@ -322,50 +310,21 @@ def build_wheelhouse_command(
     python_minor: int,
     extra_extras: tuple[str, ...] = (),
 ) -> list[str]:
+    validate_wheelhouse_target_platform(target_platform_tag)
     extras = tuple(extra for extra in (profile, *extra_extras) if extra != "core")
     target = str(wheel_path if not extras else f"{wheel_path}[{','.join(extras)}]")
-    if target_platform_tag == platform_tag():
-        return [sys.executable, "-m", "pip", "wheel", "--wheel-dir", str(package_dir), target]
-    python_version = f"{python_major}{python_minor}"
-    return [
-        sys.executable,
-        "-m",
-        "pip",
-        "download",
-        "--dest",
-        str(package_dir),
-        "--find-links",
-        str(package_dir),
-        "--only-binary=:all:",
-        "--platform",
-        pip_platform_tag(target_platform_tag),
-        "--implementation",
-        "cp",
-        "--python-version",
-        python_version,
-        "--abi",
-        f"cp{python_version}",
-        "--abi",
-        "abi3",
-        target,
-    ]
+    return pip_command("wheel", "--wheel-dir", str(package_dir), target)
 
 
-def cross_platform_seed_wheel_commands(package_dir: Path, profile: str) -> list[list[str]]:
-    if profile != "recommended":
-        return []
-    return [
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            "--wheel-dir",
-            str(package_dir),
-            requirement,
-        ]
-        for requirement in RECOMMENDED_PURE_SOURCE_WHEELS
-    ]
+def validate_wheelhouse_target_platform(target_platform_tag: str) -> None:
+    host_platform_tag = platform_tag()
+    if target_platform_tag == host_platform_tag:
+        return
+    raise SystemExit(
+        "Wheelhouse builds must run on the target platform so dependency markers "
+        f"resolve correctly: host={host_platform_tag}, target={target_platform_tag}. "
+        "Use --skip-wheelhouse only for metadata/package-layout checks."
+    )
 
 
 def download_wheelhouse(
@@ -379,9 +338,7 @@ def download_wheelhouse(
     python_minor: int,
     extra_extras: tuple[str, ...] = (),
 ) -> None:
-    if target_platform_tag != platform_tag():
-        for command in cross_platform_seed_wheel_commands(package_dir, profile):
-            run(command, cwd=wheel_path.parent, env=env)
+    validate_wheelhouse_target_platform(target_platform_tag)
     run(
         build_wheelhouse_command(
             package_dir,
@@ -627,7 +584,7 @@ echo "Start it with:"
 echo "  opensquilla gateway run"
 echo
 echo "Then open:"
-echo "  http://127.0.0.1:18790/control/"
+echo "  http://127.0.0.1:18791/control/"
 """
 
 
@@ -723,7 +680,7 @@ Write-Host "Start it with:"
 Write-Host "  opensquilla gateway run"
 Write-Host ""
 Write-Host "Then open:"
-Write-Host "  http://127.0.0.1:18790/control/"
+Write-Host "  http://127.0.0.1:18791/control/"
 """
 
 
@@ -864,7 +821,7 @@ fi
 
 echo
 echo "Starting OpenSquilla gateway."
-echo "Web UI: http://127.0.0.1:18790/control/"
+echo "Web UI: http://127.0.0.1:18791/control/"
 echo "Press Ctrl+C in this terminal to stop the gateway."
 if [[ -t 1 ]]; then
   exec "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" gateway run
@@ -1105,7 +1062,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Starting OpenSquilla gateway."
-Write-Host "Web UI: http://127.0.0.1:18790/control/"
+Write-Host "Web UI: http://127.0.0.1:18791/control/"
 Write-Host "Press Ctrl+C in this terminal to stop the gateway."
 $OutputRedirected = [Console]::IsOutputRedirected
 if (-not $OutputRedirected) {
@@ -1223,7 +1180,7 @@ def render_readme(
 
 1. Right-click `Start OpenSquilla.cmd` -> **Run as administrator**.
 2. Complete onboarding.
-3. Open `http://127.0.0.1:18790/control/`.
+3. Open `http://127.0.0.1:18791/control/`.
 
 Notes:
 - Keep the terminal open. Closing it stops the gateway.
@@ -1282,7 +1239,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 2. Keep the terminal open. Closing the terminal stops the gateway.
 3. Complete onboarding. On first run, choose a provider and paste the requested
    keys; later starts let you review or change the config.
-4. Open `http://127.0.0.1:18790/control/`.
+4. Open `http://127.0.0.1:18791/control/`.
 """
         else:
             command_section = f"""## macOS / Linux
@@ -1295,7 +1252,7 @@ Set-ExecutionPolicy -Scope Process Bypass
     web_ui_note = (
         ""
         if portable
-        else "Open `http://127.0.0.1:18790/control/`.\n\n"
+        else "Open `http://127.0.0.1:18791/control/`.\n\n"
     )
 
     return f"""# OpenSquilla {app_version} {release_kind}
@@ -1568,6 +1525,8 @@ def main(argv: list[str] | None = None) -> int:
     env = build_subprocess_env(work_dir)
     wheel_dir = work_dir / "wheels"
     tag = args.platform_tag or platform_tag()
+    if not args.skip_wheelhouse:
+        validate_wheelhouse_target_platform(tag)
     name = release_name(
         app_version=app_version,
         platform_tag=tag,

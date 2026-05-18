@@ -163,14 +163,14 @@ def _owner_ctx(session_key: str = "agent:main:cli:owner") -> ToolContext:
 def _install_fake_infer(monkeypatch, snapshot: ReplyTargetSnapshot | None) -> None:
     """Patch infer_delivery so test calls do not hit real session storage."""
     from opensquilla.scheduler import delivery as delivery_mod
-    from opensquilla.scheduler.types import DeliveryConfig as DC
-    from opensquilla.scheduler.types import DeliveryMode as DM
+    from opensquilla.scheduler.types import DeliveryConfig as LocalDeliveryConfig
+    from opensquilla.scheduler.types import DeliveryMode as LocalDeliveryMode
 
     async def _stub(session_storage, session_key, user_overrides):
         if snapshot is None:
-            return DC(mode=DM.NONE)
-        return DC(
-            mode=DM.ORIGIN,
+            return LocalDeliveryConfig(mode=LocalDeliveryMode.NONE)
+        return LocalDeliveryConfig(
+            mode=LocalDeliveryMode.ORIGIN,
             channel_name=snapshot.channel_name,
             channel_id=snapshot.to,
             account_id=snapshot.account_id,

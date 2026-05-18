@@ -5,6 +5,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from opensquilla.gateway.config import GatewayConfig
+
 # Real secret-shape detectors. Each pattern matches a shipped vendor key
 # format so an accidentally-committed credential is caught at CI time
 # before the public tree is published.
@@ -162,6 +164,9 @@ def test_release_sop_documents_github_only_validation_boundary() -> None:
         "opensquilla-latest-py3-none-any.whl",
         "SHA256SUMS",
         "stable release URLs resolve",
+        "post-publish latest URL checks",
+        "curl --fail --head --location",
+        "wheelhouse zips, macOS portable zips, and Linux portable zips are intentionally",
         "Mark-of-the-Web",
         "SmartScreen",
         "Smart App Control",
@@ -177,9 +182,21 @@ def test_readme_warns_stable_wheel_alias_requires_pep508_form() -> None:
     text = Path("README.md").read_text(encoding="utf-8")
 
     assert 'uv tool install "opensquilla[recommended] @ https://github.com' in text
+    assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in text
+    assert '. "$HOME/.local/bin/env"' in text
+    assert 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex"' in text
+    assert "$env:Path" in text
     assert "PEP 508" in text
     assert "do not" in text
     assert "bare wheel path with extras" in text
+
+
+def test_readme_uses_gateway_default_port() -> None:
+    text = Path("README.md").read_text(encoding="utf-8")
+    expected_port = GatewayConfig.model_fields["port"].default
+
+    assert f"127.0.0.1:{expected_port}" in text
+    assert "18790" not in text
 
 
 def test_tracked_sources_do_not_keep_agent_revision_markers() -> None:

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import types
+from io import StringIO
 from pathlib import Path
+
+from rich.console import Console
 
 
 def test_wait_for_setup_start_flushes_visible_prompt_before_accepting_enter(monkeypatch):
@@ -547,15 +550,19 @@ def test_router_tier_overrides_edit_only_selected_tiers():
     assert overrides == {"t2": {"provider": "openrouter", "model": "custom/reasoner"}}
 
 
-def test_interactive_feishu_websocket_prompts_only_core_fields(
-    tmp_path, monkeypatch, capsys
-):
+def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeypatch):
     import sys
     import types
 
     from opensquilla.onboarding import flow
 
     target = tmp_path / "c.toml"
+    console_output = StringIO()
+    monkeypatch.setattr(
+        flow,
+        "console",
+        Console(file=console_output, force_terminal=False, highlight=False),
+    )
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     monkeypatch.setattr(flow, "_is_tty", lambda: True)
     monkeypatch.setattr(flow.importlib.util, "find_spec", lambda name: None)
@@ -601,7 +608,7 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(
 
     flow.run_interactive_channel_add(None)
 
-    out = capsys.readouterr().out
+    out = console_output.getvalue()
     normalized_out = " ".join(out.split())
     assert "Feishu websocket mode requires the optional feishu extra" in out
     assert "Portable zip:" in out
@@ -617,12 +624,20 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(
     assert 'connection_mode = "websocket"' in data
 
 
-def test_channel_saved_output_separates_configured_from_connected(capsys):
+def test_channel_saved_output_separates_configured_from_connected(monkeypatch):
+    from opensquilla.onboarding import flow
     from opensquilla.onboarding.flow import _print_channel_saved
+
+    console_output = StringIO()
+    monkeypatch.setattr(
+        flow,
+        "console",
+        Console(file=console_output, force_terminal=False, highlight=False),
+    )
 
     _print_channel_saved("feishu")
 
-    out = capsys.readouterr().out
+    out = console_output.getvalue()
     assert "configured, not connected yet" in out
     assert "Restart the gateway process" in out
     assert "opensquilla channels status feishu --json" in out
@@ -632,13 +647,17 @@ def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert (
-        "| New user | [Preview release package](#preview-release-package) | Recommended |"
+        "| Windows user | [Windows portable](#windows-portable-no-python) | Recommended |"
     ) in readme
     assert (
-        "| Command-line user | [Install from source](#install-from-source) | Available now |"
+        "| Command-line user | [Install with uv](#install-with-uv) | Recommended |"
     ) in readme
     assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
-    assert "Download the preview package if you want to try OpenSquilla as a local app" in readme
+    assert "Use this on Windows, macOS, or Linux if you prefer a terminal install." in readme
+    assert (
+        "Use Windows portable or Install with uv when you only want to run "
+        "OpenSquilla."
+    ) in readme
     assert "The recommended portable zip includes Feishu websocket support by default." in readme
     assert "`recommended` is the\nnormal runtime profile" in readme
     assert "Messaging channel adapters are opt-in extras." in readme

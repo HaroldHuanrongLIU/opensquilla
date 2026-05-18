@@ -9,6 +9,8 @@ import tomllib
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
+
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "build_wheelhouse_zip.py"
 REPO_ROOT = SCRIPT_PATH.parents[1]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "wheelhouse-release.yml"
@@ -103,45 +105,26 @@ def test_python_runtime_asset_name_uses_platform_triple() -> None:
     )
 
 
-def test_pip_platform_tag_maps_target_platforms() -> None:
-    module = load_script()
-
-    assert module.pip_platform_tag("macos-arm64") == "macosx_12_0_arm64"
-    assert module.pip_platform_tag("macos-x64") == "macosx_10_13_x86_64"
-    assert module.pip_platform_tag("windows-x64") == "win_amd64"
-    assert module.pip_platform_tag("linux-x64") == "manylinux2014_x86_64"
-
-
-def test_cross_platform_wheelhouse_uses_pip_download_target(tmp_path: Path) -> None:
+def test_cross_platform_wheelhouse_requires_target_host(tmp_path: Path) -> None:
     module = load_script()
     module.platform_tag = lambda: "linux-x64"
     wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
     package_dir = tmp_path / "packages"
 
-    command = module.build_wheelhouse_command(
-        package_dir,
-        wheel_path,
-        "recommended",
-        target_platform_tag="macos-arm64",
-        python_major=3,
-        python_minor=12,
-    )
-
-    assert command[:4] == [sys.executable, "-m", "pip", "download"]
-    assert "--dest" in command
-    assert str(package_dir) in command
-    assert "--find-links" in command
-    assert "--platform" in command
-    assert "macosx_12_0_arm64" in command
-    assert "--only-binary=:all:" in command
-    assert "--abi" in command
-    assert "cp312" in command
-    assert "abi3" in command
-    assert str(wheel_path) + "[recommended]" in command
+    with pytest.raises(SystemExit, match="must run on the target platform"):
+        module.build_wheelhouse_command(
+            package_dir,
+            wheel_path,
+            "recommended",
+            target_platform_tag="windows-x64",
+            python_major=3,
+            python_minor=12,
+        )
 
 
 def test_portable_recommended_wheelhouse_includes_feishu_extra(tmp_path: Path) -> None:
     module = load_script()
+    module.platform_tag = lambda: "windows-x64"
     wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
     package_dir = tmp_path / "packages"
 
@@ -156,19 +139,6 @@ def test_portable_recommended_wheelhouse_includes_feishu_extra(tmp_path: Path) -
     )
 
     assert str(wheel_path) + "[recommended,feishu]" in command
-
-
-def test_cross_platform_seed_wheel_commands_include_pure_python_sources(tmp_path: Path) -> None:
-    module = load_script()
-    package_dir = tmp_path / "packages"
-
-    commands = module.cross_platform_seed_wheel_commands(package_dir, "recommended")
-
-    assert commands == [
-        [sys.executable, "-m", "pip", "wheel", "--wheel-dir", str(package_dir), "jieba>=0.42"]
-    ]
-    assert module.cross_platform_seed_wheel_commands(package_dir, "core") == []
-
 
 def test_release_wheel_allows_router_provenance_markdown() -> None:
     module = load_script()

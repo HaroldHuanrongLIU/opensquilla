@@ -7,7 +7,6 @@ validated up front and rejected at add time when malformed.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -23,7 +22,6 @@ from opensquilla.scheduler.types import (
     ScheduleKind,
     SessionTarget,
 )
-
 
 # --- URL validation --------------------------------------------------------
 
@@ -183,7 +181,7 @@ def _webhook_job(url: str, token: str = "") -> CronJob:
 class _RecordingAsyncClient:
     """Capture httpx.AsyncClient.post calls for assertion."""
 
-    instances: list["_RecordingAsyncClient"] = []
+    instances: list[_RecordingAsyncClient] = []
 
     def __init__(self, *, timeout=None, **_kw) -> None:
         self.timeout = timeout
@@ -210,7 +208,6 @@ class _RecordingAsyncClient:
 
 async def test_deliver_webhook_posts_json_with_bearer(monkeypatch) -> None:
     _RecordingAsyncClient.instances.clear()
-    import opensquilla.scheduler.delivery as delivery_mod
 
     class _FakeHttpx:
         AsyncClient = _RecordingAsyncClient

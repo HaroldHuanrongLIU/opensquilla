@@ -32,7 +32,6 @@ from opensquilla.scheduler.types import (
     SessionTarget,
 )
 
-
 # --- exact / jitter override ---------------------------------------------
 
 

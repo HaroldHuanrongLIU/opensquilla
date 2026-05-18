@@ -19,7 +19,11 @@ import pytest
 
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.rpc_cron import _handle_cron_add, _job_to_wire
-from opensquilla.scheduler.delivery import DeliveryChain, build_reply_rendezvous_envelope
+from opensquilla.scheduler.delivery import DeliveryChain
+from opensquilla.scheduler.jobs import (
+    execute_with_timeout,
+    set_failure_dispatcher,
+)
 from opensquilla.scheduler.ops import SchedulerOps
 from opensquilla.scheduler.payloads import (
     AGENT_TURN_KIND,
@@ -34,7 +38,6 @@ from opensquilla.scheduler.types import (
     ScheduleKind,
     SessionTarget,
 )
-
 
 # --- persistence round-trip ------------------------------------------------
 
@@ -255,12 +258,6 @@ def test_job_to_wire_omits_failure_destination_when_absent() -> None:
 # The dispatch hook in scheduler.jobs.execute_with_timeout fires for ANY
 # failed run regardless of handler_key (agent_run, system_event, timeout,
 # generic exception), so the FD wire contract is honored uniformly.
-
-
-from opensquilla.scheduler.jobs import (
-    execute_with_timeout,
-    set_failure_dispatcher,
-)
 
 
 class _RecordingAdapter:

@@ -108,7 +108,7 @@ class _DreamFileLock:
         if os.name == "nt":
             import msvcrt
 
-            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+            getattr(msvcrt, "locking")(self._fh.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
         else:
             import fcntl
 
@@ -123,7 +123,9 @@ class _DreamFileLock:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                getattr(msvcrt, "locking")(
+                    self._fh.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                )
             else:
                 import fcntl
 

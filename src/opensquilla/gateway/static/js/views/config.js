@@ -31,7 +31,7 @@ const ConfigView = (() => {
     'host':
       'Network interface the gateway binds to. Defaults to 127.0.0.1 (loopback). Use 0.0.0.0 to expose on all interfaces — opt-in only, never on an untrusted network.',
     'port':
-      'TCP port for the ASGI gateway. Default 18790. Pick a free port; the WebSocket and REST endpoints share it.',
+      'TCP port for the ASGI gateway. Default 18791. Pick a free port; the WebSocket and REST endpoints share it.',
     'debug':
       'Security-sensitive developer mode. Auth scope expansion can take effect immediately for new connections; Starlette debug, uvicorn log level, and some startup wiring need a gateway restart. Keep it off in shared deployments.',
     'diagnostics_enabled':

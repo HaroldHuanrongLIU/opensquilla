@@ -146,12 +146,7 @@ async def _read_image_file(path: str) -> tuple[bytes, str]:
 
 def _resolve_media_path(path: str) -> Path:
     ctx = current_tool_context.get()
-    root = (
-        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
-        if ctx and ctx.workspace_dir
-        else None
-    )
-    reject_foreign_host_path(path, platform=os.name, workspace=root)
+    reject_foreign_host_path(path, platform=os.name)
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
         return candidate.resolve(strict=False)
@@ -516,12 +511,12 @@ def _resolve_generated_image_path(filename: str | None, output_format: str) -> P
     ext = "jpg" if output_format == "jpeg" else output_format
     raw = filename or f"generated-image-{uuid.uuid4().hex[:12]}.{ext}"
     ctx = current_tool_context.get()
+    reject_foreign_host_path(raw, platform=os.name)
     root = (
         Path(ctx.workspace_dir).expanduser().resolve(strict=False)
         if ctx and ctx.workspace_dir
         else Path.cwd()
     )
-    reject_foreign_host_path(raw, platform=os.name, workspace=root)
     candidate = Path(raw).expanduser()
     if not candidate.suffix:
         candidate = candidate.with_suffix(f".{ext}")

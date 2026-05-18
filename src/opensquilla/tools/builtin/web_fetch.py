@@ -13,12 +13,12 @@ import structlog
 from cachetools import TTLCache
 
 from opensquilla.env import trust_env as _trust_env
-from opensquilla.sandbox.integration import sandboxed
-from opensquilla.tools.registry import tool
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RESULT_BUDGET_POLICY,
     ToolResultBudgetPolicy,
 )
+from opensquilla.sandbox.integration import sandboxed
+from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import SSRFBlockedError, current_tool_context
 
