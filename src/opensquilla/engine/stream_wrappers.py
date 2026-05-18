@@ -21,6 +21,8 @@ from typing import cast
 
 from .types import AgentEvent, RunHeartbeatEvent, ToolUseStartEvent
 
+_STREAM_DONE = object()
+
 # ---------------------------------------------------------------------------
 # JSON repair helpers
 # ---------------------------------------------------------------------------
@@ -134,41 +136,51 @@ async def heartbeat_stream(
             yield event
         return
 
-    aiter = stream.__aiter__()
+    queue: asyncio.Queue[AgentEvent | Exception | object] = asyncio.Queue()
     started = time.monotonic()
     last_event_at = started
-    pending: asyncio.Task[AgentEvent] | None = asyncio.create_task(_next_event(aiter))
+    driver = asyncio.create_task(_drain_stream(stream.__aiter__(), queue))
 
     try:
-        while pending is not None:
-            done, _ = await asyncio.wait({pending}, timeout=interval)
-            if pending in done:
-                try:
-                    event = pending.result()
-                except StopAsyncIteration:
-                    return
-                last_event_at = time.monotonic()
-                yield event
-                pending = asyncio.create_task(_next_event(aiter))
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=interval)
+            except TimeoutError:
+                now = time.monotonic()
+                yield RunHeartbeatEvent(
+                    phase=phase,
+                    elapsed_ms=int((now - started) * 1000),
+                    idle_ms=int((now - last_event_at) * 1000),
+                    message=message,
+                )
                 continue
 
-            now = time.monotonic()
-            yield RunHeartbeatEvent(
-                phase=phase,
-                elapsed_ms=int((now - started) * 1000),
-                idle_ms=int((now - last_event_at) * 1000),
-                message=message,
-            )
+            if item is _STREAM_DONE:
+                return
+            if isinstance(item, Exception):
+                raise item
+
+            event = cast(AgentEvent, item)
+            last_event_at = time.monotonic()
+            yield event
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
+        if not driver.done():
+            driver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await pending
+                await driver
 
 
-async def _next_event(aiter: AsyncIterator[AgentEvent]) -> AgentEvent:
-    return cast(AgentEvent, await aiter.__anext__())
-
+async def _drain_stream(
+    aiter: AsyncIterator[AgentEvent],
+    queue: asyncio.Queue[AgentEvent | Exception | object],
+) -> None:
+    try:
+        async for event in aiter:
+            await queue.put(event)
+    except Exception as exc:
+        await queue.put(exc)
+    finally:
+        await queue.put(_STREAM_DONE)
 
 # ---------------------------------------------------------------------------
 # Wrapper 4: Tool-name trim

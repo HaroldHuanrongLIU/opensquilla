@@ -142,12 +142,21 @@ async def test_prompt_user_uses_surface_specific_completions(monkeypatch) -> Non
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
+    class FakeConsole:
+        def print(self, *args, **kwargs) -> None:
+            return None
+
+        def rule(self, *args, **kwargs) -> None:
+            return None
+
     repl_prompt._session = None
+    repl_prompt._sessions.clear()
     monkeypatch.setattr(repl_prompt.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(repl_prompt.sys, "stdout", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(repl_prompt, "_SlashCompleter", FakeSlashCompleter)
     monkeypatch.setattr(repl_prompt, "PromptSession", FakePromptSession)
     monkeypatch.setattr(repl_prompt, "patch_stdout", lambda: FakePatchStdout())
+    monkeypatch.setattr(repl_prompt, "console", FakeConsole())
 
     await repl_prompt.prompt_user("standalone> ", surface=Surface.CLI_STANDALONE)
     await repl_prompt.prompt_user("gateway> ", surface=Surface.CLI_GATEWAY)
@@ -163,6 +172,75 @@ async def test_prompt_user_uses_surface_specific_completions(monkeypatch) -> Non
     assert "/file" in completion_words["gateway> "]
     assert "/models" in completion_words["gateway> "]
     assert len(created_sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_prompt_approval_suppresses_chat_chrome(monkeypatch) -> None:
+    """`prompt_approval` must not draw the chat rule or `/help` toolbar."""
+    rule_labels: list[str] = []
+    prints: list[tuple] = []
+    suppress_during_prompt: list[object] = []
+
+    class FakeSlashCompleter:
+        def __init__(self, surface) -> None:
+            pass
+
+    class FakePromptSession:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def prompt_async(self, prefix: str) -> str:
+            suppress_during_prompt.append(repl_prompt._toolbar_context.get("suppress"))
+            return "o"
+
+    class FakePatchStdout:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class FakeConsole:
+        def print(self, *args, **kwargs) -> None:
+            prints.append((args, kwargs))
+
+        def rule(self, label, *args, **kwargs) -> None:
+            rule_labels.append(label)
+
+    repl_prompt._session = None
+    repl_prompt._sessions.clear()
+    repl_prompt._toolbar_context.update({"model": "prior-model", "session_id": "prior-key"})
+    monkeypatch.setattr(repl_prompt.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(repl_prompt.sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(repl_prompt, "_SlashCompleter", FakeSlashCompleter)
+    monkeypatch.setattr(repl_prompt, "PromptSession", FakePromptSession)
+    monkeypatch.setattr(repl_prompt, "patch_stdout", lambda: FakePatchStdout())
+    monkeypatch.setattr(repl_prompt, "console", FakeConsole())
+
+    result = await repl_prompt.prompt_approval()
+
+    assert result == "o"
+    assert rule_labels == []
+    assert prints == []
+    assert suppress_during_prompt == ["1"]
+    assert repl_prompt._toolbar_context.get("suppress") is None
+    # Prior chat-turn context survives the approval round so the next chat
+    # turn's toolbar still shows the right model / session.
+    assert repl_prompt._toolbar_context.get("model") == "prior-model"
+    assert repl_prompt._toolbar_context.get("session_id") == "prior-key"
+
+
+def test_bottom_toolbar_returns_empty_when_suppressed() -> None:
+    """Suppress flag short-circuits the toolbar regardless of model/session."""
+    saved = dict(repl_prompt._toolbar_context)
+    repl_prompt._toolbar_context.update(
+        {"model": "claude", "session_id": "abc", "suppress": "1"}
+    )
+    try:
+        assert repl_prompt._bottom_toolbar().value == ""
+    finally:
+        repl_prompt._toolbar_context.clear()
+        repl_prompt._toolbar_context.update(saved)
 
 
 class TestChatCommand:

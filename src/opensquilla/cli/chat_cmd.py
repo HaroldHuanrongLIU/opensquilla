@@ -590,6 +590,8 @@ async def _standalone_repl(
                 user_input = await prompt_user(
                     state.prompt_state().label,
                     surface=Surface.CLI_STANDALONE,
+                    model=state.model,
+                    session_id=state.session_key,
                 )
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[yellow]Goodbye.[/yellow]")
@@ -828,6 +830,8 @@ async def _gateway_chat(model: str | None, session_id: str | None) -> None:
                 user_input = await prompt_user(
                     state.prompt_state().label,
                     surface=Surface.CLI_GATEWAY,
+                    model=state.model,
+                    session_id=state.session_key,
                 )
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[yellow]Goodbye.[/yellow]")

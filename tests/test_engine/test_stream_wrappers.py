@@ -1,4 +1,5 @@
 import asyncio
+from contextvars import ContextVar
 
 import pytest
 
@@ -32,6 +33,23 @@ async def test_heartbeat_stream_preserves_upstream_idle_timeout() -> None:
             events.append(event)
 
     assert any(isinstance(event, RunHeartbeatEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stream_preserves_upstream_generator_context() -> None:
+    owner: ContextVar[str | None] = ContextVar("owner", default=None)
+
+    async def source():
+        token = owner.set("turn")
+        try:
+            yield TextDeltaEvent(text="first")
+            yield TextDeltaEvent(text="second")
+        finally:
+            owner.reset(token)
+
+    events = [event async for event in heartbeat_stream(source(), interval=0.02)]
+
+    assert [event.text for event in events] == ["first", "second"]
 
 
 @pytest.mark.asyncio

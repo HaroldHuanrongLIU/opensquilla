@@ -7,13 +7,15 @@ import sys
 from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
+from prompt_toolkit.completion import Completer, FuzzyCompleter, WordCompleter
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from opensquilla.cli.repl.commands import slash_words
+from opensquilla.cli.ui import console
 from opensquilla.engine.commands import DEFAULT_REGISTRY, Surface, parse_surface
 from opensquilla.paths import state_dir
 
@@ -25,6 +27,11 @@ class PromptConfig:
 
 _session: PromptSession[str] | None = None
 _sessions: dict[Surface, PromptSession[str]] = {}
+_toolbar_context: dict[str, str | None] = {
+    "model": None,
+    "session_id": None,
+    "suppress": None,
+}
 
 
 def _key_bindings() -> KeyBindings:
@@ -68,6 +75,37 @@ class _SlashCompleter(Completer):
         yield from self._fuzzy.get_completions(document, complete_event)
 
 
+def _html_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _bottom_toolbar() -> HTML:
+    if _toolbar_context.get("suppress"):
+        return HTML("")
+    model = _toolbar_context.get("model")
+    session_id = _toolbar_context.get("session_id")
+
+    parts: list[str] = []
+    if model:
+        parts.append(_html_escape(model))
+    if session_id:
+        parts.append(f"session {_html_escape(session_id)}")
+    parts.append("⏎ send")
+    parts.append("/help")
+
+    middle = " · ".join(parts)
+    return HTML(f"<style fg='ansibrightblack'>── {middle} ────</style>")
+
+
+def _chrome_top(label: str = "you") -> None:
+    console.print()
+    console.rule(label, style="dim", characters="─", align="left")
+
+
+def _chrome_bottom() -> None:
+    console.print()
+
+
 def _prompt_session(surface: Surface | str = Surface.CLI_GATEWAY) -> PromptSession[str]:
     global _session
     parsed = parse_surface(surface) if isinstance(surface, str) else surface
@@ -80,6 +118,7 @@ def _prompt_session(surface: Surface | str = Surface.CLI_GATEWAY) -> PromptSessi
             complete_style=CompleteStyle.MULTI_COLUMN,
             enable_history_search=True,
             key_bindings=_key_bindings(),
+            bottom_toolbar=_bottom_toolbar,
         )
     if parsed == Surface.CLI_GATEWAY:
         _session = _sessions[parsed]
@@ -91,8 +130,15 @@ async def prompt_user(
     *,
     config: PromptConfig | None = None,
     surface: Surface | str = Surface.CLI_GATEWAY,
+    model: str | None = None,
+    session_id: str | None = None,
+    chrome: bool = True,
 ) -> str | None:
-    """Read one prompt line, using prompt-toolkit for real terminals."""
+    """Read one prompt line, using prompt-toolkit for real terminals.
+
+    Set ``chrome=False`` to skip the top rule and bottom toolbar (used by
+    approval prompts so they don't masquerade as chat-turn input).
+    """
     cfg = config or PromptConfig()
     if cfg.force_plain or not sys.stdin.isatty() or not sys.stdout.isatty():
         loop = asyncio.get_running_loop()
@@ -107,17 +153,31 @@ async def prompt_user(
 
         return await loop.run_in_executor(None, _readline)
 
+    previous_suppress = _toolbar_context.get("suppress")
+    if chrome:
+        _toolbar_context["model"] = model
+        _toolbar_context["session_id"] = session_id
+        _toolbar_context["suppress"] = None
+        _chrome_top("you")
+    else:
+        _toolbar_context["suppress"] = "1"
+
     try:
         with patch_stdout():
             return await _prompt_session(surface).prompt_async(prefix)
     except EOFError:
         return None
+    finally:
+        if chrome:
+            _chrome_bottom()
+        else:
+            _toolbar_context["suppress"] = previous_suppress
 
 
 async def prompt_approval(prefix: str = "Decision [o/a/b/d]: ") -> str:
     """Read an approval decision without exposing prompt-toolkit details."""
     try:
-        value = await prompt_user(prefix)
+        value = await prompt_user(prefix, chrome=False)
     except KeyboardInterrupt:
         return "d"
     if value is None:
