@@ -8,11 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .source_paths import is_memory_source_path
+from .source_paths import is_searchable_source_path
 from .store import LongTermMemoryStore
 from .types import (
     MemorySearchOpts,
     MemorySearchResult,
+    MemorySource,
     SearchIntent,
     is_lexical_guaranteed_match,
     is_relaxed_keyword_match,
@@ -121,6 +122,31 @@ def _mmr_rerank(
     return selected
 
 
+def _copy_result_with_score(result: MemorySearchResult, score: float) -> MemorySearchResult:
+    return MemorySearchResult(
+        chunk_id=result.chunk_id,
+        path=result.path,
+        source=result.source,
+        start_line=result.start_line,
+        end_line=result.end_line,
+        snippet=result.snippet,
+        score=score,
+        vector_score=result.vector_score,
+        text_score=result.text_score,
+        text=result.text,
+        chunk_hash=result.chunk_hash,
+        metadata=dict(result.metadata),
+        citation=result.citation,
+    )
+
+
+def _rank_score(
+    result: MemorySearchResult,
+    source_weights: dict[MemorySource, float],
+) -> float:
+    return result.score * source_weights.get(result.source, 1.0)
+
+
 class MemoryRetriever:
     """
     Unified retrieval interface that wraps LongTermMemoryStore.
@@ -140,6 +166,7 @@ class MemoryRetriever:
         mmr_lambda: float = 0.7,
         vector_weight: float = 0.7,
         text_weight: float = 0.3,
+        source_weights: dict[MemorySource, float] | None = None,
         sync_manager: Any | None = None,
         effective_metadata: dict[str, str] | None = None,
     ) -> None:
@@ -150,6 +177,7 @@ class MemoryRetriever:
         self._mmr_lambda = mmr_lambda
         self._vector_weight = vector_weight
         self._text_weight = text_weight
+        self._source_weights = source_weights or {MemorySource.sessions: 0.92}
         self._sync_manager = sync_manager
         self._effective_metadata = dict(effective_metadata or {})
 
@@ -163,6 +191,7 @@ class MemoryRetriever:
         if self._sync_manager is not None:
             await self._sync_manager.sync(reason=f"search:{intent.value}")
         opts = opts or MemorySearchOpts()
+        source_filter = getattr(opts, "source", None)
 
         raw_results, _mode = await self._store.search(
             query=query,
@@ -170,6 +199,7 @@ class MemoryRetriever:
             min_score=opts.min_score,
             vector_weight=self._vector_weight,
             text_weight=self._text_weight,
+            source=source_filter,
         )
 
         if self._temporal_decay_enabled:
@@ -205,16 +235,28 @@ class MemoryRetriever:
         filtered = [
             r
             for r in raw_results
-            if is_memory_source_path(str(r.path))
+            if is_searchable_source_path(r.source, str(r.path))
+            and (source_filter is None or r.source == source_filter)
             and (
                 r.score >= opts.min_score
                 or is_relaxed_keyword_match(r)
                 or is_lexical_guaranteed_match(r)
             )
         ]
+        filtered.sort(key=lambda r: _rank_score(r, self._source_weights), reverse=True)
 
         if self._mmr_enabled:
-            k_selected = _mmr_rerank(filtered, lam=self._mmr_lambda, k=opts.max_results)
+            weighted = [
+                _copy_result_with_score(r, _rank_score(r, self._source_weights))
+                for r in filtered
+            ]
+            selected_weighted = _mmr_rerank(
+                weighted,
+                lam=self._mmr_lambda,
+                k=opts.max_results,
+            )
+            original_by_chunk = {r.chunk_id: r for r in filtered}
+            k_selected = [original_by_chunk[r.chunk_id] for r in selected_weighted]
         else:
             k_selected = filtered[: opts.max_results]
         for result in k_selected:

@@ -110,8 +110,20 @@ def test_chat_tool_results_use_execution_status_for_state() -> None:
     assert "function _toolResultIsError(payload)" in source
     assert "function _toolResultStateClass(payload)" in source
     assert "chat-tools-collapse--unknown" in source
-    assert "_buildToolResultDOM(content, isError, _toolResultIsTruncated(payload))" in source
-    assert "_buildToolResultDOM(content, isError, _toolResultIsTruncated(seg))" in source
+    assert "_toolResultIsTruncated(payload)," in source
+    assert "_toolResultIsTruncated(seg)," in source
+
+
+def test_chat_memory_search_results_surface_sources() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "function _memorySearchSourceRows(content)" in source
+    assert "function _buildMemorySearchSourceDOM(content)" in source
+    assert "toolName === 'memory_search'" in source
+    assert "data-tool-name" in source
+    assert "chat-memory-source-badge--sessions" in css
+    assert "chat-memory-source-citation" in css
 
 
 def test_chat_url_agent_query_resolves_default_webchat_session() -> None:

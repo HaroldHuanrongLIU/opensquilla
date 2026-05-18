@@ -892,6 +892,43 @@
   word-break: break-all;
 }
 
+.chat-memory-sources {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.chat-memory-source {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.chat-memory-source-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.chat-memory-source-badge--sessions {
+  border-color: var(--accent);
+}
+
+.chat-memory-source-citation {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-tool-view-btn {
   margin-top: var(--sp-1);
 }

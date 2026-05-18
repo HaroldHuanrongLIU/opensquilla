@@ -130,12 +130,20 @@ def memory_status_cmd(
     table.add_column("Status")
     table.add_column("Entries", justify="right")
     table.add_column("Size bytes", justify="right")
+    table.add_column("Sources")
     table.add_column("Error")
+    source_counts = payload.get("sourceCounts") or {}
+    source_summary = ", ".join(
+        f"{source} {counts.get('files', 0)} files/{counts.get('chunks', 0)} chunks"
+        for source, counts in sorted(source_counts.items())
+        if isinstance(counts, dict)
+    )
     table.add_row(
         str(payload.get("backend") or ""),
         str(payload.get("status") or ""),
         "" if payload.get("entryCount") is None else str(payload.get("entryCount")),
         "" if payload.get("sizeBytes") is None else str(payload.get("sizeBytes")),
+        source_summary,
         str(payload.get("error") or ""),
     )
     console.print(table)
@@ -207,6 +215,11 @@ def memory_search_cmd(
     query: str = typer.Argument(..., help="Search query"),
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum results"),
+    source: str = typer.Option(
+        "all",
+        "--source",
+        help="Search source: all, memory, or sessions",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Search durable memory from the running gateway."""
@@ -220,7 +233,7 @@ def memory_search_cmd(
     async def _run(client):
         return await client.call(
             "memory.search",
-            {"query": query, "agentId": agent_id, "limit": limit},
+            {"query": query, "agentId": agent_id, "limit": limit, "source": source},
         )
 
     payload = run_gateway_sync(_run, json_output=json_output)
@@ -229,12 +242,14 @@ def memory_search_cmd(
         return
 
     table = Table(title=f"Memory search - agent={agent_id}", show_header=True)
+    table.add_column("Source")
     table.add_column("Path")
     table.add_column("Lines")
     table.add_column("Score", justify="right")
     table.add_column("Snippet")
     for row in payload.get("results", []):
         table.add_row(
+            str(row.get("source") or "memory"),
             str(row.get("path") or ""),
             f"{row.get('startLine', '')}-{row.get('endLine', '')}",
             f"{float(row.get('score') or 0.0):.3f}",

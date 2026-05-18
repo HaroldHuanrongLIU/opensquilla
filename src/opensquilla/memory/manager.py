@@ -5,12 +5,10 @@ MemoryRetriever + TurnCaptureService for one agent. The facade methods stay
 narrow and observational so callers can migrate off direct attribute access
 without changing retrieval, capture, or prompt behavior.
 
-`build_memory_managers()` is a verbatim function-extraction of the
-construction logic that used to live inline in
-``gateway/boot.py`` between the per-agent stores comment and the
-``create_memory_tools`` call. Behavior is intended to be identical —
-same embedding-provider resolution, same db-path resolution, same
-per-agent loop ordering, same ``await`` sequence, same log event names.
+`build_memory_managers()` owns the construction logic that used to live
+inline in ``gateway/boot.py`` between the per-agent stores comment and
+the ``create_memory_tools`` call. It preserves that lifecycle while
+centralizing later memory-source wiring in one place.
 
 Imports of the heavy construction classes (``LongTermMemoryStore`` etc.)
 are intentionally **function-local** inside ``build_memory_managers``.
@@ -411,10 +409,12 @@ class MemoryManager:
 async def build_memory_managers(
     config: GatewayConfig,
     agent_ids: list[str],
+    *,
+    session_storage: Any | None = None,
 ) -> dict[str, MemoryManager]:
     """Construct per-agent ``MemoryManager`` instances from gateway config.
 
-    Mirrors the legacy inline logic from ``gateway/boot.py`` exactly:
+    Preserves the legacy inline boot lifecycle from ``gateway/boot.py``:
 
     1. Resolve embedding provider (FTS-only fallback when no API key).
     2. Run one-time legacy data/memory.db migration.
@@ -422,6 +422,7 @@ async def build_memory_managers(
        - Resolve db_path (env override for ``main``, else per-agent path)
        - Build + initialize ``LongTermMemoryStore``
        - Resolve memory_dir + agent_workspace
+       - Build optional derived session source indexer
        - Build + start ``MemorySyncManager``
        - Build ``MemoryRetriever`` (wired to sync_manager for search-time sync)
        - Build ``TurnCaptureService``
@@ -447,6 +448,7 @@ async def build_memory_managers(
     )
     from .embedding_resolver import create_embedding_provider, resolve_memory_embedding
     from .retrieval import MemoryRetriever
+    from .session_source import SessionSourceIndexer
     from .store import LongTermMemoryStore
     from .sync_manager import MemorySyncManager
     from .turn_capture import TurnCaptureService
@@ -531,6 +533,16 @@ async def build_memory_managers(
                         error=str(exc),
                     )
 
+            session_indexer = (
+                SessionSourceIndexer(
+                    storage=session_storage,
+                    store=in_flight_store,
+                    agent_id=agent_id,
+                )
+                if session_storage is not None
+                else None
+            )
+
             # Build + start sync_manager
             in_flight_sync = MemorySyncManager(
                 store=in_flight_store,
@@ -541,6 +553,7 @@ async def build_memory_managers(
                 ttl_sweep_interval_minutes=getattr(
                     cfg, "ttl_sweep_interval_minutes", 0.0
                 ),
+                session_indexer=session_indexer,
             )
             await in_flight_sync.start()
 

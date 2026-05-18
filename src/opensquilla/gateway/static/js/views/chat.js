@@ -3369,6 +3369,7 @@ const ChatView = (() => {
     const details = document.createElement('details');
     details.className = 'chat-tools-collapse' + (isRunning ? ' chat-tools-collapse--running' : '');
     if (toolId) details.setAttribute('data-tool-id', toolId);
+    details.setAttribute('data-tool-name', name || 'tool');
 
     const summary = document.createElement('summary');
     summary.className = 'chat-tools-summary';
@@ -3424,7 +3425,50 @@ const ChatView = (() => {
     return !!(status && status.truncated);
   }
 
-  function _buildToolResultDOM(content, isError, isTruncated = false) {
+  function _memorySearchSourceRows(content) {
+    if (!content || typeof content !== 'string') return [];
+    const rows = [];
+    const pattern = /^\[(\d+)\]\s+(.+?)\s+\(source:\s*([^;]+);\s*lines\s+([^;]+);\s*citation:\s*([^;]+);/;
+    for (const line of content.split('\n')) {
+      const match = line.match(pattern);
+      if (!match) continue;
+      rows.push({
+        index: match[1],
+        path: match[2],
+        source: match[3],
+        lines: match[4],
+        citation: match[5],
+      });
+      if (rows.length >= 6) break;
+    }
+    return rows;
+  }
+
+  function _buildMemorySearchSourceDOM(content) {
+    const rows = _memorySearchSourceRows(content);
+    if (!rows.length) return null;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-memory-sources';
+    for (const row of rows) {
+      const item = document.createElement('div');
+      item.className = 'chat-memory-source';
+
+      const badge = document.createElement('span');
+      badge.className = 'chat-memory-source-badge chat-memory-source-badge--' + row.source;
+      badge.textContent = row.source;
+      item.appendChild(badge);
+
+      const cite = document.createElement('span');
+      cite.className = 'chat-memory-source-citation';
+      cite.textContent = row.citation || (row.path + '#L' + row.lines);
+      item.appendChild(cite);
+      wrap.appendChild(item);
+    }
+    return wrap;
+  }
+
+  function _buildToolResultDOM(content, isError, isTruncated = false, toolName = '') {
     const preview = _truncate(content, 200);
     if (!preview || preview.trim() === '') return null;
 
@@ -3437,6 +3481,11 @@ const ChatView = (() => {
     previewDiv.className = 'chat-tool-result-preview';
     previewDiv.textContent = preview;
     div.appendChild(previewDiv);
+
+    if (toolName === 'memory_search') {
+      const sources = _buildMemorySearchSourceDOM(content);
+      if (sources) div.appendChild(sources);
+    }
 
     if (content.length > 200) {
       const viewBtn = document.createElement('button');
@@ -3482,6 +3531,7 @@ const ChatView = (() => {
     const content = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
     const isError = _toolResultIsError(payload);
     const toolId = payload.tool_use_id || '';
+    let toolName = payload.name || payload.tool_name || '';
 
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
@@ -3489,10 +3539,11 @@ const ChatView = (() => {
     // Transition tool container from running → success/error and find target container
     let resultTarget = body; // default: append to msg-body
     if (toolId) {
-        const details = body.querySelector('[data-tool-id="' + toolId + '"]');
-        if (details) {
-          details.classList.remove('chat-tools-collapse--running');
-          details.classList.add(_toolResultStateClass(payload));
+      const details = body.querySelector('[data-tool-id="' + toolId + '"]');
+      if (details) {
+        toolName = toolName || details.getAttribute('data-tool-name') || '';
+        details.classList.remove('chat-tools-collapse--running');
+        details.classList.add(_toolResultStateClass(payload));
         const summary = details.querySelector('.chat-tools-summary');
         if (summary) summary.removeAttribute('aria-disabled');
         const toolsBody = details.querySelector('.chat-tools-body');
@@ -3508,7 +3559,12 @@ const ChatView = (() => {
     }
 
     // Only show result preview if non-empty
-    const resultDiv = _buildToolResultDOM(content, isError, _toolResultIsTruncated(payload));
+    const resultDiv = _buildToolResultDOM(
+      content,
+      isError,
+      _toolResultIsTruncated(payload),
+      toolName
+    );
     if (!resultDiv) {
       if (_autoScroll) _scrollToBottom();
       return;
@@ -3667,7 +3723,12 @@ const ChatView = (() => {
               details.classList.remove('chat-tools-collapse--running');
               details.classList.add(_toolResultStateClass(seg));
               const toolsBody = details.querySelector('.chat-tools-body');
-              const resultDiv = _buildToolResultDOM(content, isError, _toolResultIsTruncated(seg));
+              const resultDiv = _buildToolResultDOM(
+                content,
+                isError,
+                _toolResultIsTruncated(seg),
+                _toolNameById[toolId] || ''
+              );
               if (resultDiv && toolsBody) toolsBody.appendChild(resultDiv);
               else if (resultDiv) details.appendChild(resultDiv);
 

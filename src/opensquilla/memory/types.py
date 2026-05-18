@@ -41,6 +41,24 @@ def normalize_memory_search_min_score(
 
 class MemorySource(StrEnum):
     memory = "memory"
+    sessions = "sessions"
+
+
+def normalize_memory_source_filter(value: object, *, allow_all: bool = True) -> MemorySource | None:
+    if value is None:
+        return None
+    if isinstance(value, MemorySource):
+        return value
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    if allow_all and raw == "all":
+        return None
+    try:
+        return MemorySource(raw)
+    except ValueError as exc:
+        allowed = "'all', 'memory', or 'sessions'" if allow_all else "'memory' or 'sessions'"
+        raise ValueError(f"source must be {allowed}") from exc
 
 
 class SearchMode(StrEnum):
@@ -78,6 +96,7 @@ class MemorySearchResult:
 class MemorySearchOpts:
     max_results: int = DEFAULT_MEMORY_SEARCH_RESULTS
     min_score: float = DEFAULT_MEMORY_SEARCH_MIN_SCORE
+    source: MemorySource | None = None
 
 
 def is_relaxed_keyword_match(result: MemorySearchResult) -> bool:

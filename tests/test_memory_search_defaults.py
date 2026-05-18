@@ -35,7 +35,11 @@ class _FakeRetriever:
 
 
 class _FakeStore:
+    def __init__(self) -> None:
+        self.search_calls = []
+
     async def search(self, **_kwargs):
+        self.search_calls.append(_kwargs)
         return (
             [
                 MemorySearchResult(
@@ -117,6 +121,75 @@ async def test_memory_retriever_applies_search_intent_to_sync_and_results():
     assert results[0].metadata["search_intent"] == "admin"
 
 
+@pytest.mark.asyncio
+async def test_memory_search_tool_passes_source_filter_to_retriever(tmp_path):
+    registry = ToolRegistry()
+    retriever = _FakeRetriever()
+    create_memory_tools(
+        stores=SimpleNamespace(),
+        retrievers=retriever,
+        memory_dir=str(tmp_path),
+        registry=registry,
+    )
+
+    registered = registry.get("memory_search")
+    assert registered is not None
+    await registered.handler(query="alpha", source="sessions")
+
+    _query, opts, _intent = retriever.calls[0]
+    assert opts.source is MemorySource.sessions
+
+
+@pytest.mark.asyncio
+async def test_memory_retriever_passes_source_filter_to_store():
+    store = _FakeStore()
+    retriever = MemoryRetriever(store)  # type: ignore[arg-type]
+
+    await retriever.search(
+        "alpha",
+        opts=SimpleNamespace(max_results=4, min_score=0.0, source=MemorySource.memory),
+        intent=SearchIntent.TOOL,
+    )
+
+    assert store.search_calls[0]["source"] is MemorySource.memory
+
+
+@pytest.mark.asyncio
+async def test_memory_save_redacts_secrets_before_disk_and_index(tmp_path):
+    class IndexingStore:
+        def __init__(self) -> None:
+            self.indexed: list[tuple[str, str, MemorySource]] = []
+
+        async def index_file(self, *, path, content, source):
+            self.indexed.append((path, content, source))
+            return 1
+
+        async def remove_file(self, _path):
+            return None
+
+    registry = ToolRegistry()
+    store = IndexingStore()
+    create_memory_tools(
+        stores=store,  # type: ignore[arg-type]
+        retrievers=_FakeRetriever(),
+        memory_dir=str(tmp_path),
+        registry=registry,
+    )
+
+    registered = registry.get("memory_save")
+    assert registered is not None
+    secret = "api_key=plain-secret sk-or-v1-abcdefghijklmnopqrstuvwxyz"
+    await registered.handler(content=f"Remember {secret}", path="memory/secure.md")
+
+    disk_text = (tmp_path / "memory" / "secure.md").read_text(encoding="utf-8")
+    indexed_text = store.indexed[0][1]
+    assert "plain-secret" not in disk_text
+    assert "sk-or-v1-abcdefghijklmnopqrstuvwxyz" not in disk_text
+    assert "plain-secret" not in indexed_text
+    assert "sk-or-v1-abcdefghijklmnopqrstuvwxyz" not in indexed_text
+    assert "[REDACTED]" in disk_text
+
+
 def test_memory_tool_descriptions_name_nested_memory_sources(tmp_path):
     registry = ToolRegistry()
     create_memory_tools(
@@ -132,9 +205,10 @@ def test_memory_tool_descriptions_name_nested_memory_sources(tmp_path):
     assert memory_search is not None
     assert memory_get is not None
     assert "MEMORY.md + memory/**/*.md" in memory_search.spec.description
-    assert "not session transcripts" in memory_search.spec.description
-    assert "session_search" in memory_search.spec.description
+    assert "indexed sessions source" in memory_search.spec.description
+    assert "exact transcript full-text search" in memory_search.spec.description
     assert "MEMORY.md or memory/**/*.md" in memory_get.spec.description
+    assert "sessions source results are virtual snippets" in memory_get.spec.description
     assert "MEMORY.md or memory/**/*.md" in memory_get.spec.parameters["path"][
         "description"
     ]
@@ -148,8 +222,11 @@ def test_session_search_description_separates_transcripts_from_curated_memory():
 
     assert session_search is not None
     assert "session transcripts" in session_search.spec.description
+    assert "exact prior chat wording" in session_search.spec.description
+    assert "transcript context" in session_search.spec.description
     assert "memory_search" in session_search.spec.description
     assert "does not search MEMORY.md or memory/**/*.md" in session_search.spec.description
+    assert "debug" not in session_search.spec.description.lower()
 
 
 @pytest.mark.asyncio
@@ -203,3 +280,35 @@ async def test_memory_search_tool_filters_non_source_paths_from_retriever(tmp_pa
     assert "memory/a.md" in output
     assert ".hidden.md" not in output
     assert ".raw_fallbacks" not in output
+
+
+@pytest.mark.asyncio
+async def test_memory_search_tool_keeps_sessions_source_from_retriever(tmp_path):
+    registry = ToolRegistry()
+    retriever = _FakeRetriever(
+        [
+            MemorySearchResult(
+                chunk_id="session",
+                path="sessions/main/session-1.md",
+                source=MemorySource.sessions,
+                start_line=1,
+                end_line=1,
+                snippet="session alpha",
+                score=0.9,
+                text="session alpha",
+            )
+        ]
+    )
+    create_memory_tools(
+        stores=SimpleNamespace(),
+        retrievers=retriever,
+        memory_dir=str(tmp_path),
+        registry=registry,
+    )
+
+    registered = registry.get("memory_search")
+    assert registered is not None
+    output = await registered.handler(query="alpha")
+
+    assert "source: sessions" in output
+    assert "sessions/main/session-1.md" in output

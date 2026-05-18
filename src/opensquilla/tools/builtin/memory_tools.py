@@ -29,11 +29,13 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 import structlog
 
-from opensquilla.memory.source_paths import is_memory_source_path
+from opensquilla.memory.redaction import redact_memory_text
+from opensquilla.memory.source_paths import is_memory_source_path, is_searchable_source_path
 from opensquilla.memory.types import (
     DEFAULT_MEMORY_SEARCH_MIN_SCORE,
     DEFAULT_MEMORY_SEARCH_RESULTS,
     normalize_memory_search_min_score,
+    normalize_memory_source_filter,
 )
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
@@ -291,6 +293,8 @@ def _bounded_memory_search_evidence(text: str, *, query: str = "") -> str:
 
 def _score_parts(result: Any) -> list[str]:
     parts = [f"score: {result.score:.3f}"]
+    if result.vector_score is not None:
+        parts.append(f"vector_score: {result.vector_score:.3f}")
     if result.text_score is not None:
         parts.append(f"text_score: {result.text_score:.3f}")
     return parts
@@ -440,6 +444,9 @@ def create_memory_tools(
         if threat:
             logger.warning("memory_save.blocked", path=path, reason=threat)
             raise ToolError(threat)
+
+    def _sanitize_memory_content(content: str) -> str:
+        return redact_memory_text(content)
 
     async def _maybe_prune(r: ResolvedAgent) -> None:
         if memory_config and getattr(memory_config, "entry_ttl_days", 0) > 0 and r.memory_dir:
@@ -592,9 +599,10 @@ def create_memory_tools(
         try:
             for plan in plans:
                 mem_path = snapshot_map[plan.path].abs_path
-                _ensure_clean_memory_content(plan.content, plan.path)
-                await _enforce_size_limits(r, workspace_dir, mem_path, plan.content, plan.mode)
-                _write_content(mem_path, plan.content, plan.mode)
+                content = _sanitize_memory_content(plan.content)
+                _ensure_clean_memory_content(content, plan.path)
+                await _enforce_size_limits(r, workspace_dir, mem_path, content, plan.mode)
+                _write_content(mem_path, content, plan.mode)
                 written_content = mem_path.read_text(encoding="utf-8")
                 touched_paths.add(plan.path)
                 is_raw_fallback = _is_raw_fallback_save_path(plan.path)
@@ -623,10 +631,15 @@ def create_memory_tools(
         description=(
             "Recall step for prior work, decisions, dated history, todos, and "
             "historical memory not already present in injected context. Searches "
-            "curated memory source files only (MEMORY.md + memory/**/*.md), not "
-            "session transcripts, raw turn captures, or raw fallback files. Returns "
-            "top snippets with path + lines. Use session_search for transcript "
-            "full-text search when available. User identity/profile fields such as "
+            "curated memory source files (MEMORY.md + memory/**/*.md) plus the "
+            "indexed sessions source when available. It does not search raw turn "
+            "captures or raw fallback files. Returns top snippets with source, path, "
+            "and lines. Use memory_get only for source=memory results; source=sessions "
+            "results are virtual snippets. Prefer curated memory over conflicting "
+            "session snippets. Set source=memory for curated decisions/facts, "
+            "source=sessions for transcript snippets, or source=all for both. "
+            "Use session_search only when exact transcript full-text search is needed. "
+            "User identity/profile fields such as "
             "name, preferred address, pronouns, and timezone belong in injected "
             "USER.md when present. Do not use memory_search for current user "
             "identity/profile questions when injected USER.md contains the answer."
@@ -641,6 +654,10 @@ def create_memory_tools(
                 "type": "number",
                 "description": "Minimum score to return (default 0.35, clamped to 0-1)",
             },
+            "source": {
+                "type": "string",
+                "description": "Search source: 'all' (default), 'memory', or 'sessions'",
+            },
         },
         required=["query"],
         registry=registry,
@@ -649,18 +666,24 @@ def create_memory_tools(
         query: str,
         max_results: int = _MEMORY_SEARCH_DEFAULT_RESULTS,
         min_score: float = DEFAULT_MEMORY_SEARCH_MIN_SCORE,
+        source: str = "all",
     ) -> str:
         from opensquilla.memory.types import MemorySearchOpts, SearchIntent
 
         r = _resolve()
+        try:
+            source_filter = normalize_memory_source_filter(source)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
         opts = MemorySearchOpts(
             max_results=_memory_search_limit(max_results),
             min_score=normalize_memory_search_min_score(min_score),
+            source=source_filter,
         )
         results = [
             result
             for result in await r.retriever.search(query, opts, intent=SearchIntent.TOOL)
-            if is_memory_source_path(str(result.path))
+            if is_searchable_source_path(result.source, str(result.path))
         ]
         if not results:
             return "No results found."
@@ -671,7 +694,7 @@ def create_memory_tools(
             evidence = _bounded_memory_search_evidence(result.text or result.snippet, query=query)
             lines.append(
                 f"[{i}] {result.path} "
-                f"(lines {result.start_line}-{result.end_line}; "
+                f"(source: {result.source.value}; lines {result.start_line}-{result.end_line}; "
                 f"citation: {citation}; {', '.join(_score_parts(result))})\n"
                 f"{evidence}"
             )
@@ -730,8 +753,9 @@ def create_memory_tools(
     @tool(
         name="memory_get",
         description=(
-            "Read from memory source files (MEMORY.md or memory/**/*.md) with optional from/lines. "
-            "Use after memory_search to pull only the needed lines and keep context small."
+            "Read curated memory source files (MEMORY.md or memory/**/*.md) with optional "
+            "from/lines. Use after memory_search for curated file results; indexed sessions "
+            "source results are virtual snippets and are not readable with memory_get."
         ),
         params={
             "path": {

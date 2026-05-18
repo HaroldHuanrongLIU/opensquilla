@@ -226,6 +226,7 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
         "agentId": agent_id,
         "vecAvailable": bool(manager_status.get("vec_available", False)),
         "ftsAvailable": bool(manager_status.get("fts_available", False)),
+        "sourceCounts": manager_status.get("source_counts", {}),
         "degraded": degraded_rows,
     }
     if deep:
@@ -234,7 +235,6 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
                 "fileCount": manager_status.get("file_count"),
                 "chunkCount": manager_status.get("chunk_count"),
                 "totalSizeBytes": manager_status.get("total_size_bytes"),
-                "sourceCounts": manager_status.get("source_counts", {}),
                 "memorySource": manager_status.get("memory_source"),
                 "retrievalMode": manager_status.get("retrieval_mode"),
                 "configuredRetrievalMode": manager_status.get("configured_retrieval_mode"),

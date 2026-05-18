@@ -1237,7 +1237,11 @@ async def build_services(
         from opensquilla.tools.builtin.memory_tools import create_memory_tools
 
         agent_ids = _configured_agent_ids(config, extra_agent_ids)
-        memory_managers = await build_memory_managers(config, agent_ids)
+        memory_managers = await build_memory_managers(
+            config,
+            agent_ids,
+            session_storage=session_storage,
+        )
 
         # Derive legacy per-tier views from the managers. These remain in
         # `ServiceContainer` until downstream consumers

@@ -118,10 +118,10 @@ async def test_hybrid_search_keeps_keyword_hit_when_strict_threshold_drops_all(m
         )
         await store._db.commit()  # type: ignore[union-attr]
 
-        async def no_vector_results(_query_vec, _k, _model):
+        async def no_vector_results(_query_vec, _k, _model, **_kwargs):
             return []
 
-        async def keyword_results(_query, _k, _min_score):
+        async def keyword_results(_query, _k, _min_score, **_kwargs):
             return [
                 MemorySearchResult(
                     chunk_id="kw-only",
@@ -190,14 +190,14 @@ async def test_hybrid_search_guarantees_strong_keyword_hit_when_vector_hits_exis
             )
         await store._db.commit()  # type: ignore[union-attr]
 
-        async def vector_results(_query_vec, _k, _model):
+        async def vector_results(_query_vec, _k, _model, **_kwargs):
             return [
                 ("semantic-1", 0.9),
                 ("semantic-2", 0.8),
                 ("semantic-3", 0.7),
             ]
 
-        async def keyword_results(_query, _k, _min_score):
+        async def keyword_results(_query, _k, _min_score, **_kwargs):
             return [
                 MemorySearchResult(
                     chunk_id="lexical-strong",

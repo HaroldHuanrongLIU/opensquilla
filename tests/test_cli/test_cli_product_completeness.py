@@ -473,6 +473,30 @@ def test_memory_status_json_reuses_doctor_rpc(monkeypatch):
     assert ("doctor.memory.status", {"agentId": "main"}) in fake.calls
 
 
+def test_memory_status_table_surfaces_source_counts(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "doctor.memory.status": {
+            "backend": "sqlite",
+            "status": "ok",
+            "entryCount": 4,
+            "sizeBytes": 42,
+            "error": None,
+            "sourceCounts": {
+                "memory": {"files": 1, "chunks": 2},
+                "sessions": {"files": 1, "chunks": 2},
+            },
+        }
+    }
+
+    result = runner.invoke(app, ["memory", "status", "--agent", "main"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Sources" in result.stdout
+    assert "memory" in result.stdout
+    assert "sessions" in result.stdout
+
+
 def test_memory_status_deep_json_passes_deep_flag(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {
@@ -512,7 +536,21 @@ def test_memory_list_json_uses_gateway_rpc(monkeypatch):
 def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {
-        "memory.search": {"agentId": "main", "query": "alpha", "count": 0, "results": []},
+        "memory.search": {
+            "agentId": "main",
+            "query": "alpha",
+            "count": 1,
+            "results": [
+                {
+                    "source": "sessions",
+                    "path": "sessions/main/session-1.md",
+                    "startLine": 1,
+                    "endLine": 2,
+                    "score": 0.8,
+                    "snippet": "alpha transcript",
+                }
+            ],
+        },
         "memory.show": {
             "agentId": "main",
             "path": "memory/a.md",
@@ -523,7 +561,14 @@ def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
         },
     }
 
-    search = runner.invoke(app, ["memory", "search", "alpha", "--limit", "3", "--json"])
+    search = runner.invoke(
+        app,
+        ["memory", "search", "alpha", "--limit", "3", "--source", "sessions", "--json"],
+    )
+    search_table = runner.invoke(
+        app,
+        ["memory", "search", "alpha", "--limit", "3", "--source", "sessions"],
+    )
     show = runner.invoke(
         app,
         [
@@ -539,9 +584,15 @@ def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
     )
 
     assert search.exit_code == 0, search.stdout
+    assert search_table.exit_code == 0, search_table.stdout
     assert show.exit_code == 0, show.stdout
+    assert "Source" in search_table.stdout
+    assert "sessions" in search_table.stdout
     assert json.loads(show.stdout)["content"] == "line"
-    assert ("memory.search", {"query": "alpha", "agentId": "main", "limit": 3}) in fake.calls
+    assert (
+        "memory.search",
+        {"query": "alpha", "agentId": "main", "limit": 3, "source": "sessions"},
+    ) in fake.calls
     assert (
         "memory.show",
         {"path": "memory/a.md", "agentId": "main", "fromLine": 2, "lines": 1},

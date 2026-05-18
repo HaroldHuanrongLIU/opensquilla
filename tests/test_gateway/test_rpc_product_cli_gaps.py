@@ -174,6 +174,34 @@ async def test_memory_search_uses_admin_intent_and_returns_wire_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_memory_search_accepts_source_filter(tmp_path):
+    manager = FakeMemoryManager(workspace_dir=tmp_path)
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "memory.search",
+        {"query": "alpha", "agentId": "main", "source": "sessions"},
+        _ctx(memory_managers={"main": manager}),
+    )
+
+    assert res.error is None, res.error
+    assert manager.search_calls is not None
+    assert manager.search_calls[0][1].source is MemorySource.sessions
+
+
+@pytest.mark.asyncio
+async def test_memory_search_rejects_invalid_source_filter(tmp_path):
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "memory.search",
+        {"query": "alpha", "agentId": "main", "source": "raw"},
+        _ctx(memory_managers={"main": FakeMemoryManager(workspace_dir=tmp_path)}),
+    )
+
+    assert res.error is not None
+    assert res.error.code == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
 async def test_memory_search_defaults_to_bundled_query_shape(tmp_path):
     manager = FakeMemoryManager(workspace_dir=tmp_path)
     res = await get_dispatcher().dispatch(

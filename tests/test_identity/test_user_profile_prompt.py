@@ -58,16 +58,35 @@ def test_system_prompt_routes_profile_to_user_md() -> None:
     assert "prior work, decisions, dated history, todos" in prompt
 
 
-def test_system_prompt_routes_transcript_recall_to_session_search() -> None:
+def test_system_prompt_disambiguates_session_memory_results() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["memory_search", "memory_get"],
+    )
+
+    assert "plus indexed session snippets when available" in prompt
+    assert "raw turn captures or raw fallback files" in prompt
+    assert "For `source: memory` results, use `memory_get`" in prompt
+    assert "For `source: sessions` results, use the returned snippet" in prompt
+    assert "`sessions/...` paths are virtual index sources" in prompt
+    assert "Prefer curated `MEMORY.md`/`memory/**/*.md` facts" in prompt
+    assert "not automatically as current truth" in prompt
+    assert "include the returned citation or path#line" in prompt
+    assert "Do not invent citations" in prompt
+
+
+def test_system_prompt_routes_exact_transcript_search_to_session_search() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),
         tools=["memory_search", "memory_get", "session_search"],
     )
 
     assert "`session_search`" in prompt
-    assert "prior chat wording" in prompt
-    assert "code snippets from transcripts" in prompt
-    assert "Curated durable notes remain `memory_search`" in prompt
+    assert "exact prior chat wording" in prompt
+    assert "transcript context" in prompt
+    assert "code snippets from persisted sessions" in prompt
+    assert "Ordinary recall should start with source-aware `memory_search`" in prompt
+    assert "debug" not in prompt.lower()
 
 
 def test_system_prompt_routes_agent_identity_away_from_memory_md() -> None:

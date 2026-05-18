@@ -423,7 +423,10 @@ async def test_build_services_registers_session_search_tool(
         ),
     )
 
+    captured_memory_kwargs: dict[str, Any] = {}
+
     async def fake_build_memory_managers(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        captured_memory_kwargs.update(_kwargs)
         return {}
 
     monkeypatch.setattr(
@@ -448,6 +451,14 @@ async def test_build_services_registers_session_search_tool(
     try:
         session_search = registry.get("session_search")
         assert session_search is not None
+        assert "Full-text search across persisted session transcripts" in (
+            session_search.spec.description
+        )
+        assert (
+            "source-aware memory_search, which searches curated memory source files plus "
+            "indexed session snippets"
+            in session_search.spec.description
+        )
         owner_names = {
             tool["name"]
             for tool in await registry.list_tools(
@@ -475,6 +486,7 @@ async def test_build_services_registers_session_search_tool(
 
         assert "needle" in output
         assert "agent:main:main" in output
+        assert captured_memory_kwargs["session_storage"] is services.session_manager.storage
     finally:
         await services.close()
 

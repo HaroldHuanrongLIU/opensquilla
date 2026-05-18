@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -33,6 +34,9 @@ class SessionDeltaTracker:
             self._pending_bytes >= self.delta_bytes_threshold
             or self._pending_messages >= self.delta_messages_threshold
         )
+
+    def has_pending(self) -> bool:
+        return self._pending_bytes > 0 or self._pending_messages > 0
 
     def reset(self) -> None:
         self._pending_bytes = 0
@@ -64,6 +68,7 @@ class MemorySyncManager:
         interval_minutes: float = 0.0,
         ttl_days: int = 0,
         ttl_sweep_interval_minutes: float = 0.0,
+        session_indexer: Any | None = None,
     ) -> None:
         self._store = store
         self._workspace_dir = Path(workspace_dir).expanduser().resolve()
@@ -73,6 +78,7 @@ class MemorySyncManager:
         self._interval_minutes = interval_minutes
         self._ttl_days = ttl_days
         self._ttl_sweep_interval_minutes = ttl_sweep_interval_minutes
+        self._session_indexer = session_indexer
 
         self._dirty = False
         self._warmed_sessions: set[str] = set()
@@ -112,6 +118,7 @@ class MemorySyncManager:
             await self._do_ttl_sweep(initial=True)
         # 2. THEN initial sync — surviving files get indexed.
         await self._do_file_sync()
+        await self._do_session_sync(reason="initial")
         # 3. Now start background loops.
         self._poll_task = asyncio.create_task(self._poll_loop())
         if self._interval_minutes > 0:
@@ -145,7 +152,8 @@ class MemorySyncManager:
         path whose retry also failed.
         """
         is_search_reason = reason == "search" or reason.startswith("search:")
-        if is_search_reason and not self._dirty and not force:
+        session_delta_pending = self._delta.has_pending()
+        if is_search_reason and not self._dirty and not force and not session_delta_pending:
             return
         if reason == "session-delta" and not self._delta.should_sync() and not force:
             return
@@ -165,6 +173,8 @@ class MemorySyncManager:
         else:
             failed_deletes = await self._do_file_sync(force=force)
 
+        session_sync_failed = await self._do_session_sync(reason=reason, force=force)
+
         if failed_deletes:
             self._pending_deletes.update(failed_deletes)
             self._dirty = True
@@ -178,9 +188,16 @@ class MemorySyncManager:
             # (separate background task). If anything is still queued,
             # leave _dirty truthy so the next search-time sync retries
             # without waiting for poll.
-            self._dirty = bool(self._pending_changes or self._pending_deletes)
+            self._dirty = bool(
+                self._pending_changes or self._pending_deletes or session_sync_failed
+            )
 
-        if reason == "session-delta":
+        if reason == "session-delta" or (
+            is_search_reason
+            and session_delta_pending
+            and self._session_indexer is not None
+            and not session_sync_failed
+        ):
             self._delta.reset()
 
     async def warm_session(self, session_key: str) -> None:
@@ -275,6 +292,37 @@ class MemorySyncManager:
                 logger.warning("sync_manager.index_failed", path=rel_path)
 
         return failed_deletes
+
+    async def _do_session_sync(self, *, reason: str, force: bool = False) -> bool:
+        """Sync the derived sessions source when the current trigger can affect it.
+
+        Returns True when sync failed, allowing callers to keep the manager dirty
+        for a later search/manual retry.
+        """
+        if self._session_indexer is None:
+            return False
+        should_sync = force or reason in {
+            "initial",
+            "manual",
+            "session-start",
+            "session-delta",
+        } or reason.startswith("search:")
+        if not should_sync:
+            return False
+        try:
+            result = await self._session_indexer.sync(force=force)
+            logger.info(
+                "sync_manager.sessions_synced",
+                reason=reason,
+                force=force,
+                indexed=getattr(result, "indexed", 0),
+                removed=getattr(result, "removed", 0),
+                skipped=getattr(result, "skipped", 0),
+            )
+            return False
+        except Exception:
+            logger.exception("sync_manager.sessions_sync_failed", reason=reason)
+            return True
 
     async def _poll_loop(self) -> None:
         """Trigger 3: file watcher polling loop with debounce."""

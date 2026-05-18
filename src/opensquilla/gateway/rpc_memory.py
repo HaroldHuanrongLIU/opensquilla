@@ -13,6 +13,7 @@ from opensquilla.memory.types import (
     MemorySearchOpts,
     SearchIntent,
     normalize_memory_search_min_score,
+    normalize_memory_source_filter,
 )
 from opensquilla.session.keys import normalize_agent_id
 from opensquilla.tools.builtin.memory_tools import _is_memory_source_path
@@ -154,9 +155,13 @@ async def _handle_memory_search(params: dict | None, ctx: RpcContext) -> dict[st
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("params.minScore must be a number") from exc
+    try:
+        source = normalize_memory_source_filter(params.get("source", "all"))
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
     agent_id, manager = _require_memory_manager(ctx, params.get("agentId"))
-    opts = MemorySearchOpts(max_results=limit, min_score=min_score)
+    opts = MemorySearchOpts(max_results=limit, min_score=min_score, source=source)
     results = await manager.search(query, opts, intent=SearchIntent.ADMIN)
     rows = [_result_to_wire(result) for result in results]
     return {"agentId": agent_id, "query": query, "count": len(rows), "results": rows}

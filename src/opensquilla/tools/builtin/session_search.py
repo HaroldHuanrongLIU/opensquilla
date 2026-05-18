@@ -34,11 +34,12 @@ def create_session_search_tool(
     @tool(
         name="session_search",
         description=(
-            "Full-text search across persisted session transcripts. "
-            "Returns matching excerpts with session context. Use for prior chat "
-            "wording, prior session history, or code snippets from transcripts. "
-            "This is separate from memory_search, which searches curated memory "
-            "source files; session_search does not search MEMORY.md or memory/**/*.md."
+            "Full-text search across persisted session transcripts. Returns matching "
+            "excerpts with session context. Use when exact prior chat wording, "
+            "transcript context, or code snippets from persisted sessions are needed. "
+            "Ordinary recall should start with source-aware memory_search, which "
+            "searches curated memory source files plus indexed session snippets when "
+            "available; session_search does not search MEMORY.md or memory/**/*.md."
         ),
         params={
             "query": {
