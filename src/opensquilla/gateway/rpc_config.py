@@ -198,6 +198,33 @@ def _channels_restart_fingerprint(config: Any) -> Any:
     )
 
 
+def _sandbox_posture_restart_fingerprint(config: Any) -> dict[str, Any]:
+    if config is None or not hasattr(config, "model_dump"):
+        return {}
+    data = config.model_dump(mode="python")
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "permissions": data.get("permissions"),
+        "sandbox": data.get("sandbox"),
+    }
+
+
+def _restart_required(
+    *,
+    old_memory_fingerprint: dict[str, Any],
+    old_channels_fingerprint: Any,
+    old_sandbox_posture_fingerprint: dict[str, Any],
+    new_config: Any,
+) -> bool:
+    return (
+        old_memory_fingerprint != _memory_restart_fingerprint(new_config)
+        or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
+        or old_sandbox_posture_fingerprint
+        != _sandbox_posture_restart_fingerprint(new_config)
+    )
+
+
 def _validate_memory_embedding_semantics(config: Any) -> None:
     memory_cfg = getattr(config, "memory", None)
     if memory_cfg is None:
@@ -313,6 +340,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
     # Validate path exists
     source_value = _resolve_path(cfg_dict, path)
@@ -339,9 +367,11 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _sync_image_generation(new_config)
     _persist_config(ctx.config)
     return {
-        "restartRequired": (
-            old_memory_fingerprint != _memory_restart_fingerprint(new_config)
-            or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
+        "restartRequired": _restart_required(
+            old_memory_fingerprint=old_memory_fingerprint,
+            old_channels_fingerprint=old_channels_fingerprint,
+            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+            new_config=new_config,
         )
     }
 
@@ -363,6 +393,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
     source_cfg_dict = copy.deepcopy(cfg_dict) if isinstance(cfg_dict, dict) else {}
     redacted_paths: set[str] = set()
@@ -411,9 +442,11 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     _persist_config(ctx.config)
     return {
         "patched": list(dot_patches.keys()) + (["(merge)"] if patch_data else []),
-        "restartRequired": (
-            old_memory_fingerprint != _memory_restart_fingerprint(new_config)
-            or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
+        "restartRequired": _restart_required(
+            old_memory_fingerprint=old_memory_fingerprint,
+            old_channels_fingerprint=old_channels_fingerprint,
+            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+            new_config=new_config,
         ),
     }
 
@@ -459,6 +492,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     old_payload = (
         ctx.config.model_dump(mode="python")
         if ctx.config is not None and hasattr(ctx.config, "model_dump")
@@ -477,9 +511,11 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_image_generation(new_config)
     _persist_config(ctx.config if ctx.config is not None else new_config)
     return {
-        "restartRequired": (
-            old_memory_fingerprint != _memory_restart_fingerprint(new_config)
-            or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
+        "restartRequired": _restart_required(
+            old_memory_fingerprint=old_memory_fingerprint,
+            old_channels_fingerprint=old_channels_fingerprint,
+            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+            new_config=new_config,
         )
     }
 

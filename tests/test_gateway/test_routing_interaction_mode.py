@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opensquilla.channels.types import IncomingMessage
+from opensquilla.gateway.boot import _task_runtime_envelope_owner
 from opensquilla.gateway.routing import (
     build_channel_route_envelope,
     build_cli_route_envelope,
@@ -11,7 +12,8 @@ from opensquilla.gateway.routing import (
     build_web_route_envelope,
     tool_context_from_envelope,
 )
-from opensquilla.gateway.boot import _task_runtime_envelope_owner
+from opensquilla.scheduler.handlers import _build_cron_tool_context
+from opensquilla.scheduler.types import CronJob, SessionTarget
 from opensquilla.tools.policy import ToolSurfaceCapabilities, resolve_runtime_tool_surface
 from opensquilla.tools.types import CallerKind, InteractionMode
 
@@ -85,6 +87,49 @@ def test_unattended_cli_denies_runtime_dependent_tools_but_keeps_session_reads()
     assert "sessions_list" not in ctx.denied_tools
     assert "sessions_history" not in ctx.denied_tools
     assert "session_status" not in ctx.denied_tools
+
+
+def test_default_elevated_mode_applies_only_to_owner_tool_context() -> None:
+    envelope = build_cli_route_envelope(session_key="agent:main:cli")
+
+    owner_ctx = tool_context_from_envelope(
+        envelope,
+        is_owner=True,
+        default_elevated="bypass",
+    )
+    non_owner_ctx = tool_context_from_envelope(
+        envelope,
+        is_owner=False,
+        default_elevated="bypass",
+    )
+
+    assert owner_ctx.elevated == "bypass"
+    assert non_owner_ctx.elevated is None
+
+
+def test_cron_default_elevated_resolves_at_context_build_time() -> None:
+    job = CronJob(
+        id="job-owner",
+        name="owner",
+        session_target=SessionTarget.ISOLATED,
+        creator_is_owner=True,
+    )
+    default_mode = {"value": "bypass"}
+
+    first_ctx = _build_cron_tool_context(
+        "agent",
+        job,
+        default_elevated=lambda: default_mode["value"],
+    )
+    default_mode["value"] = "full"
+    second_ctx = _build_cron_tool_context(
+        "agent",
+        job,
+        default_elevated=lambda: default_mode["value"],
+    )
+
+    assert first_ctx.elevated == "bypass"
+    assert second_ctx.elevated == "full"
 
 
 def test_owner_cron_route_carries_owner_principal_for_task_runtime() -> None:

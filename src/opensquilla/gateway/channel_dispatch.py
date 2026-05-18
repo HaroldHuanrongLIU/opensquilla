@@ -50,6 +50,7 @@ from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.engine.types import ArtifactEvent, ErrorEvent, RunHeartbeatEvent, TextDeltaEvent
 from opensquilla.gateway.attachment_ingest import AttachmentIngestResult, ingest_attachments
 from opensquilla.paths import media_root_from_config
+from opensquilla.permissions import configured_default_elevated
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 if TYPE_CHECKING:
@@ -1092,6 +1093,7 @@ async def _run_turn_with_streaming(
         is_owner=_is_channel_admin_sender(config, envelope),
         workspace_dir=str(workspace_dir),
         workspace_strict=workspace_strict,
+        default_elevated=configured_default_elevated(config),
     )
     use_streaming = resolve_channel_stream_policy(channel).relay_stream
 

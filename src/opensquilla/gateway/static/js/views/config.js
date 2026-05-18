@@ -67,9 +67,11 @@ const ConfigView = (() => {
     'memory.retrieval_mode':
       'Memory retrieval mode. "hybrid" uses vectors when an embedding provider is available; "fts_only" disables vectors.',
     'sandbox.sandbox':
-      'Wrap tool execution in Bubblewrap (Linux) or Seatbelt (macOS). Strongly recommended whenever the agent runs untrusted code.',
+      'Runtime sandbox switch. The out-of-box posture keeps this false; use opensquilla sandbox on|bypass|full to change sandbox and permission defaults together.',
     'sandbox.security_grading':
-      'Tag tools and shell commands with a risk grade and gate dangerous ones behind approval prompts.',
+      'Risk grading and approval gate for tool actions. Keep this paired with sandbox.sandbox unless using the sandbox CLI posture commands.',
+    'permissions.default_mode':
+      'Default owner/operator permission mode: bypass is the out-of-box local posture, off keeps sandboxed execution, on uses host execution with approvals, and full bypasses sensitive-path gates too.',
     'prompt_cache.mode':
       'Anthropic prompt cache control. "auto" (default) lets the provider decide; "on" forces caching; "off" disables it entirely.',
     'context_budget_tokens':

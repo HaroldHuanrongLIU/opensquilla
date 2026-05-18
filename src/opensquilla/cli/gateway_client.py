@@ -430,9 +430,10 @@ class GatewayClient:
     ) -> AsyncIterator[dict]:
         """Send message and yield session events until done.
 
-        ``elevated`` — None/"off" (default sandboxed), "on" (host exec with
-        approval), "bypass" (host exec, auto-approve, sensitive paths still
-        blocked), or "full" (host exec, auto-approve, sensitive paths bypassed).
+        ``elevated`` — None (use configured default), "off" (sandboxed),
+        "on" (host exec with approval), "bypass" (host exec, auto-approve,
+        sensitive paths still blocked), or "full" (host exec, auto-approve,
+        sensitive paths bypassed).
         """
         # Subscribe to message events for this session
         await self._call("sessions.messages.subscribe", {"key": session_key})

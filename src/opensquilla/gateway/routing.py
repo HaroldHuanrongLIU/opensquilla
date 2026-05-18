@@ -74,6 +74,7 @@ class RouteEnvelope:
         is_owner: bool = False,
         workspace_dir: str | None = None,
         workspace_strict: bool = False,
+        default_elevated: str | None = None,
     ) -> ToolContext:
         """Build the ToolContext for this route."""
         return tool_context_from_envelope(
@@ -81,6 +82,7 @@ class RouteEnvelope:
             is_owner=is_owner,
             workspace_dir=workspace_dir,
             workspace_strict=workspace_strict,
+            default_elevated=default_elevated,
         )
 
 
@@ -161,7 +163,7 @@ def build_cli_route_envelope(
     metadata: dict[str, Any] = {}
     if principal_is_owner is not None:
         metadata["principal_is_owner"] = principal_is_owner
-    if elevated in ("bypass", "full"):
+    if elevated in ("on", "bypass", "full"):
         metadata["elevated"] = elevated
     return RouteEnvelope(
         source_kind=SourceKind.CLI,
@@ -341,6 +343,7 @@ def tool_context_from_envelope(
     is_owner: bool = False,
     workspace_dir: str | None = None,
     workspace_strict: bool = False,
+    default_elevated: str | None = None,
 ) -> ToolContext:
     """Build the runtime ToolContext from the canonical route envelope."""
     caller_kind = _caller_kind(envelope.source_kind)
@@ -360,7 +363,7 @@ def tool_context_from_envelope(
         denied_tools = set(SUBAGENT_TOOL_DENY)
     source_kind = envelope.metadata.get("tool_source_kind") or envelope.source_kind.value
     source_name = envelope.metadata.get("tool_source_name") or envelope.source_name
-    elevated = envelope.metadata.get("elevated")
+    elevated = envelope.metadata.get("elevated") or default_elevated
     if elevated not in ("on", "bypass", "full") or not is_owner:
         elevated = None
     ctx = ToolContext(

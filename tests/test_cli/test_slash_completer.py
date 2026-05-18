@@ -87,7 +87,7 @@ def test_elevated_alias_uses_permissions_argument_completions() -> None:
 def test_permissions_argument_completions_include_mode_descriptions() -> None:
     meta = _completion_meta_for("/permissions ")
 
-    assert "sandbox" in meta["off"].lower()
+    assert "configured default" in meta["off"].lower()
     assert "approvals required" in meta["on"].lower()
     assert "sensitive paths" in meta["bypass"].lower()
     assert "sensitive paths bypassed" in meta["full"].lower()

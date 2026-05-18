@@ -46,6 +46,7 @@ from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.permissions import configured_default_elevated
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 log = structlog.get_logger(__name__)
@@ -513,7 +514,6 @@ async def dispatch_task_runtime_turn(
     (including the ``semantic_message`` regression surface).
     """
     from opensquilla.gateway.routing import tool_context_from_envelope
-
     workspace_dir = resolve_agent_workspace_dir(run.agent_id, config)
     workspace_strict = getattr(config, "workspace_strict", None)
     if not isinstance(workspace_strict, bool):
@@ -524,6 +524,7 @@ async def dispatch_task_runtime_turn(
         is_owner=is_owner,
         workspace_dir=str(workspace_dir),
         workspace_strict=workspace_strict,
+        default_elevated=configured_default_elevated(config),
     )
     tool_context.task_id = run.task_id
     session = None
@@ -1916,6 +1917,7 @@ async def start_gateway_server(
             session_manager_ref=lambda: svc.session_manager,
             task_runtime_ref=lambda: task_runtime,
             workspace_resolver=_cron_workspace_resolver,
+            default_elevated=lambda: configured_default_elevated(config),
         )
         system_handler = make_system_event_handler(
             delivery_chain=delivery_chain,
@@ -1925,6 +1927,7 @@ async def start_gateway_server(
             heartbeat_service_ref=lambda: heartbeat_service,
             heartbeat_loop_ref=lambda: heartbeat_loop,
             workspace_resolver=_cron_workspace_resolver,
+            default_elevated=lambda: configured_default_elevated(config),
         )
         dream_handler = make_memory_dream_handler(
             build_dream=build_dream_factory(

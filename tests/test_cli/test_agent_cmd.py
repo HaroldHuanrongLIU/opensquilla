@@ -15,7 +15,7 @@ from opensquilla.cli.agent_cmd import (
     run_agent_once,
 )
 from opensquilla.engine.types import ArtifactEvent, DoneEvent
-from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig, PermissionsConfig
 from opensquilla.tools.types import CallerKind, InteractionMode
 
 
@@ -491,7 +491,7 @@ async def test_run_agent_once_defaults_to_unattended_interaction_contract(
     ctx = captured["tool_context"]
     assert ctx.caller_kind is CallerKind.CLI
     assert ctx.interaction_mode is InteractionMode.UNATTENDED
-    assert ctx.elevated is None
+    assert ctx.elevated == "bypass"
     assert captured["bootstrap_context_mode"] == "unattended"
 
 
@@ -551,6 +551,36 @@ async def test_run_agent_once_uses_permissions_environment_default(
     await run_agent_once(message="hello", agent_id="main", config=GatewayConfig())
 
     assert captured["tool_context"].elevated == "full"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_once_uses_configured_permissions_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            captured["tool_context"] = kwargs.get("tool_context")
+            yield DoneEvent(text="ok", model=kwargs.get("model") or "")
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.delenv("OPENSQUILLA_AGENT_PERMISSIONS", raising=False)
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    await run_agent_once(
+        message="hello",
+        agent_id="main",
+        config=GatewayConfig(permissions=PermissionsConfig(default_mode="bypass")),
+    )
+
+    assert captured["tool_context"].elevated == "bypass"
 
 
 @pytest.mark.asyncio

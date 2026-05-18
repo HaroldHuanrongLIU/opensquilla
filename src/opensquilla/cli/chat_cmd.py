@@ -39,6 +39,7 @@ from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSumm
 from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel, notice_panel
 from opensquilla.engine.commands import Surface
 from opensquilla.execution_status import derive_is_error
+from opensquilla.permissions import configured_default_elevated
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
@@ -1039,6 +1040,7 @@ async def _standalone_repl(
             is_owner=True,
             workspace_dir=active_workspace,
             workspace_strict=effective_workspace_strict,
+            default_elevated=configured_default_elevated(svc.config),
         )
 
     tool_ctx = _build_tool_ctx(session_key)
@@ -1946,7 +1948,7 @@ async def _handle_elevated_command(
 
     Modes:
 
-    * ``off``     — default sandboxed execution (approval required)
+    * ``off``     — clear the session override; configured default resumes
     * ``on``      — exec on host, approvals still required
     * ``bypass``  — exec on host, approvals auto-granted, sensitive paths still blocked
     * ``full``    — exec on host, approvals auto-granted, sensitive paths bypassed
@@ -1954,7 +1956,7 @@ async def _handle_elevated_command(
     parts = cmd.split()
     arg = parts[1].lower() if len(parts) > 1 else "status"
     if arg == "status":
-        current = state["mode"] or "off (sandboxed)"
+        current = state["mode"] or "off (session override cleared; configured default applies)"
         console.print(f"[{ACCENT}]permissions:[/] {current}")
         return
 

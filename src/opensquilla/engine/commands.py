@@ -344,18 +344,18 @@ _COMMANDS: tuple[CommandDef, ...] = (
     CommandDef(
         name="/permissions",
         usage="/permissions [mode]",
-        description="Show or set host-exec approval mode.",
+        description="Show or set the session permission override.",
         execution={_T: _local("permissions.show")},
         aliases=("/elevated",),
         argument_choices=(
-            ArgumentChoice("off", "Sandboxed exec; approvals return to prompt mode."),
+            ArgumentChoice("off", "Clear session override; configured default resumes."),
             ArgumentChoice("on", "Host exec, approvals required."),
             ArgumentChoice(
                 "bypass",
                 "Host exec, approvals auto-granted; sensitive paths still blocked.",
             ),
             ArgumentChoice("full", "Host exec, approvals skipped; sensitive paths bypassed."),
-            ArgumentChoice("status", "Show current permissions mode."),
+            ArgumentChoice("status", "Show current session permissions override."),
         ),
     ),
     CommandDef(

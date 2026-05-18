@@ -50,12 +50,23 @@ def _cli_sender_id() -> str:
         return "cli-user"
 
 
-_AGENT_PERMISSION_PROFILES = frozenset({"restricted", "bypass", "full"})
+_AGENT_PERMISSION_PROFILES = frozenset({"restricted", "off", "on", "bypass", "full"})
 
 
-def _resolve_permissions_profile(value: str | None) -> str:
-    raw = value if value is not None else os.environ.get("OPENSQUILLA_AGENT_PERMISSIONS")
-    profile = (raw or "restricted").strip().lower()
+def _resolve_permissions_profile(value: str | None, config: Any | None = None) -> str:
+    from opensquilla.permissions import normalize_permission_mode
+
+    env_value = os.environ.get("OPENSQUILLA_AGENT_PERMISSIONS")
+    if value is not None:
+        raw: Any = value
+    elif env_value is not None:
+        raw = env_value
+    elif config is not None:
+        raw = getattr(getattr(config, "permissions", None), "default_mode", "bypass")
+    else:
+        raw = "bypass"
+    mode = normalize_permission_mode(raw)
+    profile = "restricted" if mode == "off" else mode
     if profile not in _AGENT_PERMISSION_PROFILES:
         allowed = ", ".join(sorted(_AGENT_PERMISSION_PROFILES))
         raise ValueError(f"permissions must be one of: {allowed}")
@@ -118,12 +129,12 @@ async def run_agent_once(
     agent_id = normalize_agent_id(agent_id)
     if max_iterations is not None and max_iterations < 1:
         raise ValueError("max_iterations must be an integer >= 1")
-    permissions_profile = _resolve_permissions_profile(permissions)
-    elevated = permissions_profile if permissions_profile in {"bypass", "full"} else None
+    cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    permissions_profile = _resolve_permissions_profile(permissions, cfg)
+    elevated = permissions_profile if permissions_profile in {"on", "bypass", "full"} else None
     run_attachments: list[dict[str, Any]] = list(attachments or [])
     if attachment_paths:
         run_attachments.extend(attachments_from_paths(tuple(attachment_paths)))
-    cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
     effective_model = model or _agent_model_from_config(cfg, agent_id)
     active_workspace = workspace or getattr(cfg, "workspace_dir", None)
     service_cfg = _with_agent_workspace_config(cfg, active_workspace) if active_workspace else cfg
@@ -729,8 +740,8 @@ def run_agent_command(
         None,
         "--permissions",
         help=(
-            "Permission profile for single-shot runs: restricted, bypass, or full. "
-            "Defaults to OPENSQUILLA_AGENT_PERMISSIONS or restricted."
+            "Permission profile for single-shot runs: restricted/off, on, bypass, or full. "
+            "Defaults to OPENSQUILLA_AGENT_PERMISSIONS, then permissions.default_mode."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),

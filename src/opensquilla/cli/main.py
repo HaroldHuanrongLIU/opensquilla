@@ -26,6 +26,7 @@ from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
 from opensquilla.cli.replay import replay_app  # noqa: E402
+from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
 from opensquilla.cli.search_cmd import search_app  # noqa: E402
 from opensquilla.cli.sessions_cmd import app as sessions_app  # noqa: E402
 from opensquilla.cli.skills_cmd import skills_app  # noqa: E402
@@ -49,6 +50,7 @@ app.add_typer(dist_app, name="dist")
 app.add_typer(mcp_server_app, name="mcp-server")
 app.add_typer(models_app, name="models")
 app.add_typer(providers_app, name="providers")
+app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(search_app, name="search")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(skills_app, name="skills")
@@ -612,7 +614,7 @@ def agent(
         "--permissions",
         help=(
             "Permission profile for single-shot runs: restricted, bypass, or full. "
-            "Defaults to OPENSQUILLA_AGENT_PERMISSIONS or restricted."
+            "Defaults to OPENSQUILLA_AGENT_PERMISSIONS, then permissions.default_mode."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),

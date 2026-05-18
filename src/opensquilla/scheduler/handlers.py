@@ -29,6 +29,13 @@ from opensquilla.tools.types import ToolContext
 log = structlog.get_logger(__name__)
 
 WorkspaceResolver = Callable[[str], tuple[str | None, bool]]
+DefaultElevatedResolver = Callable[[], str | None]
+
+
+def _resolve_default_elevated(
+    default_elevated: str | DefaultElevatedResolver | None,
+) -> str | None:
+    return default_elevated() if callable(default_elevated) else default_elevated
 
 
 def _resolve_session_key(job: CronJob) -> str:
@@ -105,6 +112,7 @@ def _build_cron_tool_context(
     *,
     session_key: str | None = None,
     workspace_resolver: WorkspaceResolver | None = None,
+    default_elevated: str | DefaultElevatedResolver | None = None,
 ) -> ToolContext:
     from opensquilla.scheduler.routing import build_cron_route_envelope, tool_context_from_envelope
 
@@ -132,6 +140,7 @@ def _build_cron_tool_context(
         is_owner=bool(getattr(job, "creator_is_owner", False)),
         workspace_dir=workspace_dir,
         workspace_strict=workspace_strict,
+        default_elevated=_resolve_default_elevated(default_elevated),
     )
 
 
@@ -191,6 +200,7 @@ def make_agent_run_handler(
     session_manager_ref: Callable[[], Any] | None = None,
     task_runtime_ref: Callable[[], Any] | None = None,
     workspace_resolver: WorkspaceResolver | None = None,
+    default_elevated: str | DefaultElevatedResolver | None = None,
 ) -> Callable:
     """Factory: creates an agent_run_handler with explicit DI.
 
@@ -304,6 +314,7 @@ def make_agent_run_handler(
                     job,
                     session_key=session_key,
                     workspace_resolver=workspace_resolver,
+                    default_elevated=default_elevated,
                 )
                 async for event in wrap_stream(
                     turn_runner.run(
@@ -415,6 +426,7 @@ def make_system_event_handler(
     heartbeat_service_ref: Callable[[], Any] | None = None,
     heartbeat_loop_ref: Callable[[], Any] | None = None,
     workspace_resolver: WorkspaceResolver | None = None,
+    default_elevated: str | DefaultElevatedResolver | None = None,
     wake_now_busy_max_wait_seconds: float = 120.0,
     wake_now_busy_retry_delay_seconds: float = 0.25,
 ) -> Callable:
@@ -480,6 +492,7 @@ def make_system_event_handler(
             job,
             session_key=session_key,
             workspace_resolver=workspace_resolver,
+            default_elevated=default_elevated,
         )
         heartbeat_kwargs: dict[str, Any] = {
             "reason": reason,

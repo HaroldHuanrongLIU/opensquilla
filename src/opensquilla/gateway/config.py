@@ -135,6 +135,14 @@ class ToolsConfig(BaseModel):
         return validate_trusted_fake_ip_cidrs(values)
 
 
+class PermissionsConfig(BaseModel):
+    """Default owner permission posture for local/operator turns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_mode: Literal["off", "on", "bypass", "full"] = "bypass"
+
+
 class TaskRuntimeConfig(BaseModel):
     """Server-side task-runtime queue settings."""
 
@@ -1478,6 +1486,7 @@ class GatewayConfig(BaseSettings):
     attachments: AttachmentsConfig = Field(default_factory=AttachmentsConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     task_runtime: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     llm: LlmProviderConfig = Field(default_factory=LlmProviderConfig)

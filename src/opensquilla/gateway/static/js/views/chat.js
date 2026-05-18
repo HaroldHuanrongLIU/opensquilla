@@ -15,6 +15,7 @@ const ChatView = (() => {
   // Browser-scoped elevated mode. "full" maps to /elevated full.
   const _ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
   let _elevatedMode = '';
+  let _globalElevatedMode = '';
   // The /api/elevated-mode endpoint is owner-only. When the gateway is bound
   // to a wildcard address (LAN deploy), no peer is treated as owner and the
   // endpoint always returns 403. We latch this state on the first failed
@@ -1028,6 +1029,9 @@ const ChatView = (() => {
       const routerToggle = _el?.querySelector('#toggle-router');
       if (routerToggle) routerToggle.checked = routerEnabled;
       _toolbarState.router = routerEnabled;
+      _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
+      _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
+      _updateElevatedPill();
       _refreshToolbarTriggerGlow();
 
       // Load current session usage for the token widget (survives page refresh)
@@ -1486,7 +1490,15 @@ const ChatView = (() => {
     // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
     // Tool compress and router-off are non-default but not safety-critical.
     const warn = _el && _el.querySelector('#chat-bypass-warn');
-    if (warn) warn.classList.toggle('hidden', !bypass);
+    if (warn) {
+      const text = warn.querySelector('.chat-bypass-warn__text');
+      if (text) {
+        text.textContent = _elevatedMode
+          ? 'Approvals bypassed for this session'
+          : 'Approvals bypassed by global default';
+      }
+      warn.classList.toggle('hidden', !bypass);
+    }
   }
 
   function _bindToolbarTrigger() {
@@ -1592,6 +1604,14 @@ const ChatView = (() => {
     return mode === 'on' || mode === 'bypass' || mode === 'full' ? mode : '';
   }
 
+  function _effectiveElevatedMode() {
+    return _normalizeElevatedMode(_elevatedMode || _globalElevatedMode);
+  }
+
+  function _isApprovalBypassMode(mode) {
+    return mode === 'bypass' || mode === 'full';
+  }
+
   function _loadElevatedMode() {
     let mode = '';
     try { mode = localStorage.getItem(_ELEVATED_MODE_KEY) || ''; } catch {}
@@ -1607,14 +1627,16 @@ const ChatView = (() => {
         else localStorage.removeItem(_ELEVATED_MODE_KEY);
       } catch {}
     }
-    _toolbarState.bypass = !!normalized;
+    _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
     _refreshToolbarTriggerGlow();
     _updateElevatedPill();
     if (options.toast) {
       UI.toast(
         normalized
           ? `Bypass mode: ${normalized}`
-          : 'Bypass mode disabled',
+          : (_globalElevatedMode
+              ? `Session override cleared; global mode: ${_globalElevatedMode}`
+              : 'Bypass mode disabled'),
         normalized ? 'warn' : 'info',
         2500
       );
@@ -1667,14 +1689,24 @@ const ChatView = (() => {
       _elevatedPill.setAttribute('aria-disabled', 'true');
       return;
     }
-    const active = !!_elevatedMode;
+    const effective = _effectiveElevatedMode();
+    const active = !!effective;
     _elevatedPill.classList.remove('chat-pill--disabled');
     _elevatedPill.removeAttribute('aria-disabled');
     _elevatedPill.classList.toggle('is-active', active);
-    _elevatedPill.textContent = active ? `Bypass ${_elevatedMode.toUpperCase()}` : 'Bypass Off';
-    _elevatedPill.title = active
-      ? 'Bypass all permissions is ON for this browser session. Click to turn it off.'
-      : 'Approval prompts active. Click to enable full bypass for this browser session.';
+    if (_elevatedMode) {
+      _elevatedPill.textContent = `Session ${_elevatedMode.toUpperCase()}`;
+      _elevatedPill.title =
+        'Session permission override is active. Click to clear the browser session override.';
+    } else if (_globalElevatedMode) {
+      _elevatedPill.textContent = `Global ${_globalElevatedMode.toUpperCase()}`;
+      _elevatedPill.title =
+        'Global permission default is controlled by opensquilla sandbox on|bypass|full|reset.';
+    } else {
+      _elevatedPill.textContent = 'Bypass Off';
+      _elevatedPill.title =
+        'Approval prompts active. Click to enable full bypass for this browser session.';
+    }
   }
 
   /* ── Event Bindings ─────────────────────────────────────────────────── */

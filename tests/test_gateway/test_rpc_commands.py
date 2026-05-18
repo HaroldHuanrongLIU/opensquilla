@@ -42,7 +42,7 @@ def test_cli_gateway_catalog_serializes_argument_choices() -> None:
     assert permissions["argument_choices"] == [
         {
             "value": "off",
-            "description": "Sandboxed exec; approvals return to prompt mode.",
+            "description": "Clear session override; configured default resumes.",
         },
         {"value": "on", "description": "Host exec, approvals required."},
         {
@@ -55,7 +55,7 @@ def test_cli_gateway_catalog_serializes_argument_choices() -> None:
             "value": "full",
             "description": "Host exec, approvals skipped; sensitive paths bypassed.",
         },
-        {"value": "status", "description": "Show current permissions mode."},
+        {"value": "status", "description": "Show current session permissions override."},
     ]
 
 
