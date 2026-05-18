@@ -158,6 +158,7 @@ class ChatApplication:
         auto_suggest: AutoSuggest | None = None,
         history: History | None = None,
         complete_while_typing: bool = True,
+        input_header=None,
     ) -> None:
         self._surface = surface
         self._toolbar_context = toolbar_context
@@ -227,7 +228,26 @@ class ChatApplication:
             height=Dimension.exact(1),
             style="class:bottom-toolbar",
         )
-        layout = Layout(HSplit([input_window, toolbar_window]))
+        children: list[Window] = []
+        if input_header is not None:
+            def _header_fragments():  # type: ignore[no-untyped-def]
+                try:
+                    rendered = input_header() if callable(input_header) else input_header
+                except Exception:
+                    return []
+                if rendered is None:
+                    return []
+                return to_formatted_text(rendered)
+
+            children.append(
+                Window(
+                    FormattedTextControl(_header_fragments),
+                    height=Dimension.exact(1),
+                )
+            )
+        children.append(input_window)
+        children.append(toolbar_window)
+        layout = Layout(HSplit(children))
 
         self._app: Application[None] = Application(
             layout=layout,

@@ -31,7 +31,7 @@ class PromptState:
     @property
     def label(self) -> str:
         mode = self.elevated or "normal"
-        return f"[{_model_alias(self.model)} {mode}] you > "
+        return f"[{_model_alias(self.model)} {mode}] you ▸ "
 
 
 @dataclass

@@ -294,7 +294,8 @@ def test_turn_completes_during_approval_does_not_print_until_resume(
 
 
 def test_toolbar_status_thinking_then_clear(restore_toolbar_status) -> None:
-    """The bottom toolbar renders 'thinking…' iff `_toolbar_context['status']` is set."""
+    """The bottom toolbar renders the status chip iff
+    ``_toolbar_context['status']`` is set; clearing the slot drops the chip."""
     _toolbar_context["status"] = "thinking…"
     html = prompt_mod._bottom_toolbar()
     assert "thinking…" in html.value

@@ -56,14 +56,14 @@ def test_alias_no_slash_long_string_is_ellipsized() -> None:
 
 def test_prompt_state_label_uses_alias() -> None:
     state = PromptState(model="openai/gpt-5.1", elevated=None)
-    assert state.label == "[gpt-5.1 normal] you > "
+    assert state.label == "[gpt-5.1 normal] you ▸ "
 
 
 def test_prompt_state_label_none_model() -> None:
     state = PromptState(model=None, elevated=None)
-    assert state.label == "[… normal] you > "
+    assert state.label == "[… normal] you ▸ "
 
 
 def test_prompt_state_label_elevated_mode() -> None:
     state = PromptState(model="anthropic/claude-opus-4", elevated="bypass")
-    assert state.label == "[claude-opus-4 bypass] you > "
+    assert state.label == "[claude-opus-4 bypass] you ▸ "

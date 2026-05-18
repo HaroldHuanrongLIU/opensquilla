@@ -240,7 +240,7 @@ class _ToolCallStrip:
         if self._run_name is not None and self._run_count >= 3:
             elapsed = time.monotonic() - self._run_start
             console.print(
-                f"[{ACCENT}]·[/] [dim]{self._run_name} "
+                f"[{ACCENT}]▸[/] [dim]{self._run_name} "
                 f"×{self._run_count} total {elapsed:.1f}s[/dim]"
             )
         self._run_name = None
@@ -263,11 +263,11 @@ class _ToolCallStrip:
 
         if self._run_count <= 2:
             suffix = f" {summary}" if summary else ""
-            console.print(f"[{ACCENT}]·[/] [dim]{name}{suffix}[/dim]")
+            console.print(f"[{ACCENT}]▸[/] [dim]{name}{suffix}[/dim]")
         elif self._run_count == 3:
             self._coalesced = True
             console.print(
-                f"[{ACCENT}]·[/] [dim]{name} ×3 (cumulative)[/dim]"
+                f"[{ACCENT}]▸[/] [dim]{name} ×3 (cumulative)[/dim]"
             )
         # count > 3 and already coalesced: suppress output, keep counting
 
@@ -293,24 +293,29 @@ class _ToolCallStrip:
 
 
 class WaitingIndicator:
-    """Pre-token waiting verb/elapsed renderable.
+    """Pre-token waiting renderable: spinner frame + verb + elapsed.
 
-    Kept as a pure data class so the gateway-side `chat.js` mirror (which
-    references `_verbs` and `_verb_dwell_seconds`) stays in lockstep with the
-    CLI surface. The CLI no longer mounts this inside a Rich ``Live`` —
-    pre-token visual feedback now lives in the prompt-toolkit
-    `bottom_toolbar` slot via the shared ``_toolbar_context['status']`` key
-    (see ``StreamingRenderer._start_waiting``). The class still renders as
-    a Rich ``Text`` so any out-of-tree caller that builds a string from the
-    elapsed/verb pair continues to work.
+    The instance is parked in ``_toolbar_context['status']`` while the turn
+    is in flight but has not yet produced its first chunk. The
+    prompt-toolkit ``bottom_toolbar`` reads the slot on every redraw and
+    calls :meth:`toolbar_text` to pull the live frame; combined with the
+    ``PromptSession``'s ``refresh_interval`` this gives the bar a real
+    Braille spinner without mounting any Rich ``Live`` region (which had
+    historically caused ghost-panel artefacts on Windows PowerShell).
+
+    The verb tuple and dwell duration are mirrored in the gateway-side
+    ``chat.js`` (``SQUILLA_VERBS`` / ``SQUILLA_DWELL_MS``) so the CLI and
+    WebUI present a single brand vocabulary.
     """
 
     # kept in sync with chat.js _showThinkingIndicatorNow
     _verbs = (
-        "Burrowing", "Lurking", "Scanning", "Stalking",
-        "Coiling", "Striking", "Snapping", "Surfacing",
+        "Scanning", "Ambushing", "Burrowing", "Pouncing",
+        "Punching", "Smashing", "Spearing", "Flashing",
     )
     _verb_dwell_seconds = 2.5
+    _spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    _spinner_frame_seconds = 0.1
 
     def __init__(self, started_at: float) -> None:
         self._started = started_at
@@ -322,21 +327,23 @@ class WaitingIndicator:
         idx = int(elapsed / self._verb_dwell_seconds) % len(self._verbs)
         return self._verbs[idx]
 
+    def _frame(self, elapsed: float) -> str:
+        idx = int(elapsed / self._spinner_frame_seconds) % len(self._spinner_frames)
+        return self._spinner_frames[idx]
+
+    def toolbar_text(self) -> str:
+        """Plain-text body for the prompt-toolkit toolbar chip."""
+        elapsed = self._elapsed()
+        return f"▌ {self._frame(elapsed)} {self._verb(elapsed)} · {elapsed:0.1f}s"
+
     def __rich__(self) -> Text:
         elapsed = self._elapsed()
         return Text.assemble(
-            ("· ", ACCENT),
+            (f"{self._frame(elapsed)} ", ACCENT),
             (self._verb(elapsed), ACCENT_SOFT),
             (f" · {elapsed:0.1f}s", "dim"),
             ("  ·  Ctrl+C cancels", "dim"),
         )
-
-
-# Status string surfaced through the prompt-toolkit bottom toolbar while the
-# turn is in flight but has not yet produced its first chunk. The toolbar
-# function in ``cli/repl/prompt.py:_bottom_toolbar`` reads
-# ``_toolbar_context['status']`` on every redraw.
-_THINKING_STATUS = "thinking…"
 
 
 class StreamingRenderer:
@@ -353,16 +360,19 @@ class StreamingRenderer:
     made the overflow common), and it also avoids the doubled output a
     one-shot re-render produces.
 
-    The pre-token "thinking…" state lives in the prompt-toolkit
+    The pre-token waiting state lives in the prompt-toolkit
     ``bottom_toolbar`` slot via the shared ``_toolbar_context['status']``
-    key. Mutating that key here keeps the indicator owned by the renderer
-    while reusing the existing themed toolbar surface for actual display.
+    key. We park a live :class:`WaitingIndicator` instance there and the
+    toolbar callable pulls the current spinner frame / verb / elapsed on
+    every redraw. Mutating that key here keeps the indicator owned by the
+    renderer while reusing the existing themed toolbar surface for actual
+    display.
     """
 
     def __init__(
         self,
         *,
-        title: str = "assistant",
+        title: str = "squilla",
         chat_app: Any | None = None,
     ) -> None:
         self.title = title
@@ -390,7 +400,7 @@ class StreamingRenderer:
     def _start_waiting(self) -> None:
         if self._waiting_active:
             return
-        _toolbar_context["status"] = _THINKING_STATUS
+        _toolbar_context["status"] = WaitingIndicator(started_at=self.started_at)
         self._waiting_active = True
 
     def _stop_waiting(self) -> None:

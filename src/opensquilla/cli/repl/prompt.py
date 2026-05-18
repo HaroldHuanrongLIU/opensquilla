@@ -46,13 +46,16 @@ class PromptConfig:
 
 _session: PromptSession[str] | None = None
 _sessions: dict[Surface, PromptSession[str]] = {}
-_toolbar_context: dict[str, str | None] = {
+_toolbar_context: dict[str, object | None] = {
     "model": None,
     "session_id": None,
     "suppress": None,
-    # Free-form transient status string surfaced in the bottom toolbar
-    # (e.g. "thinking…" before the first streamed chunk lands). Mutated
-    # by StreamingRenderer; cleared on the first chunk or on close.
+    # Transient status surfaced in the bottom toolbar before the first
+    # streamed chunk lands. Holds a live WaitingIndicator instance (see
+    # cli/repl/stream.py) whose toolbar_text() is read on every redraw
+    # so the Braille spinner advances frame-by-frame. May also be a plain
+    # string for ad-hoc callers using ChatApplication.set_toolbar().
+    # Cleared (set to None) when the stream starts or the turn ends.
     "status": None,
 }
 
@@ -113,39 +116,49 @@ _PROMPT_STYLE = Style.from_dict({
 })
 
 
-_PREFIX_RE = re.compile(r"^\[(?P<model>.+?) (?P<mode>\w+)\] (?P<role>\w+) > $")
+_PREFIX_RE = re.compile(r"^\[(?P<model>.+?) (?P<mode>\w+)\] (?P<role>\w+) ▸ $")
 
 
 def _bottom_toolbar() -> HTML:
+    """Two-state bottom bar.
+
+    Idle: model and session render as a single dim line, separated by
+    middle dots, no background chips. Active: a single coloured chip
+    holds the live spinner / verb / elapsed produced by the renderer's
+    ``WaitingIndicator``. The split keeps the bar quiet while the user
+    is reading or typing, and uses the lone chip as the unambiguous
+    "agent is working" signal.
+    """
     if _toolbar_context.get("suppress"):
         return HTML("")
-    model = _toolbar_context.get("model") or ""
-    session_id = _toolbar_context.get("session_id") or ""
-    status = _toolbar_context.get("status") or ""
 
+    status_obj = _toolbar_context.get("status")
+    if status_obj is None:
+        status_text = ""
+    elif hasattr(status_obj, "toolbar_text"):
+        status_text = status_obj.toolbar_text()
+    else:
+        status_text = str(status_obj)
+
+    if status_text:
+        return HTML(
+            f"<style bg='{ACCENT}' fg='{ACCENT_INK}'> {_html_escape(status_text)} </style>"
+        )
+
+    model = str(_toolbar_context.get("model") or "")
+    session_id = str(_toolbar_context.get("session_id") or "")
     model_short = model.rsplit("/", 1)[-1] if model else ""
     session_short = session_id.rsplit(":", 1)[-1] if session_id else session_id
 
-    blocks: list[str] = []
+    parts: list[str] = []
     if model_short:
-        blocks.append(
-            f"<b><style bg='{ACCENT}' fg='{ACCENT_INK}'> {_html_escape(model_short)} </style></b>"
-        )
+        parts.append(_html_escape(model_short))
     if session_short:
-        blocks.append(
-            f"<style bg='{ACCENT_INK}' fg='{ACCENT_SOFT}'> {_html_escape(session_short)} </style>"
-        )
-    if status:
-        # Transient status block (e.g. "thinking…" before the first chunk).
-        # Uses the ACCENT_DEEP bg + ACCENT_INK fg pair so it visually pairs
-        # with the existing `/help` block on the right while being clearly
-        # distinct from the model/session chips.
-        blocks.append(
-            f"<style bg='{ACCENT_DEEP}' fg='{ACCENT_INK}'> {_html_escape(status)} </style>"
-        )
-    blocks.append(f"<style bg='{ACCENT_INK}' fg='{ACCENT}'> ⏎ send </style>")
-    blocks.append(f"<b><style bg='{ACCENT_SOFT}' fg='{ACCENT_INK}'> /help </style></b>")
-    return HTML("".join(blocks))
+        parts.append(_html_escape(session_short))
+    if not parts:
+        return HTML("")
+    body = " · ".join(parts)
+    return HTML(f"<style fg='{ACCENT_DEEP}'>{body}</style>")
 
 
 def _format_prefix(prefix: str) -> AnyFormattedText:
@@ -161,17 +174,64 @@ def _format_prefix(prefix: str) -> AnyFormattedText:
         f"<style fg='{ACCENT_SOFT}'> {mode}</style>"
         f"<style fg='{ACCENT_DEEP}'>]</style> "
         f"<b><style fg='{ACCENT}'>{role}</style></b>"
-        f"<style fg='{ACCENT_DEEP}'> &gt; </style>"
+        f"<style fg='{ACCENT_DEEP}'> ▸ </style>"
     )
 
 
 def _chrome_top(label: str = "you") -> None:
     console.print()
-    console.rule(label, style="dim", characters="─", align="left")
+    console.rule(f"[{ACCENT}]◢[/] {label}", style="dim", characters="─", align="left")
 
 
 def _chrome_bottom() -> None:
     console.print()
+
+
+def _input_header_fragments() -> AnyFormattedText:
+    """Persistent `◢ you ────…` header rendered above the live input area.
+
+    Mirrors the styling of `_chrome_top("you")` so the always-visible
+    chrome and the per-turn scrollback echo read as one design. The
+    callable resolves the terminal width on every redraw so the fill
+    dashes track terminal resizes (prompt-toolkit invalidates on
+    SIGWINCH; the chat REPL installs the resize handler that triggers
+    that invalidation).
+    """
+    from prompt_toolkit.application import get_app
+
+    try:
+        width = get_app().output.get_size().columns
+    except Exception:
+        width = 80
+    label = " you "
+    # `◢` measures as 1 column in monospace fonts that ship the
+    # geometric-shapes block; the dash fill subtracts the label width
+    # plus the marker and clamps to zero so narrow terminals do not
+    # produce negative repeat counts.
+    base_width = 1 + len(label)
+    dashes = "─" * max(0, width - base_width)
+    return HTML(
+        f"<style fg='{ACCENT}'>◢</style>"
+        f"<style fg='{ACCENT_DEEP}'>{label}{dashes}</style>"
+    )
+
+
+def echo_user_input(text: str) -> None:
+    """Echo a submitted input line into the scrollback above the prompt area.
+
+    The persistent `Application` in `interactive_session()` uses a
+    `BufferControl` whose accept handler resets the buffer without
+    echoing the typed line, so without this helper the user's text
+    vanishes the moment Enter is pressed and the conversation reads
+    as a series of bare assistant replies with no questions above them.
+
+    Empty lines are skipped because rendering a bare ``you`` rule for a
+    blank Enter adds noise without information.
+    """
+    if not text.strip():
+        return
+    _chrome_top("you")
+    console.print(text)
 
 
 def _prompt_session(surface: Surface | str = Surface.CLI_GATEWAY) -> PromptSession[str]:
@@ -187,6 +247,7 @@ def _prompt_session(surface: Surface | str = Surface.CLI_GATEWAY) -> PromptSessi
             enable_history_search=True,
             key_bindings=_key_bindings(),
             bottom_toolbar=_bottom_toolbar,
+            refresh_interval=0.1,
             style=_PROMPT_STYLE,
         )
     if parsed == Surface.CLI_GATEWAY:
@@ -381,6 +442,7 @@ def _get_or_create_chat_app(
             completer=completer,
             auto_suggest=auto_suggest,
             history=history,
+            input_header=_input_header_fragments,
         )
 
     cached = _chat_applications.get(surface)
@@ -393,6 +455,7 @@ def _get_or_create_chat_app(
             completer=completer,
             auto_suggest=auto_suggest,
             history=history,
+            input_header=_input_header_fragments,
         )
         _chat_applications[surface] = cached
     return cached

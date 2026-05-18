@@ -13,11 +13,32 @@ from opensquilla.cli.repl.stream import StreamingRenderer, UsageSummary, Waiting
 
 def test_verb_cycles_by_dwell_seconds() -> None:
     ind = WaitingIndicator(started_at=100.0)
-    assert ind._verb(0.0) == "Burrowing"
-    assert ind._verb(2.6) == "Lurking"
-    assert ind._verb(5.1) == "Scanning"
+    assert ind._verb(0.0) == "Scanning"
+    assert ind._verb(2.6) == "Ambushing"
+    assert ind._verb(5.1) == "Burrowing"
     n = len(WaitingIndicator._verbs)
     assert ind._verb(n * 2.5 + 0.1) == ind._verb(0.1)
+
+
+def test_spinner_frame_cycles_by_frame_interval() -> None:
+    """The Braille spinner advances one frame per `_spinner_frame_seconds`."""
+    ind = WaitingIndicator(started_at=100.0)
+    frames = WaitingIndicator._spinner_frames
+    interval = WaitingIndicator._spinner_frame_seconds
+    assert ind._frame(0.0) == frames[0]
+    assert ind._frame(interval + 0.01) == frames[1]
+    assert ind._frame(len(frames) * interval + 0.001) == frames[0]
+
+
+def test_toolbar_text_contains_frame_verb_and_elapsed() -> None:
+    started = 100.0
+    ind = WaitingIndicator(started_at=started)
+    with patch("opensquilla.cli.repl.stream.time.monotonic", return_value=started + 3.0):
+        text = ind.toolbar_text()
+    # Block prefix + spinner frame + verb (3.0 / 2.5 = 1 → _verbs[1]) + elapsed.
+    assert text.startswith("▌ ")
+    assert "Ambushing" in text
+    assert "3.0s" in text
 
 
 def test_render_contains_verb_and_elapsed_seconds() -> None:
@@ -25,8 +46,8 @@ def test_render_contains_verb_and_elapsed_seconds() -> None:
     ind = WaitingIndicator(started_at=started)
     with patch("opensquilla.cli.repl.stream.time.monotonic", return_value=started + 3.0):
         plain = ind.__rich__().plain
-    # 3.0 / 2.5 = 1 → _verbs[1] == "Lurking"
-    assert "Lurking" in plain
+    # 3.0 / 2.5 = 1 → _verbs[1] == "Ambushing"
+    assert "Ambushing" in plain
     assert "3.0s" in plain
     assert "Ctrl+C cancels" in plain
 
@@ -43,15 +64,16 @@ def test_pulse_restart_preserves_monotonic_elapsed() -> None:
 
 
 def test_streaming_renderer_uses_toolbar_status_not_rich_live() -> None:
-    """Lock down: pre-token feedback is the prompt-toolkit `bottom_toolbar`
-    status string, not a Rich ``Live`` region.
+    """Lock down: pre-token feedback is a live ``WaitingIndicator`` parked
+    in the prompt-toolkit ``bottom_toolbar`` slot, not a Rich ``Live``
+    region.
 
     Historical context: a Markdown+Panel Live update loop produced ghost
     panel borders on Windows PowerShell whenever the rendered height grew
-    past the visible viewport. Inline approval removed the last remaining Live
-    instance (the waiting indicator) and routed the "thinking…" status
-    through `_toolbar_context['status']` so the prompt-toolkit toolbar
-    surfaces it instead.
+    past the visible viewport. Inline approval removed the last remaining
+    Live instance and routed waiting feedback through
+    ``_toolbar_context['status']``; the toolbar callable pulls the current
+    spinner frame on every redraw driven by ``PromptSession.refresh_interval``.
     """
     from opensquilla.cli.repl import prompt as prompt_mod
 
@@ -66,8 +88,9 @@ def test_streaming_renderer_uses_toolbar_status_not_rich_live() -> None:
     try:
         prompt_mod._toolbar_context["status"] = None
         with StreamingRenderer() as renderer:
-            # Entering the context mounts the toolbar status block.
-            assert prompt_mod._toolbar_context.get("status") == "thinking…"
+            # Entering the context mounts a live WaitingIndicator.
+            mounted = prompt_mod._toolbar_context.get("status")
+            assert isinstance(mounted, WaitingIndicator)
             renderer.append_text("foo")
             # First chunk clears the status block before any text writes.
             assert prompt_mod._toolbar_context.get("status") is None

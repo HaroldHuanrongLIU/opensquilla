@@ -25,7 +25,7 @@ from rich.table import Table
 
 from opensquilla.cli import attachments as _cli_attachments
 from opensquilla.cli.repl.commands import is_exit_command, render_help_table
-from opensquilla.cli.repl.prompt import interactive_session, prompt_approval
+from opensquilla.cli.repl.prompt import echo_user_input, interactive_session, prompt_approval
 from opensquilla.cli.repl.session_state import ChatSessionState, messages_to_markdown
 from opensquilla.cli.repl.signal_handlers import install_chat_signal_handlers
 from opensquilla.cli.repl.slash_policy import SlashCategory, classify
@@ -639,6 +639,13 @@ async def _run_concurrent_repl(
                             return
                     console.print("[yellow]Goodbye.[/yellow]")
                     return
+
+                # Echo the submitted line into the scrollback. The
+                # persistent `Application` uses a `BufferControl` whose
+                # accept handler clears the buffer without echoing, so
+                # without this the assistant reply appears with no
+                # question above it.
+                echo_user_input(user_input)
 
                 category = classify(user_input)
 

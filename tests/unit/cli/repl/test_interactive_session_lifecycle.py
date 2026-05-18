@@ -59,11 +59,16 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                 handle.set_toolbar("status", "thinking…")
                 # Sanity: shared dict carries the value the handle wrote.
                 assert prompt_module._toolbar_context["status"] == "thinking…"
-                # The bottom-toolbar callable reads the same dict on every
-                # redraw. The themed callable renders `model` chip; assert
-                # the model survives the round-trip through the handle.
-                html = prompt_module._bottom_toolbar()
-                assert "some-model" in html.value
+                # With a status set the toolbar renders the single active
+                # chip and suppresses the idle model/session line.
+                active_html = prompt_module._bottom_toolbar()
+                assert "thinking…" in active_html.value
+                assert "some-model" not in active_html.value
+                # Clearing the status drops the chip and brings back the
+                # idle dim line carrying the model alias.
+                handle.set_toolbar("status", None)
+                idle_html = prompt_module._bottom_toolbar()
+                assert "some-model" in idle_html.value
     finally:
         prompt_module._toolbar_context["status"] = previous_status
         prompt_module._toolbar_context["model"] = previous_model
