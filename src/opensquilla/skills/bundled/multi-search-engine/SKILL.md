@@ -1,6 +1,6 @@
 ---
 name: multi-search-engine
-description: "Query the web through multiple search engines (Brave, Tavily, SerpAPI, DuckDuckGo, Bing, Baidu, Sogou, 360) with a single CLI surface. Trigger when the user asks for a research search, fact lookup, source discovery, or wants to compare engines for coverage. The skill aggregates per-engine result lists and normalizes them into a uniform JSON shape for downstream skills (deep-research is the primary consumer). API-key engines gate themselves on the relevant environment variable; engines requiring no key always run."
+description: "Query the web through multiple search engines (Brave, Tavily, SerpAPI, DuckDuckGo, Bing, Baidu, Sogou, 360) with a single CLI surface. Trigger when the user asks for a research search, fact lookup, source discovery, or wants to compare engines for coverage. The skill aggregates per-engine result lists and normalizes them into a uniform JSON shape for downstream analysis. API-key engines gate themselves on the relevant environment variable; engines requiring no key always run."
 homepage: ""
 provenance:
   origin: clawhub-mit0
@@ -26,7 +26,7 @@ beyond `pip install opensquilla`).
 
 ## When to use
 
-- Building a `deep-research` round and you want diverse engine coverage
+- Broad source discovery where you want diverse engine coverage
 - Fact-check a claim against >1 engine
 - Compare what Bing returns vs DuckDuckGo for the same query
 - Search Chinese-language sources via Baidu/Sogou/360 alongside global

@@ -38,7 +38,7 @@ Use when: query is in Chinese or topic is China-specific.
 free tier. Returns clean JSON with title, URL, description, and recency
 hints.
 
-Use when: building a deep-research pipeline that runs at scale; need
+Use when: building a source-discovery workflow that runs at scale; need
 recency filtering.
 
 ### Tavily

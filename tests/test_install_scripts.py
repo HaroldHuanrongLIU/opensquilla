@@ -66,3 +66,6 @@ def test_windows_installer_bootstraps_vc_redist_for_router_runtime() -> None:
     assert "OPENSQUILLA_SKIP_VC_REDIST" in ps1
     assert "Microsoft.VCRedist.2015+.x64" in ps1
     assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in ps1
+    assert "safe router fallback" in ps1
+    assert "If automatic installation fails, install it manually" in ps1
+    assert "After installing, reopen PowerShell and restart OpenSquilla" in ps1

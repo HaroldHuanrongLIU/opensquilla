@@ -682,6 +682,9 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     assert "OPENSQUILLA_SKIP_VC_REDIST" in start_ps1
     assert "Microsoft.VCRedist.2015+.x64" in start_ps1
     assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in start_ps1
+    assert "safe router fallback" in start_ps1
+    assert "If automatic installation fails, install it manually" in start_ps1
+    assert "After installing, reopen PowerShell and restart OpenSquilla" in start_ps1
 
 
 def test_install_portable_wheelhouse_preinstalls_into_bundled_python(

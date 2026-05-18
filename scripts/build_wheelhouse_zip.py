@@ -930,16 +930,18 @@ function Install-WindowsVCRedistIfNeeded {
     }
 
     Write-Warning (
-        'OpenSquilla: Microsoft Visual C++ Redistributable is needed for the ' +
-        'bundled router on many Windows machines.'
+        'OpenSquilla: Microsoft Visual C++ Redistributable 2015-2022 x64 is ' +
+        'required for the bundled ONNX router.'
     )
     Write-Warning (
-        "OpenSquilla: install it from $redistUrl, then restart PowerShell if " +
-        'onnxruntime reports DLL load failures.'
+        'OpenSquilla can still start with safe router fallback, but bundled ' +
+        'ONNX model routing is disabled until this runtime is installed.'
     )
     Write-Warning (
-        'OpenSquilla: the gateway can still start with a safe router fallback ' +
-        'while this runtime is missing.'
+        "If automatic installation fails, install it manually: $redistUrl"
+    )
+    Write-Warning (
+        'After installing, reopen PowerShell and restart OpenSquilla.'
     )
 }
 

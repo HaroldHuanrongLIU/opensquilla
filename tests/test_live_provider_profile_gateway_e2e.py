@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -32,6 +33,49 @@ def test_gateway_e2e_defaults_cover_all_router_profiles() -> None:
         "zhipu",
         "moonshot",
     ]
+
+
+def test_natural_router_cases_are_text_only_marker_checks() -> None:
+    for case in e2e.TIER_CASES:
+        message = case["message"]
+        assert "不要调用工具" in message, case["id"]
+        assert "{marker}" in message, case["id"]
+
+
+def test_structured_compare_case_is_bounded_to_keep_marker_in_smoke_budget() -> None:
+    case = next(case for case in e2e.TIER_CASES if case["id"] == "r1_structured_compare")
+
+    assert "不超过" in case["message"]
+
+
+def test_debugging_case_is_bounded_to_keep_marker_in_smoke_budget() -> None:
+    case = next(case for case in e2e.TIER_CASES if case["id"] == "r2_debugging")
+
+    assert "不超过" in case["message"]
+
+
+def test_case_markers_are_stable_text_not_millisecond_numbers() -> None:
+    marker = e2e._case_marker("openrouter", "t2", "coverage_t2")
+
+    assert marker == "E2E_OPENROUTER_T2_COVERAGE_T2"
+    assert not marker.rsplit("_", 1)[-1].isdigit()
+
+
+def test_live_gateway_profile_config_bounds_agent_runtime(tmp_path: Path) -> None:
+    config_path = tmp_path / "gateway.toml"
+
+    e2e._write_config(
+        config_path,
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        "deepseek/deepseek-v4-flash",
+        max_tokens=384,
+    )
+
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["agent_max_iterations"] <= 8
+    assert data["agent_runtime_timeout_seconds"] < data["llm_request_timeout_seconds"]
+    assert data["task_runtime"]["turn_hard_deadline_s"] < 120.0
 
 
 def test_profile_slot_targets_cover_slots_not_unique_models() -> None:

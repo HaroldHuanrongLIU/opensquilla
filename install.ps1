@@ -222,8 +222,10 @@ function Install-WindowsVCRedistIfNeeded {
         Write-Warning "install.ps1: winget could not install Microsoft Visual C++ Redistributable (exit $LASTEXITCODE)."
     }
 
-    Write-Warning 'install.ps1: Microsoft Visual C++ Redistributable is needed for the bundled router on many Windows machines.'
-    Write-Warning "install.ps1: install it from $redistUrl, then restart PowerShell if onnxruntime reports DLL load failures."
+    Write-Warning 'OpenSquilla: Microsoft Visual C++ Redistributable 2015-2022 x64 is required for the bundled ONNX router.'
+    Write-Warning 'OpenSquilla can still start with safe router fallback, but bundled ONNX model routing is disabled until this runtime is installed.'
+    Write-Warning "If automatic installation fails, install it manually: $redistUrl"
+    Write-Warning 'After installing, reopen PowerShell and restart OpenSquilla.'
 }
 
 # --- installer selection ----------------------------------------------------

@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from opensquilla.engine.pipeline import TurnContext
@@ -70,10 +72,12 @@ def reset_squilla_router_state(monkeypatch: pytest.MonkeyPatch) -> None:
     squilla_router_step._history_store.clear()
     squilla_router_step._strategy = None
     squilla_router_step._strategy_key = None
+    squilla_router_step._router_runtime_warning_emitted = False
     yield
     squilla_router_step._history_store.clear()
     squilla_router_step._strategy = None
     squilla_router_step._strategy_key = None
+    squilla_router_step._router_runtime_warning_emitted = False
     monkeypatch.undo()
 
 
@@ -743,6 +747,36 @@ async def test_required_router_runtime_failure_falls_back_to_default_tier(
     assert routed.metadata["routing_source"] == "v4_unavailable"
     assert routed.metadata["routed_tier"] == "t1"
     assert routed.metadata["routing_confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_router_runtime_failure_emits_one_operator_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import opensquilla.squilla_router.v4_phase3 as v4_phase3
+
+    monkeypatch.setattr(v4_phase3, "V4Phase3Strategy", ExplodingV4Strategy)
+    caplog.set_level(logging.WARNING)
+
+    first = make_context("Explain the setup steps.")
+    first.config.squilla_router.require_router_runtime = True
+    await apply_squilla_router(first)
+    squilla_router_step._strategy = None
+    squilla_router_step._strategy_key = None
+    second = make_context("Explain the setup steps again.")
+    second.config.squilla_router.require_router_runtime = True
+    await apply_squilla_router(second)
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Microsoft Visual C++ Redistributable 2015-2022 x64" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "safe router fallback" in messages[0]
+    assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in messages[0]
+    assert "After installing, reopen PowerShell and restart OpenSquilla" in messages[0]
 
 
 @pytest.mark.asyncio

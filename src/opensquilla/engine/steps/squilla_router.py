@@ -7,6 +7,7 @@ deployments see no behavioral change until the operator opts in.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from opensquilla.squilla_router.controller import (
 )
 
 log = structlog.get_logger(__name__)
+_log_std = logging.getLogger(__name__)
 
 
 class RouterStrategy(Protocol):
@@ -42,8 +44,19 @@ class RouterStrategy(Protocol):
 _strategy: RouterStrategy | None = None
 _strategy_key: tuple | None = None
 _strategy_lock = threading.Lock()
+_router_runtime_warning_lock = threading.Lock()
+_router_runtime_warning_emitted = False
 _MAX_ROUTING_HISTORY = 5
 _ROUTING_HISTORY_WINDOW = 1800
+_ROUTER_RUNTIME_FALLBACK_MESSAGE = (
+    "OpenSquilla router fallback active: bundled ONNX router failed to load. "
+    "OpenSquilla can still start with safe router fallback, but bundled ONNX "
+    "model routing is disabled until the router runtime is available. On Windows, "
+    "Microsoft Visual C++ Redistributable 2015-2022 x64 is required for the "
+    "bundled ONNX router. If automatic installation fails, install it manually: "
+    "https://aka.ms/vs/17/release/vc_redist.x64.exe. After installing, reopen "
+    "PowerShell and restart OpenSquilla."
+)
 
 
 class RoutingHistoryStore:
@@ -300,6 +313,15 @@ def _is_history_strategy(strategy_name: str) -> bool:
     return strategy_name == "v4_phase3"
 
 
+def _warn_router_runtime_fallback_once(error: Exception | str) -> None:
+    global _router_runtime_warning_emitted  # noqa: PLW0603
+    with _router_runtime_warning_lock:
+        if _router_runtime_warning_emitted:
+            return
+        _router_runtime_warning_emitted = True
+    _log_std.warning("%s Error: %s", _ROUTER_RUNTIME_FALLBACK_MESSAGE, error)
+
+
 def _get_strategy(config: object) -> RouterStrategy:
     global _strategy, _strategy_key  # noqa: PLW0603
     with _strategy_lock:
@@ -322,7 +344,13 @@ def _get_strategy(config: object) -> RouterStrategy:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("squilla_router.strategy_unavailable", error=str(exc))
+            _warn_router_runtime_fallback_once(exc)
             strategy = _UnavailableV4Strategy(exc)
+        else:
+            if getattr(strategy, "source", "") == "v4_phase3" and not getattr(
+                strategy, "_available", True
+            ):
+                _warn_router_runtime_fallback_once("V4 Phase 3 router did not become available")
         _strategy = strategy
         _strategy_key = key
         return strategy

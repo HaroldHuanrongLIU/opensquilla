@@ -123,6 +123,7 @@ markers = [
     "llm_reasoning: live reasoning-capable model tests",
     "llm_gateway: live gateway/end-to-end runtime tests",
     "llm_image: live image-generation model API tests",
+    "local_golden: local opt-in synthetic complex-task golden tests",
     "webui_browser: real browser Web UI tests driven by Playwright",
     "live_channel: marks tests that hit a real channel platform (deselect with '-m \"not live_channel\"')",
 ]

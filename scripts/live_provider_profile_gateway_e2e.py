@@ -60,6 +60,9 @@ BASE_ENV = {
     "zhipu": "ZAI_BASE_URL",
 }
 TEXT_PROFILE_SLOTS = ("t0", "t1", "t2", "t3")
+LIVE_AGENT_MAX_ITERATIONS = 6
+LIVE_AGENT_RUNTIME_TIMEOUT_SECONDS = 75.0
+LIVE_TURN_HARD_DEADLINE_SECONDS = 90.0
 
 TIER_CASES = [
     {
@@ -71,8 +74,9 @@ TIER_CASES = [
         "tier": "t1",
         "id": "r1_structured_compare",
         "message": (
-            "比较 PostgreSQL 和 MySQL 在事务、索引、复制方面的差异，用表格输出。"
-            "最后一行写 {marker}。"
+            "不要调用工具，只输出 Markdown 表格和 marker。用不超过 4 行的表格比较 "
+            "PostgreSQL 和 MySQL 在事务、索引、复制方面的差异，每格不超过 12 个字。"
+            "最后一行单独写 {marker}。"
         ),
     },
     {
@@ -80,7 +84,8 @@ TIER_CASES = [
         "id": "r2_debugging",
         "message": (
             "下面是异步服务偶发超时的日志片段：连接池耗尽、慢查询、重试风暴、队列积压。"
-            "不要调用工具，请定位可能原因并给出三步排查，包含 {marker}。"
+            "不要调用工具，请用不超过三条短句定位可能原因并给出排查动作。"
+            "最后一行单独写 {marker}。"
         ),
     },
     {
@@ -100,6 +105,18 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, int | float):
         return str(value)
     return json.dumps(str(value), ensure_ascii=False)
+
+
+def _marker_component(value: str) -> str:
+    raw = "".join(ch if ch.isalnum() else "_" for ch in value.upper())
+    return "_".join(part for part in raw.split("_") if part)
+
+
+def _case_marker(provider: str, slot: str, case_id: str) -> str:
+    return (
+        f"E2E_{_marker_component(provider)}_"
+        f"{_marker_component(slot)}_{_marker_component(case_id)}"
+    )
 
 
 def _load_env_quietly(path: Path = REPO_ROOT / ".env") -> None:
@@ -214,6 +231,8 @@ def _write_config(
 host = "127.0.0.1"
 debug = false
 llm_request_timeout_seconds = 90
+agent_runtime_timeout_seconds = {LIVE_AGENT_RUNTIME_TIMEOUT_SECONDS}
+agent_max_iterations = {LIVE_AGENT_MAX_ITERATIONS}
 
 [auth]
 mode = "none"
@@ -223,6 +242,9 @@ enabled = false
 
 [rate_limit]
 enabled = false
+
+[task_runtime]
+turn_hard_deadline_s = {LIVE_TURN_HARD_DEADLINE_SECONDS}
 
 [memory]
 source = "state"
@@ -460,10 +482,7 @@ def _run_gateway_case_batch(
             if error is None:
                 for case in cases:
                     slot = str(case.get("slot") or case.get("tier") or default_tier)
-                    marker = (
-                        f"E2E_{provider.upper()}_{slot.upper()}_"
-                        f"{int(time.time() * 1000)}"
-                    )
+                    marker = _case_marker(provider, slot, str(case["id"]))
                     session_key = (
                         f"profile-e2e:{provider}:{case['id']}:{int(time.time() * 1000)}"
                     )

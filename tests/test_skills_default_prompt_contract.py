@@ -17,7 +17,6 @@ BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 DEFAULTS = {
     "coding-agent",
     "cron",
-    "deep-research",
     "docx",
     "github",
     "html-to-pdf",

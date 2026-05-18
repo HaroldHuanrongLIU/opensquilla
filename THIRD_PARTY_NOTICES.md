@@ -104,7 +104,6 @@ SOFTWARE.
 ## ClawHub-derived bundled skill descriptors
 
 - Component: SKILL.md frontmatter and instruction text for these bundled skills:
-  - `deep-research`
   - `docx`
   - `html-to-pdf`
   - `multi-search-engine`

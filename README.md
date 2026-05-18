@@ -504,8 +504,8 @@ PinchBench 1.2.1 average results across 25 tasks:
   kicks in when the turn needs deep thought, and the system prompt
   scales with task complexity (lightweight for trivial turns, full
   instructions for complex ones). No paying reasoning tokens for "hello".
-- **On-demand skills** — built-in MCP client plus 16
-  bundled skills (coding agents, GitHub, cron, deep research,
+- **On-demand skills** — built-in MCP client plus 15
+  bundled skills (coding agents, GitHub, cron,
   pptx/docx/xlsx/pdf toolkits, summarization, tmux, weather, and more);
   only the skills needed for the current task are loaded into context,
   avoiding steady-state token waste.
