@@ -852,18 +852,29 @@ def test_agent_provider_view_keeps_successful_file_write_as_metadata(tmp_path) -
 
     projected = agent._project_large_tool_use_arguments_for_provider(messages)
 
-    projected_block = next(
+    projected_text = next(
         block
         for block in projected[0].content
-        if isinstance(block, ContentBlockToolUse)
+        if isinstance(block, ContentBlockText)
     )
-    assert projected_block.input["path"] == "index.html"
-    assert projected_block.input["content"] != large_html
-    assert "successful_file_write_projection" in projected_block.input["content"]
-    assert "path: index.html" in projected_block.input["content"]
-    assert "sha256:" in projected_block.input["content"]
-    assert "original_chars:" in projected_block.input["content"]
-    assert "<p>word</p>" not in projected_block.input["content"]
+    assert "completed_file_write" in projected_text.text
+    assert "tool: write_file" in projected_text.text
+    assert "tool_use_id: write-1" in projected_text.text
+    assert "path: index.html" in projected_text.text
+    assert "sha256:" in projected_text.text
+    assert "original_chars:" in projected_text.text
+    assert "do not retry" in projected_text.text
+    assert "[tool_use_argument_projection]" not in projected_text.text
+    assert "<p>word</p>" not in projected_text.text
+    assert all(
+        not (
+            isinstance(block, ContentBlockToolResult)
+            and block.tool_use_id == "write-1"
+        )
+        for message in projected
+        if isinstance(message.content, list)
+        for block in message.content
+    )
     history_block = next(
         block
         for block in messages[0].content
@@ -911,19 +922,19 @@ def test_agent_provider_view_reuses_successful_file_write_argument_snapshot(tmp_
     second = agent._project_large_tool_use_arguments_for_provider(messages)
 
     first_block = next(
-        block for block in first[0].content if isinstance(block, ContentBlockToolUse)
+        block for block in first[0].content if isinstance(block, ContentBlockText)
     )
     second_block = next(
-        block for block in second[0].content if isinstance(block, ContentBlockToolUse)
+        block for block in second[0].content if isinstance(block, ContentBlockText)
     )
     first_handle = next(
         line.split(":", 1)[1].strip()
-        for line in first_block.input["content"].splitlines()
+        for line in first_block.text.splitlines()
         if line.startswith("tool_argument_handle:")
     )
     second_handle = next(
         line.split(":", 1)[1].strip()
-        for line in second_block.input["content"].splitlines()
+        for line in second_block.text.splitlines()
         if line.startswith("tool_argument_handle:")
     )
 

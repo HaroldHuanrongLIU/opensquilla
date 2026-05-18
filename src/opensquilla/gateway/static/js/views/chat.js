@@ -3511,6 +3511,20 @@ const ChatView = (() => {
     return details;
   }
 
+  function _findToolDetailsById(root, toolId) {
+    if (!root || !toolId) return null;
+    return Array.from(root.querySelectorAll('[data-tool-id]')).find(
+      (el) => el.getAttribute('data-tool-id') === toolId
+    ) || null;
+  }
+
+  function _findToolResultById(root, toolId) {
+    if (!root || !toolId) return null;
+    return Array.from(root.querySelectorAll('[data-tool-result-for]')).find(
+      (el) => el.getAttribute('data-tool-result-for') === toolId
+    ) || null;
+  }
+
   function _toolExecutionStatus(payload) {
     const status = payload && (payload.execution_status || payload.executionStatus);
     return status && typeof status === 'object' ? status : null;
@@ -3622,6 +3636,14 @@ const ChatView = (() => {
 
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
+    const existing = _findToolDetailsById(body, toolId);
+    if (existing) {
+      if (name === 'web_search' && _searchProvider) {
+        _injectProviderBadge(existing.querySelector('.chat-tools-summary'), _searchProvider);
+      }
+      if (_autoScroll) _scrollToBottom();
+      return;
+    }
 
     const details = _buildToolCallDOM(name, toolId, input, true);
     if (name === 'web_search' && _searchProvider) {
@@ -3650,7 +3672,7 @@ const ChatView = (() => {
     // Transition tool container from running → success/error and find target container
     let resultTarget = body; // default: append to msg-body
     if (toolId) {
-      const details = body.querySelector('[data-tool-id="' + toolId + '"]');
+      const details = _findToolDetailsById(body, toolId);
       if (details) {
         toolName = toolName || details.getAttribute('data-tool-name') || '';
         details.classList.remove('chat-tools-collapse--running');
@@ -3670,6 +3692,10 @@ const ChatView = (() => {
         }
       }
     }
+    if (toolId && _findToolResultById(resultTarget, toolId)) {
+      if (_autoScroll) _scrollToBottom();
+      return;
+    }
 
     // Only show result preview if non-empty
     const resultDiv = _buildToolResultDOM(
@@ -3683,6 +3709,7 @@ const ChatView = (() => {
       return;
     }
 
+    if (toolId) resultDiv.setAttribute('data-tool-result-for', toolId);
     resultTarget.appendChild(resultDiv);
     if (_autoScroll) _scrollToBottom();
   }
@@ -3823,6 +3850,7 @@ const ChatView = (() => {
           Markdown.bindHighlight(textDiv);
           body.appendChild(textDiv);
         } else if (seg.type === 'tool_use') {
+          if (_findToolDetailsById(body, seg.tool_use_id || '')) continue;
           const details = _buildToolCallDOM(seg.name || 'tool', seg.tool_use_id || '', seg.input || '', false);
           body.appendChild(details);
         } else if (seg.type === 'tool_result') {
@@ -3831,19 +3859,23 @@ const ChatView = (() => {
           const content = seg.result || '';
 
           if (toolId) {
-            const details = body.querySelector('[data-tool-id="' + toolId + '"]');
+            const details = _findToolDetailsById(body, toolId);
             if (details) {
               details.classList.remove('chat-tools-collapse--running');
               details.classList.add(_toolResultStateClass(seg));
               const toolsBody = details.querySelector('.chat-tools-body');
+              const resultTarget = toolsBody || details;
+              if (_findToolResultById(resultTarget, toolId)) continue;
               const resultDiv = _buildToolResultDOM(
                 content,
                 isError,
                 _toolResultIsTruncated(seg),
                 _toolNameById[toolId] || ''
               );
-              if (resultDiv && toolsBody) toolsBody.appendChild(resultDiv);
-              else if (resultDiv) details.appendChild(resultDiv);
+              if (resultDiv) {
+                resultDiv.setAttribute('data-tool-result-for', toolId);
+                resultTarget.appendChild(resultDiv);
+              }
 
               // web_search: inject provider badge and seed _searchProvider from persisted result
               if (_toolNameById[toolId] === 'web_search' && content) {

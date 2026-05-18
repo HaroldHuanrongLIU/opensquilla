@@ -1254,7 +1254,46 @@ class Agent:
                 projection += f"\n...\ntail:\n{tail}"
             return projection
 
-        replacements: dict[tuple[int, int], ContentBlockToolUse] = {}
+        def _completed_file_write_summary(
+            *,
+            block: ContentBlockToolUse,
+            input_chars: int,
+            digest: str,
+            handle: str | None,
+        ) -> ContentBlockText:
+            path = block.input.get("path")
+            path_line = f"path: {path}\n" if isinstance(path, str) else ""
+            selected_field = ""
+            selected_chars = 0
+            for key in ("content", "code", "patch", "diff"):
+                value = block.input.get(key)
+                if isinstance(value, str):
+                    selected_field = key
+                    selected_chars = len(value)
+                    break
+            handle_line = (
+                f"tool_argument_handle: {handle}\n" if handle is not None else ""
+            )
+            field_line = f"field: {selected_field}\n" if selected_field else ""
+            return ContentBlockText(
+                text=(
+                    "[completed_file_write]\n"
+                    f"tool: {block.name}\n"
+                    f"tool_use_id: {block.id}\n"
+                    f"{field_line}"
+                    f"{path_line}"
+                    f"original_chars: {selected_chars}\n"
+                    f"original_input_chars: {input_chars}\n"
+                    f"sha256: {digest}\n"
+                    f"{handle_line}"
+                    "result: completed; raw file content is omitted from provider "
+                    "context; do not retry this write solely because the content "
+                    "is omitted."
+                )
+            )
+
+        replacements: dict[tuple[int, int], ContentBlockText | ContentBlockToolUse] = {}
+        completed_file_write_ids: set[str] = set()
         for message_index, message in enumerate(messages):
             if not isinstance(message.content, list):
                 continue
@@ -1314,6 +1353,17 @@ class Agent:
                     tool_use_id=block.id,
                     tool_name=block.name,
                 )
+                if file_write_success:
+                    replacements[(message_index, block_index)] = (
+                        _completed_file_write_summary(
+                            block=block,
+                            input_chars=input_chars,
+                            digest=digest,
+                            handle=stored.handle if stored is not None else None,
+                        )
+                    )
+                    completed_file_write_ids.add(block.id)
+                    continue
                 projected_input = dict(block.input)
                 for key, value in block.input.items():
                     if not isinstance(value, str):
@@ -1383,6 +1433,12 @@ class Agent:
             next_content: list[Any] = []
             changed = False
             for block_index, block in enumerate(message.content):
+                if (
+                    isinstance(block, ContentBlockToolResult)
+                    and block.tool_use_id in completed_file_write_ids
+                ):
+                    changed = True
+                    continue
                 replacement = replacements.get((message_index, block_index))
                 if replacement is None:
                     next_content.append(block)
@@ -1391,6 +1447,8 @@ class Agent:
                 changed = True
             if not changed:
                 projected_messages.append(message)
+                continue
+            if not next_content:
                 continue
             projected_messages.append(
                 Message(

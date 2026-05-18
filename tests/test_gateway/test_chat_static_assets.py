@@ -220,6 +220,17 @@ def test_chat_js_has_document_level_escape_handler() -> None:
     assert "function _chatOverlayVisible" in source
 
 
+def test_chat_tool_rendering_is_idempotent_by_tool_use_id() -> None:
+    source = _read_chat_js()
+
+    assert "function _findToolDetailsById(root, toolId)" in source
+    assert "const existing = _findToolDetailsById(body, toolId);" in source
+    assert "if (existing) {" in source
+    assert "return;" in source
+    assert "data-tool-result-for" in source
+    assert "_findToolResultById" in source
+
+
 # ---------------------------------------------------------------------------
 # Test 9 — pending recovery: ESC / abort funnels the queue into the composer.
 # ---------------------------------------------------------------------------

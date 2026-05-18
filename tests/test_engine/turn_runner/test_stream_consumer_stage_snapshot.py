@@ -202,6 +202,7 @@ class _Case:
     expected_pending_error_code: str | None = None
     expected_done_present: bool = False
     expected_compaction_persist_calls: int = 0
+    expected_prompt_refresh_calls: int | None = None
     expected_outcome: str = "completed"
 
 
@@ -343,7 +344,7 @@ _CORPUS: list[_Case] = [
         expected_compaction_persist_calls=1,
     ),
     _Case(
-        case_id="compaction_persist_raises_log_and_continue",
+        case_id="compaction_persist_raises_failed_without_refresh",
         events=[
             CompactionEvent(summary="sum", kept_entries=[1]),
             DoneEvent(text="after"),
@@ -352,6 +353,7 @@ _CORPUS: list[_Case] = [
         expected_kinds=("DoneEvent",),
         expected_done_present=True,
         expected_compaction_persist_calls=1,
+        expected_prompt_refresh_calls=0,
     ),
     _Case(
         case_id="compaction_without_private_memory",
@@ -560,6 +562,9 @@ async def test_stream_consumer_stage_snapshot(
         f"{case_id}: persist call count diverged "
         f"({len(persist_calls)} vs {case.expected_compaction_persist_calls})"
     )
-    # System prompt refresh fires once per CompactionEvent (always, even
-    # when persist raises -- log-and-continue).
-    assert len(_MAILBOX.refresh_prompt_calls) == case.expected_compaction_persist_calls
+    expected_prompt_refresh_calls = (
+        case.expected_compaction_persist_calls
+        if case.expected_prompt_refresh_calls is None
+        else case.expected_prompt_refresh_calls
+    )
+    assert len(_MAILBOX.refresh_prompt_calls) == expected_prompt_refresh_calls
