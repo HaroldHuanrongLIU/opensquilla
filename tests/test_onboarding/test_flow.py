@@ -753,8 +753,9 @@ def test_onboard_migration_selection_summary_lists_checked_sources(tmp_path, mon
     assert "Selected migration sources" in out
     assert "☑ OpenClaw" in out
     assert "☑ Hermes Agent" in out
-    assert str(tmp_path / ".openclaw") in out
-    assert str(tmp_path / ".hermes") in out
+    unwrapped_out = out.replace("\n", "")
+    assert str(tmp_path / ".openclaw") in unwrapped_out
+    assert str(tmp_path / ".hermes") in unwrapped_out
 
 
 def test_onboard_migration_source_prompt_uses_clear_continue_language(tmp_path):

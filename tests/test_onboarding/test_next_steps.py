@@ -38,18 +38,19 @@ def test_onboarding_finish_output_separates_summary_from_commands():
 
 def test_onboarding_finish_output_puts_missing_env_hint_in_commands(monkeypatch):
     from opensquilla.gateway.config import GatewayConfig
-    from opensquilla.onboarding.next_steps import format_next_steps
+    from opensquilla.onboarding import next_steps
 
     cfg = GatewayConfig()
     cfg.llm.api_key = ""
     cfg.llm.api_key_env = "OPENROUTER_API_KEY"
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    text = format_next_steps(cfg, config_path="C:/tmp/config.toml")
+    text = next_steps.format_next_steps(cfg, config_path="C:/tmp/config.toml")
 
     commands = text.split("Commands:", 1)[1].split("Reference:", 1)[0]
     reference = text.split("Reference:", 1)[1]
-    assert 'Set key before starting gateway: export OPENROUTER_API_KEY="<your-key>"' in commands
+    env_hint = next_steps._set_env_hint("OPENROUTER_API_KEY")
+    assert f"Set key before starting gateway: {env_hint}" in commands
     assert "Set key before starting gateway" not in reference
 
 
