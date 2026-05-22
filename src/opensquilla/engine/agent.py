@@ -1553,7 +1553,23 @@ class Agent:
                 cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
             )
             if compressed_content is None:
-                return result
+                applied_mode = "tokenjuice_fallback_truncate"
+                self.config.metadata["tool_compression_tokenjuice_fallbacks"] = (
+                    self.config.metadata.get("tool_compression_tokenjuice_fallbacks", 0) + 1
+                )
+            elif self._tool_result_over_budget(compressed_content):
+                compressed_content = truncate_result(
+                    compressed_content,
+                    self.config.context_window_tokens,
+                    max_share=self.config.tool_result_compression_max_share,
+                )
+                applied_mode = "tokenjuice_truncate"
+                self.config.metadata["tool_compression_tokenjuice_over_budget_fallbacks"] = (
+                    self.config.metadata.get(
+                        "tool_compression_tokenjuice_over_budget_fallbacks", 0
+                    )
+                    + 1
+                )
         elif budget_class is ToolResultBudgetClass.CONTROL:
             compressed_content = compact_tool_result_content(
                 tool_name=result.tool_name,

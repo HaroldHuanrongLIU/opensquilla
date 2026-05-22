@@ -19,19 +19,26 @@ def truncate_result(
     Returns original text if within budget.
     """
     budget_tokens = int(context_window_tokens * max_share)
-    text_tokens = estimate_tokens(text)
+    budget_chars = max(0, budget_tokens * 4)
 
-    if text_tokens <= budget_tokens:
+    if budget_chars <= 0:
+        return ""
+
+    if budget_chars >= len(text):
         return text
 
-    # Convert token budget to char budget (4 chars per token)
-    budget_chars = budget_tokens * 4
-    head_chars = int(budget_chars * 0.70)
-    tail_chars = int(budget_chars * 0.20)
+    keep_chars = max(0, int(budget_chars * 0.90))
+    while keep_chars >= 0:
+        head_chars = int(keep_chars * 0.70)
+        tail_chars = keep_chars - head_chars
+        omitted = len(text) - head_chars - tail_chars
+        marker = f"\n[...truncated {omitted} chars...]\n"
+        if len(marker) > budget_chars:
+            break
+        tail = text[-tail_chars:] if tail_chars > 0 else ""
+        truncated = text[:head_chars] + marker + tail
+        if len(truncated) <= budget_chars:
+            return truncated
+        keep_chars -= 1
 
-    if head_chars + tail_chars >= len(text):
-        return text
-
-    omitted = len(text) - head_chars - tail_chars
-    marker = f"\n[...truncated {omitted} chars...]\n"
-    return text[:head_chars] + marker + text[-tail_chars:]
+    return text[:budget_chars]

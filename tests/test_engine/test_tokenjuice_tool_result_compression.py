@@ -39,6 +39,21 @@ class _Provider:
         return []
 
 
+class _FailingSummaryProvider:
+    provider_name = "fake"
+    model = "failing-summary-model"
+
+    def __init__(self) -> None:
+        self.chat_calls = 0
+
+    def chat(self, messages, tools=None, config=None):
+        self.chat_calls += 1
+        raise RuntimeError("summary unavailable")
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _ToolCallingProvider:
     provider_name = "fake"
 
@@ -211,7 +226,7 @@ async def test_tokenjuice_mode_uses_tokenjuice_adapter(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_tokenjuice_mode_keeps_raw_result_when_tokenjuice_returns_none(
+async def test_tokenjuice_mode_falls_back_to_truncate_when_tokenjuice_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -236,8 +251,75 @@ async def test_tokenjuice_mode_keeps_raw_result_when_tokenjuice_returns_none(
 
     compressed = await agent._compress_tool_result(result)
 
-    assert compressed is result
+    assert compressed is not result
+    assert compressed.content != result.content
+    assert "[...truncated" in compressed.content
     assert agent.config.metadata.get("tool_compression_backend") is None
+    assert agent.config.metadata["tool_compression_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tokenjuice_mode_truncates_reduction_that_still_exceeds_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_reduce(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            inline_text="[tokenjuice]\n" + ("important detail " * 40),
+            raw_chars=len(kwargs["content"]),
+            reduced_chars=700,
+            ratio=0.7,
+            reducer="generic/fallback",
+        )
+
+    monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fake_reduce, raising=False)
+    agent = Agent(
+        provider=_Provider(),
+        config=AgentConfig(
+            context_window_tokens=100,
+            tool_result_compression_mode="tokenjuice",
+            tool_result_compression_max_share=0.25,
+        ),
+    )
+    result = ToolResult(
+        tool_use_id="tool-1",
+        tool_name="exec_command",
+        content="raw output\n" + ("x" * 1000),
+    )
+
+    compressed = await agent._compress_tool_result(result)
+
+    assert compressed.content != result.content
+    assert "[...truncated" in compressed.content
+    assert len(compressed.content) <= 100
+    assert agent.config.metadata["tool_compression_backend"] == "tokenjuice"
+    assert agent.config.metadata["tool_compression_tokenjuice_over_budget_fallbacks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_summarize_mode_falls_back_to_budgeted_truncate_when_summary_fails() -> None:
+    provider = _FailingSummaryProvider()
+    agent = Agent(
+        provider=_Provider(),
+        config=AgentConfig(
+            context_window_tokens=100,
+            tool_result_compression_mode="summarize",
+            tool_result_compression_max_share=0.25,
+        ),
+        tool_result_summarizer_provider=provider,
+    )
+    result = ToolResult(
+        tool_use_id="tool-1",
+        tool_name="exec_command",
+        content="long output\n" + ("x" * 1000),
+    )
+
+    compressed = await agent._compress_tool_result(result)
+
+    assert provider.chat_calls == 1
+    assert compressed is not result
+    assert compressed.content != result.content
+    assert "[...truncated" in compressed.content
+    assert agent.config.metadata["tool_compression_calls"] == 1
 
 
 @pytest.mark.asyncio
