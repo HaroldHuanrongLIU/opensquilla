@@ -18,6 +18,7 @@ import structlog
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
+from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
 from opensquilla.squilla_router.controller import (
     derive_prompt_policy,
     derive_thinking_mode,
@@ -248,6 +249,7 @@ def commit_deferred_router_history(ctx: TurnContext) -> TurnContext:
         ctx.metadata["routing_history"] = _append_routing_history(session_key, entry_payload)
     return ctx
 
+
 _RESPONSE_POLICY_OPEN = "[RESPONSE_POLICY:"
 
 
@@ -276,14 +278,19 @@ class _UnavailableV4Strategy:
         **kwargs: object,
     ) -> tuple[str, float, str, dict]:
         tier = "t1" if "t1" in valid_tiers else (valid_tiers[0] if valid_tiers else "t1")
-        return tier, 0.0, "v4_unavailable", {
-            "route_class": "R1",
-            "top1_label": "R1",
-            "thinking_mode": "T1",
-            "prompt_policy": "P1",
-            "model_version": "unavailable",
-            "error": str(self.error),
-        }
+        return (
+            tier,
+            0.0,
+            "v4_unavailable",
+            {
+                "route_class": "R1",
+                "top1_label": "R1",
+                "thinking_mode": "T1",
+                "prompt_policy": "P1",
+                "model_version": "unavailable",
+                "error": str(self.error),
+            },
+        )
 
 
 def _strategy_cache_key(config: object) -> tuple:
@@ -675,11 +682,9 @@ def _finalize_decision(
         )
         if complaint_terms:
             upgrade_start_tier = final_tier
-            if (
-                previous_tier in valid_tiers
-                and _tier_index(previous_tier, valid_tiers)
-                > _tier_index(upgrade_start_tier, valid_tiers)
-            ):
+            if previous_tier in valid_tiers and _tier_index(
+                previous_tier, valid_tiers
+            ) > _tier_index(upgrade_start_tier, valid_tiers):
                 upgrade_start_tier = previous_tier
             upgraded_tier = _upgrade_tier(
                 upgrade_start_tier,
@@ -852,9 +857,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             if persisted:
                 now = time.monotonic()
                 routing_history = [
-                    {**dict(entry), "_ts": now}
-                    if "_ts" not in entry
-                    else dict(entry)
+                    {**dict(entry), "_ts": now} if "_ts" not in entry else dict(entry)
                     for entry in persisted
                     if isinstance(entry, dict)
                 ]
@@ -965,6 +968,21 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     ctx.metadata["routing_source"] = decision.source
     ctx.metadata.update(_compute_savings(decision.model, tiers))
 
+    context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(
+        "active_context_states"
+    )
+    if isinstance(context_states, list):
+        tier_cfg = tiers[decision.tier]
+        candidate_provider = str(
+            tier_cfg.get("provider") or getattr(router_cfg, "tier_profile", "") or ""
+        )
+        ctx.metadata["provider_state_continuity"] = provider_state_continuity_diagnostic(
+            context_states=context_states,
+            candidate_provider=candidate_provider,
+            candidate_model=decision.model,
+            now_ms=int(time.time() * 1000),
+        ).as_metadata()
+
     try:
         _apply_controller(
             ctx,
@@ -1034,5 +1052,6 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         anti_downgrade_applied=routing_extra.get("anti_downgrade_applied"),
         probabilities=routing_extra.get("probabilities"),
         margin=routing_extra.get("margin"),
+        provider_state_continuity=ctx.metadata.get("provider_state_continuity"),
     )
     return ctx

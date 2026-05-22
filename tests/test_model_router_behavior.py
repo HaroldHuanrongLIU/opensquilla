@@ -171,6 +171,91 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 
 
 @pytest.mark.asyncio
+async def test_router_reports_provider_state_loss_without_changing_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "t1",
+        0.91,
+        {
+            "route_class": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+    ctx = make_context("Continue the long task.")
+    ctx.metadata["session_context_states"] = [
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "state_kind": "anthropic_compaction_block",
+            "valid": True,
+            "portable": False,
+        },
+        {
+            "provider": "portable",
+            "model": "",
+            "state_kind": "structured_summary_v1",
+            "valid": True,
+            "portable": True,
+        },
+    ]
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.model == "deepseek/deepseek-v4-flash"
+    diagnostic = routed.metadata["provider_state_continuity"]
+    assert diagnostic["decision"] == "use_portable_fallback"
+    assert diagnostic["provider_state_loss_risk"] is True
+    assert diagnostic["candidate_provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_router_continuity_diagnostic_ignores_expired_provider_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "t1",
+        0.91,
+        {
+            "route_class": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+    ctx = make_context("Continue the long task.")
+    ctx.metadata["session_context_states"] = [
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "state_kind": "anthropic_compaction_block",
+            "created_at": 100,
+            "expires_at": 150,
+            "valid": True,
+            "portable": False,
+        },
+        {
+            "provider": "portable",
+            "model": "",
+            "state_kind": "structured_summary_v1",
+            "created_at": 90,
+            "valid": True,
+            "portable": True,
+        },
+    ]
+
+    routed = await apply_squilla_router(ctx)
+
+    diagnostic = routed.metadata["provider_state_continuity"]
+    assert diagnostic["decision"] == "use_portable_fallback"
+    assert diagnostic["provider_state_loss_risk"] is False
+    assert diagnostic["active_state_provider"] is None
+    assert diagnostic["portable_fallback_available"] is True
+
+
+@pytest.mark.asyncio
 async def test_p2_prompt_hint_is_recorded_but_not_injected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

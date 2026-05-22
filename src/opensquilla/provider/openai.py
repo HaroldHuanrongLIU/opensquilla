@@ -21,6 +21,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
 from opensquilla.secrets import clean_header_secret
 
+from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
@@ -456,15 +457,7 @@ def _build_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
 
 
 def _openrouter_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
-    model_l = model.strip().lower()
-    return model_l.startswith(
-        (
-            "anthropic/",
-            "google/",
-            "deepseek/",
-            "x-ai/",
-        )
-    )
+    return supports_openrouter_explicit_prompt_cache(model)
 
 
 def _openrouter_model_is_anthropic(model: str) -> bool:

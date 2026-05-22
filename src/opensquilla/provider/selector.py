@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from .anthropic import AnthropicProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
+from .openai_responses import OpenAIResponsesProvider
 from .protocol import LLMProvider, ProviderPlugin, resolve_failover_chain
 from .registry import UnknownProviderError, get_provider_spec
 
@@ -86,6 +87,19 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
             if cfg.provider_routing:
                 kwargs["provider_routing"] = cfg.provider_routing
             return OpenAIProvider(**kwargs)
+
+        case "openai_responses":
+            kwargs = {
+                "api_key": cfg.api_key,
+                "model": cfg.model,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            if cfg.org_id:
+                kwargs["org_id"] = cfg.org_id
+            if cfg.proxy:
+                kwargs["proxy"] = cfg.proxy
+            return OpenAIResponsesProvider(**kwargs)
 
         case "ollama":
             kwargs = {"model": cfg.model}

@@ -254,6 +254,12 @@ class ContentBlockThinking(BaseModel):
     signature: str | None = None
 
 
+class ContentBlockCompaction(BaseModel):
+    type: Literal["compaction"] = "compaction"
+    content: str | None = None
+    cache_control: dict[str, Any] | None = None
+
+
 MessageContent = (
     str
     | list[
@@ -263,6 +269,7 @@ MessageContent = (
         | ContentBlockImage
         | ContentBlockDocument
         | ContentBlockThinking
+        | ContentBlockCompaction
     ]
 )
 
