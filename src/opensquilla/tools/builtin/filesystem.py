@@ -366,6 +366,14 @@ async def _gate_out_of_workspace_write(
             )
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
+    from opensquilla.tools.write_policy import gate_workspace_write_deny
+
+    gate_workspace_write_deny(
+        tool_name,
+        resolved,
+        original_path=original_path,
+        workspace=_workspace_root(),
+    )
 
     if not _is_outside_workspace(resolved):
         return None

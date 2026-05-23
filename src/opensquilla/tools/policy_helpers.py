@@ -85,7 +85,20 @@ def apply_tool_policy(
     if allowed_tools is not None:
         allowed_tools -= denied_tools
 
-    return replace(ctx, allowed_tools=allowed_tools, denied_tools=denied_tools)
+    return replace(
+        ctx,
+        allowed_tools=allowed_tools,
+        denied_tools=denied_tools,
+        workspace_write_deny_globs=_merged_workspace_write_deny_globs(
+            ctx,
+            global_policy,
+            agent_policy,
+            default_channel_policy,
+            policy_config.sender_policy(default_channel_policy, ctx.sender_id),
+            channel_policy,
+            policy_config.sender_policy(channel_policy, ctx.sender_id),
+        ),
+    )
 
 
 def apply_tool_policy_layer(
@@ -119,7 +132,29 @@ def apply_tool_policy_layer(
         denied_tools |= set(hard_denied)
     if allowed_tools is not None:
         allowed_tools -= denied_tools
-    return replace(ctx, allowed_tools=allowed_tools, denied_tools=denied_tools)
+    return replace(
+        ctx,
+        allowed_tools=allowed_tools,
+        denied_tools=denied_tools,
+        workspace_write_deny_globs=_merged_workspace_write_deny_globs(ctx, parsed),
+    )
+
+
+def _merged_workspace_write_deny_globs(
+    ctx: ToolContext,
+    *policies: ToolPolicy | None,
+) -> list[str]:
+    merged: list[str] = list(ctx.workspace_write_deny_globs)
+    seen = set(merged)
+    for policy in policies:
+        if policy is None:
+            continue
+        for pattern in policy.workspace_write_deny_globs:
+            if pattern in seen:
+                continue
+            merged.append(pattern)
+            seen.add(pattern)
+    return merged
 
 
 def apply_tool_policy_from_config(

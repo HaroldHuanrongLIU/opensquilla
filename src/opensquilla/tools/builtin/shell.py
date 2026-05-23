@@ -252,6 +252,15 @@ def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
     return path.resolve(strict=False)
 
 
+def _shell_write_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
+    targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
+    tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
+    targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
+    return targets
+
+
 def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
@@ -260,12 +269,7 @@ def _workspace_lockdown_shell_block(
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
-    targets: list[str] = []
-    redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
-    tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
-    for target in targets:
+    for target in _shell_write_targets(command):
         resolved = _resolve_shell_write_target(target, workdir)
         if _path_inside_any_root(resolved, roots):
             continue
@@ -283,6 +287,35 @@ def _workspace_lockdown_shell_block(
             ),
             "retryable": False,
         }
+    return None
+
+
+def _workspace_write_deny_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+) -> dict[str, object] | None:
+    from opensquilla.tools.write_policy import (
+        match_workspace_write_deny,
+        workspace_write_deny_block,
+    )
+
+    ctx = current_tool_context.get()
+    workspace = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx is not None and ctx.workspace_dir
+        else None
+    )
+    for target in _shell_write_targets(command):
+        resolved = _resolve_shell_write_target(target, workdir)
+        deny_match = match_workspace_write_deny(
+            resolved,
+            original_path=target,
+            workspace=workspace,
+            ctx=ctx,
+        )
+        if deny_match is not None:
+            return workspace_write_deny_block(tool_name, deny_match, command=command)
     return None
 
 
@@ -582,6 +615,9 @@ async def exec_command(
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
 
     # Warnlist: two-step approval flow
     if result.needs_approval:
@@ -733,6 +769,9 @@ async def background_process(
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
         approval_response: dict[str, object] | None = None
@@ -1248,6 +1287,17 @@ async def _check_exec_approval(
             resolved_path=lockdown_block.get("resolved_path"),
         )
         return lockdown_block
+
+    deny_block = _workspace_write_deny_shell_block(tool_name, command, workdir)
+    if deny_block is not None:
+        log.warning(
+            "shell_workspace_write_deny_blocked",
+            command=_audit_command(command),
+            tool=tool_name,
+            resolved_path=deny_block.get("resolved_path"),
+            matched_pattern=deny_block.get("matched_pattern"),
+        )
+        return deny_block
 
     # /elevated full — trusted operator has taken explicit responsibility.
     # Approvals are skipped entirely.

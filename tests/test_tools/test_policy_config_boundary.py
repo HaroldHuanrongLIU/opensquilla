@@ -162,6 +162,16 @@ def test_policy_config_parses_gateway_and_sender_policy_shapes() -> None:
     )
 
 
+def test_policy_helpers_apply_workspace_write_deny_globs_from_config() -> None:
+    ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "exec_command"],
+        config={"tools": {"workspaceWriteDenyGlobs": ["generated/**", "*.secret"]}},
+    )
+
+    assert set(ctx.workspace_write_deny_globs) == {"generated/**", "*.secret"}
+
+
 def test_policy_helpers_apply_runtime_policy_through_config_boundary() -> None:
     config = {
         "channels": {

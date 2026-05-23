@@ -2514,6 +2514,27 @@ class Agent:
                             yield terminal_error
                             break
                         if attempt_classification.kind == _ProviderAttemptKind.LENGTH_CAPPED:
+                            visible_text = strip_synthetic_tool_call_suffix(
+                                response_text,
+                                [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
+                            )
+                            logger.warning(
+                                "provider.output_truncated_exhausted",
+                                session_key=self._session_key,
+                                model=last_actual_model or self.config.model_id or "",
+                                provider=type(self.provider).__name__,
+                                iteration=iterations,
+                                call_attempt=_call_attempt,
+                                attempt=_attempt_retries_used.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                budget=_retry_policy.attempt_budgets.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                tool_calls=len(tool_calls),
+                                visible_chars=len(visible_text),
+                                partial_preserved=bool(visible_text or final_text_parts),
+                            )
                             yield WarningEvent(
                                 code="provider_output_truncated",
                                 message=(

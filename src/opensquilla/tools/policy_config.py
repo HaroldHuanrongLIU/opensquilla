@@ -118,14 +118,16 @@ class ToolPolicy:
     """Declarative tool policy layer.
 
     ``profile`` sets the base allowlist; ``allow`` and ``also_allow`` add
-    selectors; ``deny`` removes selectors. Selectors can be exact tool names,
-    ``group:*`` names, ``*``, or fnmatch-style patterns.
+    selectors; ``deny`` removes selectors. ``workspace_write_deny_globs`` can
+    further block writes to matching workspace-relative paths. Selectors can be
+    exact tool names, ``group:*`` names, ``*``, or fnmatch-style patterns.
     """
 
     profile: str | None = None
     allow: frozenset[str] = frozenset()
     deny: frozenset[str] = frozenset()
     also_allow: frozenset[str] = frozenset()
+    workspace_write_deny_globs: frozenset[str] = frozenset()
     by_sender: Mapping[str, ToolPolicy] = field(default_factory=dict)
 
 
@@ -241,6 +243,14 @@ def policy_from_config(value: object) -> ToolPolicy | None:
             allow=base.allow,
             deny=base.deny,
             also_allow=base.also_allow,
+            workspace_write_deny_globs=base.workspace_write_deny_globs
+            | string_set(
+                get_field(
+                    value,
+                    "workspaceWriteDenyGlobs",
+                    get_field(value, "workspace_write_deny_globs"),
+                )
+            ),
             by_sender={**base.by_sender, **wrapper_by_sender},
         )
 
@@ -250,6 +260,13 @@ def policy_from_config(value: object) -> ToolPolicy | None:
         allow=string_set(get_field(value, "allow")),
         deny=string_set(get_field(value, "deny")),
         also_allow=string_set(get_field(value, "alsoAllow", get_field(value, "also_allow"))),
+        workspace_write_deny_globs=string_set(
+            get_field(
+                value,
+                "workspaceWriteDenyGlobs",
+                get_field(value, "workspace_write_deny_globs"),
+            )
+        ),
         by_sender=sender_policies_from_config(
             sender_value
             if sender_value is not None

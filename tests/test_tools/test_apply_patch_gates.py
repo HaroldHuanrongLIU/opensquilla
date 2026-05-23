@@ -78,6 +78,32 @@ async def test_apply_patch_blocks_sensitive_key_file_suffix(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_blocks_workspace_write_deny_glob(tmp_path: Path) -> None:
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            workspace_write_deny_globs=["blocked/**"],
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Add File: blocked/generated.txt
++nope
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert payload["matched_pattern"] == "blocked/**"
+    assert not (tmp_path / "blocked" / "generated.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_workspace_escape_requests_patch_level_approval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

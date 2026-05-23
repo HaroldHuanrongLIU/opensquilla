@@ -45,6 +45,7 @@ class ToolContext:
     workspace_strict: bool = False
     scratch_dir: str | None = None
     workspace_lockdown: bool = False
+    workspace_write_deny_globs: list[str] = field(default_factory=list)
     session_key: str | None = None
     channel_kind: str | None = None
     channel_id: str | None = None

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from opensquilla.engine import Agent, AgentConfig, ThinkingLevel, ToolResult
 from opensquilla.engine.runtime import TurnRunner
@@ -589,6 +590,55 @@ async def test_length_capped_visible_text_uses_configured_continuation_budget() 
     assert done.text == "part one part two part three done"
     assert done.input_tokens == 16
     assert done.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_length_capped_exhaustion_records_partial_diagnostics() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="first partial "),
+                ProviderDone(stop_reason="length", input_tokens=1, output_tokens=2),
+            ],
+            [
+                ProviderText(text="second partial "),
+                ProviderDone(stop_reason="length", input_tokens=3, output_tokens=4),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            length_capped_continuations=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    assert any(event.kind == "text_delta" and event.text == "first partial " for event in events)
+    assert any(event.kind == "text_delta" and event.text == "second partial " for event in events)
+    assert any(
+        event.kind == "warning" and event.code == "provider_output_continue"
+        for event in events
+    )
+    assert any(
+        event.kind == "error" and event.code == "provider_output_truncated"
+        for event in events
+    )
+    exhausted = [
+        event
+        for event in captured
+        if event.get("event") == "provider.output_truncated_exhausted"
+    ]
+    assert exhausted
+    assert exhausted[-1]["attempt"] == 1
+    assert exhausted[-1]["budget"] == 1
+    assert exhausted[-1]["visible_chars"] == len("second partial ")
+    assert exhausted[-1]["partial_preserved"] is True
 
 
 @pytest.mark.asyncio
