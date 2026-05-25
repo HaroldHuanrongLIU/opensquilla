@@ -756,6 +756,52 @@ async def test_degraded_compaction_preimage_can_be_listed_for_repair(manager):
 
 
 @pytest.mark.asyncio
+async def test_noop_memory_flush_compaction_status_does_not_enter_repair_queue(manager):
+    await manager.create("agent:main:main")
+    for i in range(20):
+        await manager.append_message(
+            "agent:main:main",
+            "user",
+            f"noop msg {i} " + ("x" * 500),
+            token_count=200,
+        )
+
+    result = await manager.compact_with_result(
+        "agent:main:main",
+        context_window_tokens=1000,
+        flush_receipt_status="noop_no_memory",
+    )
+
+    assert result.removed_count > 0
+    summaries = await manager.get_summaries("agent:main:main")
+    assert summaries[0].flush_receipt_status == "noop_no_memory"
+    assert await manager.list_degraded_compactions(agent_id="main") == []
+
+
+@pytest.mark.asyncio
+async def test_archive_only_memory_flush_compaction_status_does_not_enter_repair_queue(manager):
+    await manager.create("agent:main:main")
+    for i in range(20):
+        await manager.append_message(
+            "agent:main:main",
+            "user",
+            f"archive msg {i} " + ("x" * 500),
+            token_count=200,
+        )
+
+    result = await manager.compact_with_result(
+        "agent:main:main",
+        context_window_tokens=1000,
+        flush_receipt_status="archive_only",
+    )
+
+    assert result.removed_count > 0
+    summaries = await manager.get_summaries("agent:main:main")
+    assert summaries[0].flush_receipt_status == "archive_only"
+    assert await manager.list_degraded_compactions(agent_id="main") == []
+
+
+@pytest.mark.asyncio
 async def test_compact_with_result_reports_and_backfills_missing_obligations(manager):
     await manager.create("agent:main:main")
     await manager.append_message(

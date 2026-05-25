@@ -121,6 +121,7 @@ class FakeSessionManager:
         self.applied_intents: list[tuple[str, str]] = []
         self.truncate_calls: list[tuple[str, int]] = []
         self.compact_calls: list[tuple[str, int, object | None]] = []
+        self.compact_kwargs: list[dict[str, Any]] = []
         self.compact_instructions: list[str | None] = []
         self.compact_summary = "summary for compacted context"
         self.compact_summary_source = "fallback"
@@ -178,7 +179,9 @@ class FakeSessionManager:
         context_window_tokens: int,
         config=None,
         custom_instructions: str | None = None,
+        **kwargs: Any,
     ):
+        self.compact_kwargs.append(dict(kwargs))
         self.compact_instructions.append(custom_instructions)
         summary = await self.compact(session_key, context_window_tokens, config)
         return SimpleNamespace(
@@ -1514,6 +1517,47 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert len(manager.compact_calls) == 1
         assert manager.compact_calls[0][:2] == (session.session_key, 100000)
+        assert manager.compact_kwargs[0]["flush_receipt_status"] == "degraded_forensic"
+        assert res.payload["flush_receipt_status"] == "degraded_forensic"
+
+    @pytest.mark.asyncio
+    async def test_context_compact_persists_noop_flush_receipt_status(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(content="message to preserve")]
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="llm",
+                    result_status="ok_noop_no_memory",
+                    flushed_paths=[],
+                    raw_reason=None,
+                    error=None,
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverifiable",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverifiable",
+                    obligation_missing_ids=[],
+                )
+            )
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert len(manager.compact_calls) == 1
+        assert manager.compact_kwargs[0]["flush_receipt_status"] == "noop_no_memory"
+        assert res.payload["flush_receipt_status"] == "noop_no_memory"
 
     @pytest.mark.asyncio
     async def test_context_compact_allowed_for_operator_write_scope(self, dispatcher, session):

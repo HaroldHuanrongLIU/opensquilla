@@ -93,6 +93,7 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_lifecycle_payload,
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
     new_compaction_id,
 )
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
@@ -4133,11 +4134,12 @@ class Agent:
             logger.warning("memory_flush.background_failed", error=str(exc))
         else:
             mode = getattr(receipt, "mode", None)
-            if not flush_receipt_allows_destructive_compaction(receipt):
+            if not flush_receipt_is_successful_flush(receipt):
                 next_retry_seconds = self._ensure_flush_degraded_backoff()
                 logger.warning(
                     "memory_flush.degraded",
                     mode=mode,
+                    result_status=getattr(receipt, "result_status", None),
                     integrity_status=getattr(receipt, "integrity_status", None),
                     output_coverage_status=getattr(receipt, "output_coverage_status", None),
                     obligation_status=getattr(receipt, "obligation_status", None),

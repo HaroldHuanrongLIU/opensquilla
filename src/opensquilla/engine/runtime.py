@@ -147,6 +147,7 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_lifecycle_payload,
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
     flush_receipt_status_for_compaction,
     new_compaction_id,
     pre_compaction_flush_requires_safe_receipt,
@@ -4617,11 +4618,13 @@ class TurnRunner:
         duration_ms: int,
         background: bool,
     ) -> None:
-        if self._flush_receipt_allows_destructive_compaction(receipt):
+        result_status = getattr(receipt, "result_status", None)
+        if flush_receipt_is_successful_flush(receipt):
             log.info(
                 f"{event_prefix}.flush_done",
                 session_key=session_key,
                 mode=getattr(receipt, "mode", "unknown"),
+                result_status=result_status,
                 message_count=getattr(receipt, "message_count", 0),
                 duration_ms=duration_ms,
                 background=background,
@@ -4633,6 +4636,7 @@ class TurnRunner:
             session_key=session_key,
             error=getattr(receipt, "error", None) or "degraded_flush_receipt",
             mode=getattr(receipt, "mode", "unknown"),
+            result_status=result_status,
             integrity_status=getattr(receipt, "integrity_status", None),
             indexed_chunk_count=getattr(receipt, "indexed_chunk_count", None),
             output_coverage_status=getattr(receipt, "output_coverage_status", None),

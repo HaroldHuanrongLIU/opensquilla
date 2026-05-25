@@ -25,6 +25,14 @@ COMPACTION_SUMMARY_VERIFIED_EVENT: Final[str] = "compaction.summary_verified"
 COMPACTION_PERSISTED_EVENT: Final[str] = "compaction.persisted"
 COMPACTION_REPLAYED_EVENT: Final[str] = "compaction.replayed"
 COMPACTION_COVERAGE_UNKNOWN: Final[str] = "unknown"
+NOOP_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset({"ok_noop_no_memory"})
+ARCHIVE_ONLY_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
+    {"ok_archive_only"}
+)
+ARCHIVED_DEGRADED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
+    {"parse_failed_archived", "provider_failed_archived"}
+)
+FAILED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset({"archive_failed"})
 
 
 @dataclass(frozen=True)
@@ -125,7 +133,32 @@ def compaction_result_payload(
 def flush_receipt_status(receipt: Any) -> str:
     if receipt is None:
         return "not_requested"
-    return "safe" if flush_receipt_allows_destructive_compaction(receipt) else "unsafe"
+    if flush_receipt_allows_destructive_compaction(receipt):
+        return "safe"
+    result_status = str(_receipt_value(receipt, "result_status", "") or "")
+    if result_status in NOOP_FLUSH_RESULT_STATUSES:
+        return "noop_no_memory"
+    if result_status in ARCHIVE_ONLY_FLUSH_RESULT_STATUSES:
+        return "archive_only"
+    if result_status in ARCHIVED_DEGRADED_FLUSH_RESULT_STATUSES:
+        return "degraded_forensic"
+    return "unsafe"
+
+
+def flush_receipt_is_successful_flush(receipt: Any) -> bool:
+    """Return true when the flush pipeline completed without needing retry.
+
+    This is intentionally weaker than destructive-compaction safety. A no-op
+    LLM result means "nothing durable to write" and should not be retried as a
+    flush failure, while it still must not authorize destructive compaction.
+    """
+
+    if receipt is None:
+        return False
+    if flush_receipt_allows_destructive_compaction(receipt):
+        return True
+    result_status = str(_receipt_value(receipt, "result_status", "") or "")
+    return result_status in NOOP_FLUSH_RESULT_STATUSES
 
 
 def normalize_flush_compaction_safety_mode(
@@ -187,6 +220,13 @@ def flush_receipt_status_for_compaction(receipt: Any, config: Any) -> str:
         return "not_required"
     if decision == "safe_destructive":
         return "safe"
+    result_status = str(_receipt_value(receipt, "result_status", "") or "")
+    if result_status in NOOP_FLUSH_RESULT_STATUSES:
+        return "noop_no_memory"
+    if result_status in ARCHIVE_ONLY_FLUSH_RESULT_STATUSES:
+        return "archive_only"
+    if result_status in FAILED_FLUSH_RESULT_STATUSES:
+        return "unsafe"
     if decision == "degraded_forensic":
         return "degraded_forensic"
     return "unsafe"

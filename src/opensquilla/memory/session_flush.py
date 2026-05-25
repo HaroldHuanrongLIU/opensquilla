@@ -72,6 +72,16 @@ def _flush_tool_context(agent_id: str, *, source_name: str) -> ToolContext:
 
 FlushMode = Literal["llm", "raw", "skipped", "error"]
 RawReason = Literal["timeout", "llm_error", "no_provider", "no_tools"]
+FlushResultStatus = Literal[
+    "unknown",
+    "skipped",
+    "ok_candidates_written",
+    "ok_noop_no_memory",
+    "ok_archive_only",
+    "parse_failed_archived",
+    "provider_failed_archived",
+    "archive_failed",
+]
 SegmentMode = Literal["off", "auto", "always"]
 CandidateKind = Literal[
     "fact",
@@ -225,6 +235,14 @@ def _raw_error_payload(exc: BaseException | None) -> dict[str, Any]:
         "raw_error_message": _safe_raw_error_message(exc),
         "raw_error_code": str(code) if code else None,
     }
+
+
+def _raw_fallback_result_status(reason: RawReason) -> FlushResultStatus:
+    if reason in {"no_provider", "no_tools"}:
+        return "ok_archive_only"
+    if reason == "timeout":
+        return "provider_failed_archived"
+    return "parse_failed_archived"
 
 
 def _collapse_ws(value: Any) -> str:
@@ -1098,7 +1116,13 @@ async def _provider_complete(
     """
     complete = getattr(provider, "complete", None)
     if callable(complete):
-        resp = await complete(messages=messages, max_tokens=max_tokens)
+        try:
+            resp = await complete(messages=messages, max_tokens=max_tokens)
+        except ProviderCompletionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            code = getattr(exc, "code", "") or ""
+            raise ProviderCompletionError(str(exc), code=str(code)) from exc
         text = getattr(resp, "content", None) or getattr(resp, "text", "") or ""
         return _CompletionResult(
             text=text,
@@ -1156,6 +1180,7 @@ class FlushProposal:
     decisions: tuple[str, ...] = ()
     candidates: tuple[FlushCandidate, ...] = ()
     invalid_candidate_errors: tuple[str, ...] = ()
+    noop_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1188,6 +1213,7 @@ class FlushReceipt:
     duration_ms: int
     raw_reason: RawReason | None
     error: str | None
+    result_status: FlushResultStatus = "unknown"
     usage: dict[str, Any] = field(default_factory=_zero_usage)
     raw_error_type: str | None = None
     raw_error_message: str | None = None
@@ -1694,7 +1720,8 @@ def _pure_flush_prompt(messages: list[Message]) -> str:
         '"source_message": 1, "source_date": "YYYY-MM-DD", '
         '"confidence": 0.0, "date": "YYYY|YYYY-MM|YYYY-MM-DD", '
         '"date_basis": "relative:yesterday|explicit:year", '
-        '"granularity": "day|month|year", "source_anchor": "ANCHOR" } ] }\n'
+        '"granularity": "day|month|year", "source_anchor": "ANCHOR" } ], '
+        '"noop_reason": "No stable long-term memory was found." }\n'
         "Rules: extract up to 30 atomic candidates and prefer recall fidelity over "
         "brevity. Create candidates for named-person source lines containing "
         "relative time words such as yesterday, tomorrow, last year, last month, "
@@ -1708,7 +1735,9 @@ def _pure_flush_prompt(messages: list[Message]) -> str:
         "milestones when they have explicit or relative time; resolve "
         "relative time from the opensquilla-message source date when possible; skip "
         "one-off chatter only when it has no named person and no time clue; do not "
-        "invent facts. Prefer candidates over markdown. "
+        "invent facts. If there is no stable long-term memory, return an empty "
+        "`candidates` array with a short `noop_reason`; do not invent memory just "
+        "to avoid an empty result. Prefer candidates over markdown. "
         "Use markdown only as a legacy fallback when you cannot produce candidates. "
         "If a message contains a dated pasted transcript header, use that header "
         "date for facts inside the pasted transcript. If a source line includes an "
@@ -1769,8 +1798,14 @@ def _parse_flush_proposal(text: str) -> FlushProposal:
     facts = _proposal_items(payload.get("facts"))
     procedures = _proposal_items(payload.get("procedures"))
     decisions = _proposal_items(payload.get("decisions"))
+    candidates_present = "candidates" in payload
     candidates, invalid_candidate_errors = _parse_flush_candidates(payload.get("candidates"))
     markdown = str(payload.get("markdown") or payload.get("content") or "").strip()
+    slug = str(payload.get("slug") or "").strip() or None
+    noop_reason = _optional_text(
+        payload.get("noop_reason") or payload.get("no_memory_reason"),
+        max_len=512,
+    )
     if candidates:
         markdown = _proposal_markdown_from_candidates(candidates)
     elif not markdown and (facts or procedures or decisions):
@@ -1780,8 +1815,22 @@ def _parse_flush_proposal(text: str) -> FlushProposal:
             decisions=decisions,
         )
     if not markdown:
+        if (
+            not invalid_candidate_errors
+            and not (facts or procedures or decisions)
+            and (noop_reason or candidates_present)
+        ):
+            return FlushProposal(
+                markdown="",
+                slug=slug,
+                facts=facts,
+                procedures=procedures,
+                decisions=decisions,
+                candidates=candidates,
+                invalid_candidate_errors=invalid_candidate_errors,
+                noop_reason=noop_reason or "No stable long-term memory was found.",
+            )
         raise ValueError("flush proposal markdown is required")
-    slug = str(payload.get("slug") or "").strip() or None
     return FlushProposal(
         markdown=markdown[:12_000],
         slug=slug,
@@ -1790,6 +1839,7 @@ def _parse_flush_proposal(text: str) -> FlushProposal:
         decisions=decisions,
         candidates=candidates,
         invalid_candidate_errors=invalid_candidate_errors,
+        noop_reason=noop_reason,
     )
 
 
@@ -1897,6 +1947,7 @@ class SessionFlushService:
                 "agent_id": agent_id,
                 "session_key": session_key,
                 "flush_mode": receipt.mode,
+                "result_status": receipt.result_status,
                 "raw_reason": receipt.raw_reason,
                 "error": receipt.error,
                 "flushed_paths": list(receipt.flushed_paths),
@@ -1940,6 +1991,7 @@ class SessionFlushService:
                     duration_ms=0,
                     raw_reason=None,
                     error=None,
+                    result_status="skipped",
                 )
             )
 
@@ -2023,6 +2075,11 @@ class SessionFlushService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 error_payload = _raw_error_payload(exc)
+                result_status: FlushResultStatus = (
+                    "provider_failed_archived"
+                    if isinstance(exc, ProviderCompletionError)
+                    else "parse_failed_archived"
+                )
                 logger.warning(
                     "session_flush.llm_failed",
                     extra={
@@ -2035,6 +2092,7 @@ class SessionFlushService:
                         messages,
                         reason="llm_error",
                         raw_error=exc,
+                        result_status=result_status,
                         agent_id=agent_id,
                         session_key=session_key,
                         input_message_count=input_message_count,
@@ -2061,6 +2119,7 @@ class SessionFlushService:
                     duration_ms=int((time.monotonic() - t0) * 1000),
                     raw_reason=None,
                     error=str(exc),
+                    result_status="archive_failed",
                     input_message_count=input_message_count,
                     prompt_message_count=0,
                     prompt_char_count=0,
@@ -2267,6 +2326,7 @@ class SessionFlushService:
                     ),
                     "integrity_status": segment_receipt.integrity_status,
                     "indexed_chunk_count": segment_receipt.indexed_chunk_count,
+                    "result_status": segment_receipt.result_status,
                     "candidate_count": segment_receipt.candidate_count,
                     "candidate_covered_count": segment_receipt.candidate_covered_count,
                     "candidate_missing_ids": segment_receipt.candidate_missing_ids,
@@ -2334,6 +2394,16 @@ class SessionFlushService:
             for payload in segment_payloads
             for obligation_id in payload.get("obligation_missing_ids", [])
         ]
+        result_status: FlushResultStatus = (
+            "ok_noop_no_memory"
+            if not all_paths
+            and segment_payloads
+            and all(
+                payload.get("result_status") == "ok_noop_no_memory"
+                for payload in segment_payloads
+            )
+            else "ok_candidates_written"
+        )
         return FlushReceipt(
             mode="llm",
             flushed_paths=sorted(set(all_paths)),
@@ -2342,6 +2412,7 @@ class SessionFlushService:
             duration_ms=int((time.monotonic() - t0) * 1000),
             raw_reason=None,
             error=None,
+            result_status=result_status,
             usage=_merge_usage(*usage_items),
             input_message_count=total_input_messages,
             prompt_message_count=prompt_message_count,
@@ -2422,8 +2493,43 @@ class SessionFlushService:
             proposal,
             messages,
         )
+        prompt = _pure_flush_prompt(messages)
+        audit = SimpleNamespace(
+            prompt_message_count=len(messages),
+            prompt_char_count=len(prompt),
+            truncated=False,
+            truncation_policy="full",
+            first_included_message=(1 if messages else None),
+            last_included_message=(len(messages) if messages else None),
+        )
         if not rendered_content.strip():
-            raise ValueError("empty flush proposal content")
+            if not proposal.noop_reason:
+                raise ValueError("empty flush proposal content")
+            coverage = _candidate_coverage_payload(
+                proposal,
+                rendered_content="",
+            )
+            return FlushReceipt(
+                mode="llm",
+                flushed_paths=[],
+                slug=slug,
+                message_count=len(messages),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                raw_reason=None,
+                error=None,
+                result_status="ok_noop_no_memory",
+                usage=usage or _zero_usage(),
+                integrity_status="unverified",
+                indexed_chunk_count=0,
+                prompt_message_source_coverage=_prompt_message_source_coverage(messages),
+                **coverage,
+                **obligation_coverage,
+                **_receipt_audit_kwargs(
+                    audit,
+                    input_message_count=input_message_count or len(messages),
+                    selected_start_index=selected_start_index,
+                ),
+            )
         handler = _make_flush_read_only_handler(self._tool_handler)
         _ctx_token = current_tool_context.set(
             _flush_tool_context(agent_id, source_name="pure-extract")
@@ -2452,15 +2558,6 @@ class SessionFlushService:
                 chunk_count=0,
                 integrity_status="malformed_result",
             )
-        prompt = _pure_flush_prompt(messages)
-        audit = SimpleNamespace(
-            prompt_message_count=len(messages),
-            prompt_char_count=len(prompt),
-            truncated=False,
-            truncation_policy="full",
-            first_included_message=(1 if messages else None),
-            last_included_message=(len(messages) if messages else None),
-        )
         coverage = _candidate_coverage_payload(
             proposal,
             rendered_content=rendered_content,
@@ -2481,6 +2578,7 @@ class SessionFlushService:
             duration_ms=int((time.monotonic() - t0) * 1000),
             raw_reason=None,
             error=None,
+            result_status="ok_candidates_written",
             usage=usage or _zero_usage(),
             integrity_status=_integrity_with_output_coverage(
                 save_result.integrity_status,
@@ -2572,6 +2670,7 @@ class SessionFlushService:
                         "flushed_paths": receipt.flushed_paths,
                         "integrity_status": receipt.integrity_status,
                         "indexed_chunk_count": receipt.indexed_chunk_count,
+                        "result_status": receipt.result_status,
                         "candidate_count": receipt.candidate_count,
                         "candidate_covered_count": receipt.candidate_covered_count,
                         "candidate_missing_ids": receipt.candidate_missing_ids,
@@ -2718,6 +2817,7 @@ class SessionFlushService:
             )
             payload["integrity_status"] = _merge_integrity_status(save_results)
             payload["indexed_chunk_count"] = sum(result.chunk_count for result in save_results)
+            payload["result_status"] = "ok_candidates_written"
             segment_payloads.append(payload)
             covered_messages.update(range(segment.first_message, segment.last_message + 1))
             prompt_message_count = len(covered_messages)
@@ -2746,6 +2846,7 @@ class SessionFlushService:
             duration_ms=duration_ms,
             raw_reason=None,
             error=None,
+            result_status="ok_candidates_written",
             usage=_merge_usage(*usage_items),
             input_message_count=total_input_messages,
             prompt_message_count=prompt_message_count,
@@ -2827,12 +2928,14 @@ class SessionFlushService:
         *,
         reason: RawReason,
         raw_error: BaseException | None = None,
+        result_status: FlushResultStatus | None = None,
         agent_id: str,
         session_key: str | None = None,
         input_message_count: int | None = None,
         selected_start_index: int | None = None,
     ) -> FlushReceipt:
         error_payload = _raw_error_payload(raw_error)
+        archive_status = result_status or _raw_fallback_result_status(reason)
         self._record_extraction_stats(
             provider=None,
             agent_id=agent_id,
@@ -2907,6 +3010,7 @@ class SessionFlushService:
                 duration_ms=int((time.monotonic() - t0) * 1000),
                 raw_reason=None,
                 error=f"raw fallback memory_save failed: {result_text}",
+                result_status="archive_failed",
                 **error_payload,
                 **_receipt_audit_kwargs(
                     excerpt,
@@ -2923,6 +3027,7 @@ class SessionFlushService:
             duration_ms=int((time.monotonic() - t0) * 1000),
             raw_reason=reason,
             error=None,
+            result_status=archive_status,
             **error_payload,
             **_receipt_audit_kwargs(
                 excerpt,

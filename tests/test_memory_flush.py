@@ -266,6 +266,41 @@ async def test_agent_memory_flush_raw_receipt_keeps_backoff() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_memory_flush_noop_llm_receipt_clears_backoff() -> None:
+    agent = Agent(
+        provider=None,  # type: ignore[arg-type]
+        config=AgentConfig(
+            flush_backoff_initial_seconds=10.0,
+            flush_backoff_max_seconds=20.0,
+        ),
+        session_key="agent:main:webchat:s1",
+    )
+
+    async def noop_flush() -> FlushReceipt:
+        return FlushReceipt(
+            mode="llm",
+            flushed_paths=[],
+            slug="no-memory",
+            message_count=1,
+            duration_ms=1,
+            raw_reason=None,
+            error=None,
+            result_status="ok_noop_no_memory",
+        )
+
+    agent._flush_backoff_until = time.monotonic() + 10.0
+    agent._flush_backoff_seconds = 10.0
+    task = asyncio.create_task(noop_flush())
+    agent._active_flush_task = task
+    await task
+
+    agent._mark_flush_task_completed(task)
+
+    assert agent._flush_backoff_until == 0.0
+    assert agent._flush_backoff_seconds == 0.0
+
+
+@pytest.mark.asyncio
 async def test_agent_memory_flush_unsafe_llm_receipt_keeps_backoff() -> None:
     agent = Agent(
         provider=None,  # type: ignore[arg-type]
@@ -336,6 +371,118 @@ async def test_session_flush_raw_fallback_deduplicates_same_transcript() -> None
 
 
 @pytest.mark.asyncio
+async def test_session_flush_empty_candidates_is_successful_noop_without_raw_fallback(
+    caplog,
+) -> None:
+    class NoopProvider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                content=(
+                    '{"slug":"no-memory","candidates":[],'
+                    '"noop_reason":"No stable long-term memory was found."}'
+                )
+            )
+
+    calls: list[ToolCall] = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        calls.append(call)
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/.raw_fallbacks/raw.md (0 chunks indexed).",
+        )
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: NoopProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+    )
+    caplog.set_level(logging.WARNING, logger="opensquilla.memory.session_flush")
+
+    receipt = await service.execute(
+        [Message(role="user", content="Please run a temporary shell command.")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+    )
+
+    assert receipt.mode == "llm"
+    assert receipt.result_status == "ok_noop_no_memory"
+    assert receipt.flushed_paths == []
+    assert receipt.raw_reason is None
+    assert receipt.error is None
+    assert receipt.indexed_chunk_count == 0
+    assert calls == []
+    assert all(record.getMessage() != "session_flush.llm_failed" for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_session_flush_invalid_json_records_parse_failed_archive_status() -> None:
+    class InvalidJsonProvider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(content='{"candidates": [')
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/.raw_fallbacks/raw.md (0 chunks indexed).",
+        )
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: InvalidJsonProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="temporary transcript")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+    )
+
+    assert receipt.mode == "raw"
+    assert receipt.raw_reason == "llm_error"
+    assert receipt.result_status == "parse_failed_archived"
+
+
+@pytest.mark.asyncio
+async def test_session_flush_provider_exception_records_provider_failed_archive_status() -> None:
+    class FailingProvider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            raise RuntimeError("provider unavailable")
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/.raw_fallbacks/raw.md (0 chunks indexed).",
+        )
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: FailingProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="temporary transcript")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+    )
+
+    assert receipt.mode == "raw"
+    assert receipt.raw_reason == "llm_error"
+    assert receipt.result_status == "provider_failed_archived"
+
+
+@pytest.mark.asyncio
 async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> None:
     calls: list[ToolCall] = []
 
@@ -373,6 +520,7 @@ async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> 
     assert first.flushed_paths == []
     assert first.raw_reason is None
     assert first.error == "raw fallback memory_save failed: disk full"
+    assert first.result_status == "archive_failed"
     assert second.mode == "error"
 
 
@@ -399,6 +547,7 @@ async def test_session_flush_execute_logs_done_receipt_for_raw_fallback(caplog) 
     )
 
     assert receipt.mode == "raw"
+    assert receipt.result_status == "ok_archive_only"
     records = [
         record
         for record in caplog.records

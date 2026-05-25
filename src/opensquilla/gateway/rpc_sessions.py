@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -36,6 +37,8 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_lifecycle_payload,
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
+    flush_receipt_status_for_compaction,
     flush_receipt_to_dict,
     new_compaction_id,
     pre_compaction_flush_enabled,
@@ -53,6 +56,16 @@ _MAX_STAGED_PDF_BYTES = _attachment_ingest.MAX_STAGED_PDF_BYTES
 _MAX_TEXT_ATTACHMENT_BYTES = _attachment_ingest.TEXT_ATTACHMENT_BYTES
 _MAX_TOTAL_ATTACHMENT_BYTES = _attachment_ingest.MAX_TOTAL_ATTACHMENT_BYTES
 _MAX_ATTACHMENTS = _attachment_ingest.MAX_ATTACHMENTS
+
+
+def _accepts_keyword_arg(func: Any, name: str) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
 _attachment_media_type = _attachment_ingest.attachment_media_type
 _normalize_attachments = _attachment_ingest.normalize_attachments
 _sniff_mime_from_bytes = _attachment_ingest.sniff_mime_from_bytes
@@ -1442,6 +1455,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 duration_ms=0,
                 raw_reason=None,
                 error=str(exc),
+                result_status="archive_failed",
             )
             raise RpcHandlerError(
                 code="flush_disk_error",
@@ -1454,16 +1468,19 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             ) from exc
 
         if not flush_receipt_allows_destructive_compaction(receipt):
+            flush_status = flush_receipt_status_for_compaction(receipt, ctx.config)
             raise RpcHandlerError(
                 code="flush_disk_error",
                 message=(
-                    "Reset aborted: flush did not produce a complete LLM receipt."
+                    f"Reset aborted: flush status {flush_status!r} is not sufficient "
+                    "for destructive reset."
                 ),
                 details={
                     "flush_receipt": receipt.to_dict(),
                     "key": key,
                     "session_id": previous_session_id,
-                    "reason": "compaction_flush_failed",
+                    "reason": "destructive_reset_requires_safe_flush",
+                    "flush_receipt_status": flush_status,
                 },
             )
 
@@ -1598,6 +1615,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
 
     async def _run_locked() -> dict[str, Any]:
         receipt = None
+        flush_receipt_status: str | None = None
         compaction_id = new_compaction_id()
         storage = get_session_storage(ctx.session_manager)
         session = None
@@ -1679,6 +1697,10 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                         key=key,
                         reason="flush_service_unavailable",
                     )
+                    flush_receipt_status = flush_receipt_status_for_compaction(
+                        None,
+                        ctx.config,
+                    )
                 else:
                     agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
                     memory_cfg = getattr(getattr(ctx, "config", None), "memory", None)
@@ -1706,11 +1728,27 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                             key=key,
                             error=str(exc),
                         )
+                        flush_receipt_status = flush_receipt_status_for_compaction(
+                            None,
+                            ctx.config,
+                        )
                     else:
-                        if not flush_receipt_allows_destructive_compaction(receipt):
+                        flush_receipt_status = flush_receipt_status_for_compaction(
+                            receipt,
+                            ctx.config,
+                        )
+                        if not flush_receipt_is_successful_flush(receipt):
                             log.warning(
                                 "sessions.context_compact.flush_degraded",
                                 key=key,
+                                flush_receipt_status=flush_receipt_status,
+                                flush_receipt=flush_receipt_to_dict(receipt),
+                            )
+                        else:
+                            log.info(
+                                "sessions.context_compact.flush_done",
+                                key=key,
+                                flush_receipt_status=flush_receipt_status,
                                 flush_receipt=flush_receipt_to_dict(receipt),
                             )
 
@@ -1727,11 +1765,19 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             state_kind = "text"
             compact_with_result = getattr(ctx.session_manager, "compact_with_result", None)
             if callable(compact_with_result):
+                compact_kwargs: dict[str, Any] = {
+                    "custom_instructions": custom_instructions,
+                }
+                if (
+                    flush_receipt_status is not None
+                    and _accepts_keyword_arg(compact_with_result, "flush_receipt_status")
+                ):
+                    compact_kwargs["flush_receipt_status"] = flush_receipt_status
                 result = await compact_with_result(
                     key,
                     context_window_tokens,
                     compaction_config,
-                    custom_instructions=custom_instructions,
+                    **compact_kwargs,
                 )
                 summary = getattr(result, "summary", "") or ""
                 removed_count = int(getattr(result, "removed_count", 0) or 0)
@@ -1820,6 +1866,8 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         }
         if receipt is not None:
             payload["flush_receipt"] = flush_receipt_to_dict(receipt)
+        if flush_receipt_status is not None:
+            payload["flush_receipt_status"] = flush_receipt_status
         final_event = (
             COMPACTION_PERSISTED_EVENT
             if removed_count > 0
@@ -1845,6 +1893,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             summary_len=len(summary),
             summary_source=summary_source,
             context_window_tokens=context_window_tokens,
+            flush_receipt_status=flush_receipt_status,
             **final_lifecycle_payload,
         )
         return payload
@@ -1933,6 +1982,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                         duration_ms=0,
                         raw_reason=None,
                         error=str(exc),
+                        result_status="archive_failed",
                     )
                     raise RpcHandlerError(
                         code="CONTEXT_FLUSH_FAILED",
@@ -1945,17 +1995,19 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                     ) from exc
 
                 if not flush_receipt_allows_destructive_compaction(receipt):
+                    flush_status = flush_receipt_status_for_compaction(receipt, ctx.config)
                     raise RpcHandlerError(
                         code="CONTEXT_FLUSH_FAILED",
                         message=(
-                            "Truncate aborted: flush did not produce a complete "
-                            "LLM receipt."
+                            f"Truncate aborted: flush status {flush_status!r} is not "
+                            "sufficient for destructive truncate."
                         ),
                         details={
                             "flush_receipt": flush_receipt_to_dict(receipt),
                             "key": key,
                             "session_id": previous_session_id,
-                            "reason": "compaction_flush_failed",
+                            "reason": "destructive_truncate_requires_safe_flush",
+                            "flush_receipt_status": flush_status,
                         },
                     )
             else:

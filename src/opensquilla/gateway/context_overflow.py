@@ -46,6 +46,7 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_lifecycle_payload,
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
     flush_receipt_status_for_compaction,
     new_compaction_id,
     pre_compaction_flush_enabled,
@@ -158,6 +159,7 @@ def _log_auto_summarize_flush_receipt(
         "session_key": session_key,
         "background": background,
         "mode": getattr(receipt, "mode", "unknown"),
+        "result_status": getattr(receipt, "result_status", None),
         "integrity_status": getattr(receipt, "integrity_status", None),
         "indexed_chunk_count": getattr(receipt, "indexed_chunk_count", None),
         "output_coverage_status": getattr(receipt, "output_coverage_status", None),
@@ -166,7 +168,7 @@ def _log_auto_summarize_flush_receipt(
         "obligation_status": getattr(receipt, "obligation_status", None),
         "obligation_missing_ids": getattr(receipt, "obligation_missing_ids", None),
     }
-    if flush_receipt_allows_destructive_compaction(receipt):
+    if flush_receipt_is_successful_flush(receipt):
         log.info("context_overflow.auto_summarize_flush_done", **log_payload)
         return
     log.warning(

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from opensquilla.session.compaction_lifecycle import (
     flush_compaction_decision,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_status_for_compaction,
 )
 
 
@@ -50,3 +51,42 @@ def test_missing_or_raw_receipt_enters_degraded_forensic_in_protect_mode() -> No
 
 def test_disabled_flush_decision_is_explicit() -> None:
     assert flush_compaction_decision(None, safety_mode="off") == "disabled"
+
+
+def test_noop_flush_receipt_has_distinct_compaction_status() -> None:
+    config = SimpleNamespace(
+        memory=SimpleNamespace(
+            flush_compaction_safety_mode="protect",
+            flush_compaction_requires_safe_receipt=False,
+        )
+    )
+    receipt = _receipt(
+        indexed_chunk_count=0,
+        integrity_status="unverified",
+        output_coverage_status="unverifiable",
+        obligation_status="unverifiable",
+        result_status="ok_noop_no_memory",
+    )
+
+    assert flush_receipt_allows_destructive_compaction(receipt) is False
+    assert flush_receipt_status_for_compaction(receipt, config) == "noop_no_memory"
+
+
+def test_raw_archive_flush_receipt_has_distinct_compaction_status() -> None:
+    config = SimpleNamespace(
+        memory=SimpleNamespace(
+            flush_compaction_safety_mode="protect",
+            flush_compaction_requires_safe_receipt=False,
+        )
+    )
+    receipt = _receipt(
+        mode="raw",
+        indexed_chunk_count=0,
+        integrity_status="unverified",
+        output_coverage_status="unverifiable",
+        obligation_status="unverifiable",
+        result_status="ok_archive_only",
+    )
+
+    assert flush_receipt_allows_destructive_compaction(receipt) is False
+    assert flush_receipt_status_for_compaction(receipt, config) == "archive_only"

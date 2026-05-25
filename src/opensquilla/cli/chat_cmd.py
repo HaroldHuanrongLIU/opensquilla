@@ -45,7 +45,7 @@ from opensquilla.session.compaction import (
     call_compact_with_optional_config,
 )
 from opensquilla.session.compaction_lifecycle import (
-    flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
 )
 from opensquilla.session.terminal_reply import build_terminal_reply
 
@@ -988,7 +988,7 @@ async def _flush_before_standalone_rewrite(
         console.print(f"[yellow]{operation} aborted: flush failed ({exc}).[/yellow]")
         return False
 
-    if not flush_receipt_allows_destructive_compaction(receipt):
+    if not flush_receipt_is_successful_flush(receipt):
         if compaction_operation:
             error = getattr(receipt, "error", None) or "degraded receipt"
             console.print(
