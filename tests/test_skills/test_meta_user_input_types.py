@@ -10,6 +10,7 @@ from opensquilla.skills.meta.types import (
     ClarifyField,
     ClarifyStepConfig,
     MetaPaused,
+    MetaStep,
 )
 
 
@@ -102,3 +103,18 @@ def test_meta_paused_attributes_are_effectively_immutable():
     assert paused.run_id == "r"
     assert paused.step_id == "s"
     assert paused.schema is cfg
+
+
+def test_meta_step_clarify_config_defaults_to_none():
+    s = MetaStep(id="x", skill="x")
+    assert s.clarify_config is None
+
+
+def test_meta_step_can_carry_clarify_config():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(ClarifyField(name="destination", type="string"),),
+    )
+    s = MetaStep(id="collect", skill="collect", kind="user_input", clarify_config=cfg)
+    assert s.kind == "user_input"
+    assert s.clarify_config is cfg
