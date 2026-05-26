@@ -201,6 +201,10 @@ async def test_pattern_at_threshold_creates_proposal_with_provenance(
     assert gates["lint"]["G1"]["passed"] is True
     assert gates["auto_enable_eligible"] is True
 
+    match = orch.run.call_args.args[0]
+    assert match.inputs["user_message"].startswith("auto-proposal:")
+    assert match.inputs["system_prompt"].startswith("Unattended meta-skill auto-propose run.")
+
 
 @pytest.mark.asyncio
 async def test_auto_enable_accepts_low_risk_eligible_proposal(

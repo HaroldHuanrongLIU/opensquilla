@@ -200,6 +200,13 @@ def test_pdf_intelligence_has_inline_fallback_and_final_synthesis(
         assert steps[step_id].kind == "llm_chat"
     assert steps["extract"].skill == "pdf-toolkit"
     assert steps["per_document_digest"].skill == "summarize"
+    synthesis_prompt = str(steps["cross_document_synthesis"].with_args)
+    assert "Evidence Matrix" in synthesis_prompt
+    assert "Direct Evidence" in synthesis_prompt
+    assert "Inferences" in synthesis_prompt
+    assert "EXCERPT-ONLY" in synthesis_prompt
+    assert "Reusable Memory Index" in synthesis_prompt
+    assert "evidence_ids" in synthesis_prompt
 
 
 def test_stack_trace_investigator_supports_language_routing_and_degraded_output(
@@ -228,6 +235,11 @@ def test_stack_trace_final_report_requires_patch_target_checklist(
     raw = str(spec.composition_raw)
 
     assert "## Patch Target Checklist" in raw
+    assert "## Exception Semantics" in raw
+    assert "## Ranked Root Cause Matrix" in raw
+    assert "Reject payload shapes" in raw
+    assert "static sweeps" in raw
+    assert "producer, consumer, schema/types, tests, and" in raw
     assert "Assumptions / Constraints" in raw
     assert "git-diff" in _orchestrated_skill_names(loader, "meta-stack-trace-investigator")
     assert "history-explorer" in _orchestrated_skill_names(
@@ -269,11 +281,18 @@ def test_travel_planner_uses_fast_final_itinerary_path(tmp_path: Path) -> None:
     assert steps["poi"].skill == "multi-search-engine"
     assert steps["poi"].kind == "skill_exec"
     assert steps["final_plan"].depends_on == ("itinerary", "constraints", "weather", "poi")
-    assert "Primary 3-day itinerary" in str(steps["final_plan"].with_args)
+    final_plan_prompt = str(steps["final_plan"].with_args)
+    assert "Primary 3-day itinerary" not in final_plan_prompt
+    assert "requested or inferred trip length" in final_plan_prompt
     assert "Variants" in str(steps["final_plan"].with_args)
     assert "Evidence and source notes" in str(steps["final_plan"].with_args)
     assert "Next steps" in str(steps["final_plan"].with_args)
     assert "explicitly asks for a file" in str(steps["final_plan"].with_args)
+    assert "Route spine" in final_plan_prompt
+    assert "Do not open with" in final_plan_prompt
+    assert "weather switch points" in final_plan_prompt
+    assert "verify before booking" in final_plan_prompt
+    assert "avoid cross-city zigzags" in final_plan_prompt
     assert "ARTIFACT_READY" not in str(plan.steps)
 
 
@@ -289,6 +308,7 @@ def test_meta_skill_creator_has_intent_collision_risk_and_preview_gates(
         "risk_classify",
         "single_model_baseline",
         "acceptance_compare",
+        "runtime_e2e",
         "preview",
         "persist",
     } <= ids
@@ -334,8 +354,19 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
     assert "orchestrated candidate" in str(compare.with_args).lower()
     assert "single-model baseline" in str(compare.with_args).lower()
     assert "winner" in str(compare.with_args).lower()
+    assert "runtime_e2e" in steps
+    assert steps["runtime_e2e"].kind == "tool_call"
+    assert steps["runtime_e2e"].tool == "meta_skill_runtime_e2e_run"
+    assert steps["runtime_e2e"].when == "outputs.creator_mode == 'FULL_GATED'"
+    assert set(steps["runtime_e2e"].depends_on) == {"assemble", "smoke"}
     assert "acceptance_compare" in str(steps["preview"].depends_on)
+    assert "runtime_e2e" in str(steps["preview"].depends_on)
     assert "Baseline comparison" in str(steps["preview"].with_args)
+    assert "acceptance_result" in str(steps["persist"].tool_args)
+    assert "outputs.acceptance_compare" in str(steps["persist"].tool_args)
+    assert "runtime_e2e_result" in str(steps["persist"].tool_args)
+    assert "outputs.runtime_e2e" in str(steps["persist"].tool_args)
+    assert "creator_mode" in str(steps["persist"].tool_args)
 
 
 def test_migration_assistant_routes_guides_and_optional_repo_context(
@@ -358,3 +389,12 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
         "fetch_guide",
         "repo_context",
     }
+    write_plan_prompt = str(steps["write_plan"].with_args)
+    assert "## Evidence boundary" in write_plan_prompt
+    assert "## Repository discovery checklist" in write_plan_prompt
+    assert "## Rollout and rollback" in write_plan_prompt
+    assert "CJS_TO_ESM" in write_plan_prompt
+    assert "exports` takes precedence" in write_plan_prompt
+    assert "dual-package hazards" in write_plan_prompt
+    assert "eslint --fix" in write_plan_prompt
+    assert "Avoid obsolete Node flags" in write_plan_prompt

@@ -727,7 +727,14 @@ async def auto_propose(
         msg = _synthesise_user_message(skills, freq, window_days)
         match = MetaMatch(
             plan=creator_plan,
-            inputs={"user_message": msg},
+            inputs={
+                "user_message": msg,
+                "system_prompt": (
+                    "Unattended meta-skill auto-propose run. Synthesize a "
+                    "low-risk reusable meta-skill from observed skill "
+                    "co-occurrence evidence and preserve all creator gates."
+                ),
+            },
         )
         before = {p.name for p in proposals_dir.iterdir()} if proposals_dir.is_dir() else set()
         try:

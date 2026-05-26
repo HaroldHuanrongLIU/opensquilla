@@ -218,10 +218,22 @@ composition:
         fixture_gen_model: openai/gpt-4o-mini
         classifier_model: anthropic/claude-3.5-haiku
 
+    - id: runtime_e2e
+      kind: tool_call
+      depends_on: [assemble, smoke]
+      when: "outputs.creator_mode == 'FULL_GATED'"
+      tool: meta_skill_runtime_e2e_run
+      tool_args:
+        skill_md: "{{ outputs.assemble }}"
+        eval_prompts: |
+          [
+            {{ inputs.user_message | xml_escape | tojson }}
+          ]
+
     - id: preview
       kind: agent
       skill: sub-agent
-      depends_on: [smoke, acceptance_compare]
+      depends_on: [smoke, acceptance_compare, runtime_e2e]
       with:
         task: |
           Produce a concise proposal preview for the user/operator before
@@ -251,6 +263,9 @@ composition:
           Baseline comparison:
           {{ outputs.acceptance_compare | truncate(2000) }}
 
+          Runtime E2E:
+          {{ outputs.runtime_e2e | truncate(2000) }}
+
     - id: persist
       kind: tool_call
       depends_on: [preview]
@@ -260,6 +275,9 @@ composition:
         skill_md: "{{ outputs.assemble }}"
         lint_result: "{{ outputs.lint }}"
         smoke_result: "{{ outputs.smoke }}"
+        creator_mode: "{{ outputs.creator_mode }}"
+        acceptance_result: "{{ outputs.acceptance_compare }}"
+        runtime_e2e_result: "{{ outputs.runtime_e2e }}"
 ---
 
 # Meta-Skill Creator

@@ -1,0 +1,344 @@
+"""Runtime E2E gate for meta-skill creator proposals."""
+
+from __future__ import annotations
+
+import inspect
+import json
+import re
+import tempfile
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+RuntimeRunner = Callable[..., Awaitable[dict[str, Any]]]
+RuntimeJudge = Callable[..., Awaitable[dict[str, Any]]]
+
+
+def _normalise_prompts(eval_prompts: object, skill_md: str) -> list[str]:
+    if isinstance(eval_prompts, str):
+        text = eval_prompts.strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                prompts = [line.strip() for line in text.splitlines() if line.strip()]
+            else:
+                prompts = parsed if isinstance(parsed, list) else [text]
+        else:
+            prompts = []
+    elif isinstance(eval_prompts, list):
+        prompts = eval_prompts
+    else:
+        prompts = []
+
+    out = [str(p).strip() for p in prompts if str(p).strip()]
+    if out:
+        return out
+
+    match = re.search(r"triggers:\s*\n(?:\s*-\s*\"?([^\"\n]+)\"?\s*\n?)", skill_md)
+    trigger = match.group(1).strip() if match else "this meta skill"
+    return [f"please use {trigger}"]
+
+
+async def _call_runner(
+    runner: RuntimeRunner,
+    *,
+    route: str,
+    prompt: str,
+    skill_md: str,
+    baseline_model: str,
+) -> dict[str, Any]:
+    result = runner(
+        route=route,
+        prompt=prompt,
+        skill_md=skill_md,
+        baseline_model=baseline_model,
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    if isinstance(result, dict):
+        return dict(result)
+    return {"text": str(result)}
+
+
+async def _call_judge(
+    judge: RuntimeJudge,
+    *,
+    prompt: str,
+    meta: dict[str, Any],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    result = judge(prompt=prompt, meta=meta, baseline=baseline)
+    if inspect.isawaitable(result):
+        result = await result
+    if isinstance(result, dict):
+        return dict(result)
+    return {"winner": str(result).strip().lower()}
+
+
+def _normalise_winner(value: object) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "orchestrated": "meta",
+        "meta-skill": "meta",
+        "metaskill": "meta",
+        "no-meta": "baseline",
+        "single-model": "baseline",
+    }
+    return aliases.get(raw, raw)
+
+
+async def run_runtime_e2e_gate(
+    *,
+    skill_md: str,
+    eval_prompts: object = None,
+    baseline_model: str = "",
+    runner: RuntimeRunner,
+    judge: RuntimeJudge,
+) -> dict[str, Any]:
+    """Run candidate meta-skill output against a no-meta highest-tier baseline."""
+
+    prompts = _normalise_prompts(eval_prompts, skill_md)
+    cases: list[dict[str, Any]] = []
+    winners: list[str] = []
+    for prompt in prompts:
+        meta = await _call_runner(
+            runner,
+            route="meta",
+            prompt=prompt,
+            skill_md=skill_md,
+            baseline_model=baseline_model,
+        )
+        baseline = await _call_runner(
+            runner,
+            route="baseline",
+            prompt=prompt,
+            skill_md=skill_md,
+            baseline_model=baseline_model,
+        )
+        verdict = await _call_judge(judge, prompt=prompt, meta=meta, baseline=baseline)
+        winner = _normalise_winner(verdict.get("winner"))
+        winners.append(winner)
+        regression = str(
+            verdict.get("regression")
+            or verdict.get("required_improvements")
+            or verdict.get("required_improvement")
+            or ""
+        ).strip()
+        cases.append({
+            "prompt": prompt,
+            "winner": winner,
+            "regression": regression,
+            "reason": str(verdict.get("reason") or verdict.get("reasons") or ""),
+            "meta": meta,
+            "baseline": baseline,
+        })
+
+    blocked = [
+        case for case in cases
+        if case["winner"] not in {"meta", "tie"} or bool(case["regression"])
+    ]
+    aggregate_winner = "baseline" if any(w == "baseline" for w in winners) else (
+        "meta" if any(w == "meta" for w in winners) else "tie"
+    )
+    return {
+        "status": "ok",
+        "passed": not blocked,
+        "winner": aggregate_winner,
+        "baseline_model": baseline_model,
+        "cases": cases,
+    }
+
+
+def make_runtime_e2e_context(
+    *,
+    provider: Any,
+    base_config: Any,
+    skill_loader: Any,
+    tool_definitions: list[dict[str, Any]] | None,
+    tool_handler: Any,
+    agent_factory: Any,
+    llm_chat: Any,
+    tool_invoker: Any,
+    workspace_dir: str | None = None,
+    usage_tracker: Any = None,
+    session_key: str = "",
+    tool_registry: Any = None,
+    tool_context: Any = None,
+    system_prompt: str = "",
+    baseline_model: str = "",
+) -> dict[str, Any]:
+    """Build the runner/judge context used by the creator runtime E2E gate."""
+
+    from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+    from opensquilla.skills.meta.inputs import make_meta_inputs
+    from opensquilla.skills.meta.orchestrator import (
+        MetaOrchestrator,
+        make_agent_runner_from_parent,
+    )
+    from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+    from opensquilla.skills.meta.types import MetaMatch
+
+    resolved_baseline_model = baseline_model or getattr(base_config, "model_id", "") or ""
+
+    async def _runtime_e2e_runner(
+        *,
+        route: str,
+        prompt: str,
+        skill_md: str,
+        baseline_model: str,
+    ) -> dict[str, Any]:
+        selected_baseline_model = baseline_model or resolved_baseline_model
+        if route == "baseline":
+            metadata_no_meta = dict(getattr(base_config, "metadata", {}) or {})
+            metadata_no_meta.pop("skill_loader", None)
+            metadata_no_meta.pop("meta_match", None)
+            baseline_config = replace(
+                base_config,
+                model_id=selected_baseline_model or getattr(base_config, "model_id", None),
+                metadata=metadata_no_meta,
+            )
+            baseline_agent = agent_factory(
+                provider=provider,
+                config=baseline_config,
+                tool_definitions=tool_definitions,
+                tool_handler=tool_handler,
+                usage_tracker=usage_tracker,
+                session_key=f"{session_key}:runtime_e2e:baseline",
+                tool_registry=tool_registry,
+                tool_context=tool_context,
+            )
+            parts: list[str] = []
+            done_text = ""
+            async for event in baseline_agent.run_turn(prompt):
+                if isinstance(event, TextDeltaEvent):
+                    parts.append(event.text)
+                elif isinstance(event, DoneEvent):
+                    done_text = event.text
+            return {
+                "route": "baseline",
+                "text": (done_text or "".join(parts)).strip(),
+                "model": selected_baseline_model,
+            }
+
+        match_name = re.search(r"^name:\s*\"?([\w\-]+)\"?\s*$", skill_md, re.MULTILINE)
+        skill_name = match_name.group(1) if match_name else "candidate"
+        with tempfile.TemporaryDirectory(prefix="opensquilla-meta-e2e-") as tmp:
+            candidate_root = Path(tmp) / "candidate-skills"
+            skill_dir = candidate_root / skill_name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+            from opensquilla.skills.loader import SkillLoader
+
+            candidate_loader = SkillLoader(
+                bundled_dir=getattr(skill_loader, "_bundled_dir", None),
+                workspace_dir=getattr(skill_loader, "_workspace_dir", None),
+                managed_dir=getattr(skill_loader, "_managed_dir", None),
+                personal_agents_dir=getattr(skill_loader, "_personal_agents_dir", None),
+                project_agents_dir=getattr(skill_loader, "_project_agents_dir", None),
+                extra_dirs=[candidate_root, *getattr(skill_loader, "_extra_dirs", [])],
+                snapshot_path=Path(tmp) / "snapshot.json",
+            )
+            candidate_loader.invalidate_cache()
+            candidate_spec = candidate_loader.get_by_name(skill_name)
+            if candidate_spec is None:
+                return {
+                    "route": "meta",
+                    "text": "",
+                    "ok": False,
+                    "error": f"candidate meta-skill {skill_name!r} did not load",
+                }
+            try:
+                candidate_plan = parse_meta_plan(candidate_spec)
+            except MetaPlanError as exc:
+                return {"route": "meta", "text": "", "ok": False, "error": str(exc)}
+            if candidate_plan is None:
+                return {
+                    "route": "meta",
+                    "text": "",
+                    "ok": False,
+                    "error": f"candidate {skill_name!r} is not a meta-skill",
+                }
+
+            runtime_runner = make_agent_runner_from_parent(
+                provider=provider,
+                base_config=base_config,
+                tool_definitions=tool_definitions,
+                tool_handler=tool_handler,
+                agent_factory=agent_factory,
+                workspace_dir=workspace_dir,
+                usage_tracker=usage_tracker,
+                session_key=f"{session_key}:runtime_e2e:meta",
+            )
+            runtime_orch = MetaOrchestrator(
+                agent_runner=runtime_runner,
+                skill_loader=candidate_loader,
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=workspace_dir,
+                triggered_by="runtime_e2e_gate",
+                session_key=f"{session_key}:runtime_e2e:meta",
+                usage_tracker=usage_tracker,
+            )
+            runtime_match = MetaMatch(
+                plan=candidate_plan,
+                inputs=make_meta_inputs(
+                    user_message=prompt,
+                    system_prompt=system_prompt or getattr(base_config, "system_prompt", "") or "",
+                ),
+            )
+            runtime_result = await runtime_orch.run(runtime_match)
+            return {
+                "route": "meta",
+                "text": runtime_result.final_text,
+                "ok": runtime_result.ok,
+                "error": runtime_result.error or "",
+            }
+
+    async def _runtime_e2e_judge(
+        *,
+        prompt: str,
+        meta: dict[str, Any],
+        baseline: dict[str, Any],
+    ) -> dict[str, Any]:
+        if llm_chat is None:
+            return {
+                "winner": "baseline",
+                "regression": "runtime judge unavailable",
+                "reason": "llm_chat dependency missing",
+            }
+        judge_prompt = (
+            "Compare two final answers for the same user prompt. "
+            "A is OpenSquilla using the candidate meta-skill. "
+            "B is OpenSquilla without meta-skills using the highest-tier model. "
+            "Return strict JSON only with keys winner (meta|baseline|tie), "
+            "regression (empty string if none), and reason.\n\n"
+            f"User prompt:\n{prompt}\n\n"
+            f"A meta answer:\n{meta.get('text', '')}\n\n"
+            f"B baseline answer:\n{baseline.get('text', '')}\n"
+        )
+        raw = await llm_chat(
+            "You are a strict evaluator for runtime E2E meta-skill gates.",
+            judge_prompt,
+        )
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            lowered = text.lower()
+            winner = "meta" if "meta" in lowered else (
+                "tie" if "tie" in lowered else "baseline"
+            )
+            return {"winner": winner, "regression": "", "reason": text[:500]}
+        return parsed if isinstance(parsed, dict) else {"winner": "baseline"}
+
+    return {
+        "runner": _runtime_e2e_runner,
+        "judge": _runtime_e2e_judge,
+        "baseline_model": resolved_baseline_model,
+    }

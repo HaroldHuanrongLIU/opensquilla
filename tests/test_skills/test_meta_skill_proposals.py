@@ -70,6 +70,39 @@ def test_write_proposal_marks_ineligible_on_g3_fail(tmp_path: Path) -> None:
     assert gates["auto_enable_eligible"] is False
 
 
+def test_write_proposal_marks_full_gated_ineligible_on_compare_loss(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".opensquilla"
+    out = _run(
+        "write_proposal", home=home,
+        skill_md_inline=SAMPLE_SKILL_MD,
+        lint_result=json.dumps({"G1": {"passed": True}, "G2": {"passed": True}}),
+        smoke_result=json.dumps({"G3": {"passed": True}, "G4": {"passed": True}}),
+        creator_mode="FULL_GATED",
+        acceptance_result=(
+            "WINNER: orchestrated\n"
+            "REASONS:\n"
+            "- generated skill is clearer\n"
+            "REGRESSIONS:\n"
+            "- none\n"
+            "REQUIRED_IMPROVEMENTS:\n"
+            "- none\n"
+        ),
+        runtime_e2e_result=json.dumps({
+            "status": "ok",
+            "passed": False,
+            "winner": "baseline",
+            "cases": [{"prompt": "please use synth test trigger", "winner": "baseline"}],
+        }),
+    )
+
+    gates = json.loads((home / "proposals" / out["proposal_id"] / "gates.json").read_text())
+    assert out["auto_enable_eligible"] is False
+    assert gates["runtime_e2e"]["passed"] is False
+    assert gates["runtime_e2e"]["winner"] == "baseline"
+
+
 def test_accept_rejects_path_traversal_proposal_id(tmp_path: Path) -> None:
     """I1 regression: cmd_accept must reject proposal IDs that aren't 8 hex chars."""
     home = tmp_path / ".opensquilla"

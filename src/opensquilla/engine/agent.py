@@ -493,6 +493,7 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         model_capabilities=chat_cfg.model_capabilities,
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
+        tool_choice=chat_cfg.tool_choice,
     )
 
 
@@ -1751,6 +1752,7 @@ class Agent:
                 self.config.thinking if isinstance(self.config.thinking, ThinkingLevel) else None
             ),
             provider_request_max_chars=self._provider_request_proof_max_chars(),
+            tool_choice=None,
         )
         _thinking_fallback_done = False
 
@@ -2059,6 +2061,18 @@ class Agent:
                             yield terminal_error
                         break
 
+                    call_chat_cfg = chat_cfg
+                    forced_tool_choice = self.config.metadata.get("meta_match_tool_choice")
+                    if (
+                        forced_tool_choice is not None
+                        and provider_tools_for_call
+                        and request_messages
+                        and not _message_has_tool_result(request_messages[-1])
+                    ):
+                        call_chat_cfg = chat_cfg.model_copy(
+                            update={"tool_choice": forced_tool_choice}
+                        )
+
                     self._write_turn_call_log(
                         "llm_request",
                         call_id=call_id,
@@ -2066,7 +2080,7 @@ class Agent:
                         attempt=_call_attempt,
                         messages=request_messages,
                         tools=provider_tools_for_call,
-                        config=chat_cfg,
+                        config=call_chat_cfg,
                     )
                     turn_llm_calls += 1
                     cache_prompt_snapshot = None
@@ -2074,7 +2088,7 @@ class Agent:
                         cache_prompt_snapshot = record_prompt_state(
                             messages=request_messages,
                             tools=provider_tools_for_call,
-                            config=chat_cfg,
+                            config=call_chat_cfg,
                             model=self.config.model_id or "",
                         )
 
@@ -2084,7 +2098,7 @@ class Agent:
                         raw_stream = self.provider.chat(
                             request_messages,
                             tools=provider_tools_for_call,
-                            config=chat_cfg,
+                            config=call_chat_cfg,
                         )
                         async for raw_ev in self._stream_provider_events_with_deadline(
                             raw_stream,
@@ -2899,6 +2913,7 @@ class Agent:
                             else None
                         ),
                         provider_request_max_chars=(self._provider_request_proof_max_chars()),
+                        tool_choice=chat_cfg.tool_choice,
                     )
 
                 assembled_text = "".join(assistant_text_parts)
@@ -4598,6 +4613,7 @@ class Agent:
         """Stream a meta_invoke tool call inline and return a terminal ToolResult."""
 
         import opensquilla.skills.creator  # noqa: F401
+        from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
         from opensquilla.skills.meta.inputs import make_meta_inputs
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
@@ -4761,6 +4777,7 @@ class Agent:
                 if self.tool_handler is not None
                 else None
             )
+
             memory_persist_enabled = True
             orch = MetaOrchestrator(
                 agent_runner=runner,
@@ -4793,6 +4810,29 @@ class Agent:
             )
 
             result: MetaResult | None = None
+            from opensquilla.skills.creator.proposer import (
+                reset_runtime_e2e_context,
+                set_runtime_e2e_context,
+            )
+
+            runtime_e2e_ctx = make_runtime_e2e_context(
+                provider=self.provider,
+                base_config=self.config,
+                skill_loader=skill_loader,
+                tool_definitions=self.tool_definitions,
+                tool_handler=self.tool_handler,
+                agent_factory=type(self),
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=getattr(self, "_session_key", None) or "",
+                tool_registry=self._tool_registry,
+                tool_context=effective_ctx,
+                system_prompt=system_prompt,
+                baseline_model=getattr(self.config, "model_id", "") or "",
+            )
+            runtime_e2e_token = set_runtime_e2e_context(runtime_e2e_ctx)
             try:
                 async for ev in orch.iter_events(match):
                     if isinstance(ev, MetaResult):
@@ -4810,6 +4850,8 @@ class Agent:
                     terminates_turn=False,
                 )
                 return
+            finally:
+                reset_runtime_e2e_context(runtime_e2e_token)
 
             if result is None:
                 yield ToolResult(
@@ -4829,7 +4871,7 @@ class Agent:
                 tool_use_id=tc.tool_use_id,
                 tool_name="meta_invoke",
                 content=(
-                    f"meta-skill {name!r} completed; final answer streamed separately."
+                    f"meta-skill {name!r} completed."
                     if result.final_text
                     else "(meta-skill completed with no output text)"
                 ),

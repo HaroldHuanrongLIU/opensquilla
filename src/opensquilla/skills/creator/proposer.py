@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from opensquilla.engine.steps.meta_resolution import _trigger_matches
 from opensquilla.skills.creator.patterns import PATTERN_SLOT_SCHEMA
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.tools.registry import tool
+
+from .runtime_e2e import run_runtime_e2e_gate
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "patterns"
 _log = structlog.get_logger(__name__)
@@ -574,6 +577,21 @@ _PROPOSALS_SCRIPT = (
     / "bundled" / "skill-creator-proposals" / "scripts" / "proposals.py"
 )
 
+_RUNTIME_E2E_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "opensquilla_meta_skill_runtime_e2e_context",
+    default=None,
+)
+
+
+def set_runtime_e2e_context(ctx: dict[str, Any] | None):
+    """Install the runtime E2E runner for the current async context."""
+
+    return _RUNTIME_E2E_CONTEXT.set(ctx)
+
+
+def reset_runtime_e2e_context(token) -> None:
+    _RUNTIME_E2E_CONTEXT.reset(token)
+
 
 # ---------------------------------------------------------------------------
 # Sync core implementations for lint / smoke / persist
@@ -629,6 +647,10 @@ def meta_skill_persist_proposal(
     lint_result: str,
     smoke_result: str,
     home: str = "",
+    *,
+    creator_mode: str = "",
+    acceptance_result: str = "",
+    runtime_e2e_result: str = "",
 ) -> str:
     """Write a proposal candidate to ~/.opensquilla/proposals/<id>/. Returns JSON."""
     home_path = Path(home).expanduser() if home else None
@@ -636,7 +658,10 @@ def meta_skill_persist_proposal(
             "--action", "write_proposal",
             "--skill-md-inline", skill_md,
             "--lint-result", lint_result,
-            "--smoke-result", smoke_result]
+            "--smoke-result", smoke_result,
+            "--creator-mode", creator_mode,
+            "--acceptance-result", acceptance_result,
+            "--runtime-e2e-result", runtime_e2e_result]
     if home:
         args.extend(["--home", home])
     proc = subprocess.run(args, capture_output=True, text=True, check=False)
@@ -766,6 +791,56 @@ async def meta_skill_smoke_run_tool(
     )
 
 
+async def meta_skill_runtime_e2e_run(
+    skill_md: str,
+    eval_prompts: str = "",
+    baseline_model: str = "",
+) -> str:
+    ctx = _RUNTIME_E2E_CONTEXT.get()
+    if not ctx:
+        return json.dumps({
+            "status": "unavailable",
+            "passed": False,
+            "winner": "",
+            "reason": "runtime_e2e_context_unavailable",
+            "cases": [],
+        }, ensure_ascii=False)
+    result = await run_runtime_e2e_gate(
+        skill_md=skill_md,
+        eval_prompts=eval_prompts,
+        baseline_model=baseline_model or str(ctx.get("baseline_model") or ""),
+        runner=ctx["runner"],
+        judge=ctx["judge"],
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool(
+    name="meta_skill_runtime_e2e_run",
+    description=(
+        "Run the candidate meta-skill on eval prompts and compare it against "
+        "a no-meta highest-tier baseline. Returns JSON gate results."
+    ),
+    params={
+        "skill_md": {"type": "string"},
+        "eval_prompts": {"type": "string"},
+        "baseline_model": {"type": "string"},
+    },
+    required=["skill_md"],
+    exposed_by_default=False,
+)
+async def meta_skill_runtime_e2e_run_tool(
+    skill_md: str,
+    eval_prompts: str = "",
+    baseline_model: str = "",
+) -> str:
+    return await meta_skill_runtime_e2e_run(
+        skill_md=skill_md,
+        eval_prompts=eval_prompts,
+        baseline_model=baseline_model,
+    )
+
+
 @tool(
     name="meta_skill_persist_proposal",
     description=(
@@ -776,6 +851,9 @@ async def meta_skill_smoke_run_tool(
         "skill_md": {"type": "string"},
         "lint_result": {"type": "string"},
         "smoke_result": {"type": "string"},
+        "creator_mode": {"type": "string"},
+        "acceptance_result": {"type": "string"},
+        "runtime_e2e_result": {"type": "string"},
         "home": {"type": "string"},
     },
     required=["skill_md", "lint_result", "smoke_result"],
@@ -786,10 +864,20 @@ async def meta_skill_persist_proposal_tool(
     lint_result: str,
     smoke_result: str,
     home: str = "",
+    creator_mode: str = "",
+    acceptance_result: str = "",
+    runtime_e2e_result: str = "",
 ) -> str:
     import asyncio
     return await asyncio.to_thread(
-        meta_skill_persist_proposal, skill_md, lint_result, smoke_result, home,
+        meta_skill_persist_proposal,
+        skill_md,
+        lint_result,
+        smoke_result,
+        home,
+        creator_mode=creator_mode,
+        acceptance_result=acceptance_result,
+        runtime_e2e_result=runtime_e2e_result,
     )
 
 

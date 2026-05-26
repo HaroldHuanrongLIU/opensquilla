@@ -61,6 +61,7 @@ _AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
         "meta_skill_assemble",
         "meta_skill_lint_run",
         "meta_skill_smoke_run",
+        "meta_skill_runtime_e2e_run",
         "meta_skill_persist_proposal",
     }
 )
@@ -89,17 +90,31 @@ def _make_auto_propose_tool_invoker(
 
     from opensquilla.skills.meta.orchestrator import make_tool_invoker_from_handler
     from opensquilla.tools.dispatch import build_tool_handler
+    ctx = _make_auto_propose_tool_context(allowed_tools=allowed_tools)
+    return make_tool_invoker_from_handler(
+        tool_handler=build_tool_handler(registry, ctx),
+    )
+
+
+def _make_auto_propose_tool_context(
+    *,
+    agent_id: str = "auto_propose",
+    workspace_dir: str | None = None,
+    allowed_tools: frozenset[str] = _AUTO_PROPOSE_TOOL_ALLOWLIST,
+) -> Any:
+    """Policy context for unattended meta-skill auto-propose work."""
+
     from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
 
-    ctx = ToolContext(
+    return ToolContext(
         is_owner=False,
         caller_kind=CallerKind.CRON,
         interaction_mode=InteractionMode.UNATTENDED,
-        agent_id="auto_propose",
+        agent_id=agent_id,
+        workspace_dir=workspace_dir,
+        workspace_strict=bool(workspace_dir),
         allowed_tools=set(allowed_tools),
-    )
-    return make_tool_invoker_from_handler(
-        tool_handler=build_tool_handler(registry, ctx),
+        surfaced_tools=set(allowed_tools),
     )
 
 
@@ -519,6 +534,12 @@ class ServiceContainer:
                 self.meta_run_writer.close()
             except Exception:
                 pass
+        try:
+            from opensquilla.gateway.auto_propose_bridge import reset_runtime
+
+            reset_runtime()
+        except Exception:
+            pass
 
         # ── 2. Tear down memory tier through MemoryManager ──
         # In real boot, the legacy `memory_watchers` / `memory_stores` below
@@ -2145,7 +2166,12 @@ async def start_gateway_server(
     # Register cron agent_run handler (DI-based, no monkey-patch)
     if svc.cron_scheduler is not None:
         from opensquilla.memory.dream_factory import build_dream_factory
+        from opensquilla.gateway.auto_propose_bridge import (
+            AutoProposeRuntime,
+            register_runtime,
+        )
         from opensquilla.scheduler.delivery import DeliveryChain
+        from opensquilla.scheduler.auto_propose_handler import make_auto_propose_handler
         from opensquilla.scheduler.dream_handler import make_memory_dream_handler
         from opensquilla.scheduler.handlers import (
             make_agent_run_handler,
@@ -2153,6 +2179,14 @@ async def start_gateway_server(
             make_system_event_handler,
         )
         from opensquilla.scheduler.heartbeat_service import HeartbeatService
+        from opensquilla.skills.creator.auto_propose import auto_propose
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+        from opensquilla.tools.dispatch import build_tool_handler
 
         async def _cron_ws_emitter(topic: str, event: str, payload: dict) -> int:
             """Targeted WS push with per-connection error isolation."""
@@ -2272,6 +2306,182 @@ async def start_gateway_server(
                 workspace_strict = bool(workspace_dir)
             return str(workspace_dir), workspace_strict
 
+        auto_cfg = config.meta_skill.auto_propose
+        auto_home = _gateway_home(config)
+        auto_proposals_dir = auto_home / "proposals"
+        auto_log_dir = Path(
+            os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs"))
+        )
+        auto_agent_ids = _configured_agent_ids(config)
+
+        def _build_auto_propose_orchestrator(
+            agent_id: str,
+            *,
+            triggered_by: str,
+        ) -> MetaOrchestrator:
+            if svc.provider_selector is None:
+                raise RuntimeError("auto_propose provider not configured")
+            provider_selector = svc.provider_selector
+            router_cfg = getattr(config, "squilla_router", None)
+            tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+            t3_tier = tiers.get("t3") if isinstance(tiers, dict) else None
+            t3_model = ""
+            t3_thinking_level = ""
+            if isinstance(t3_tier, dict):
+                t3_model = str(t3_tier.get("model") or "").strip()
+                t3_thinking_level = str(
+                    t3_tier.get("thinking_level") or t3_tier.get("thinking") or ""
+                ).strip()
+
+            clone_selector = getattr(provider_selector, "clone", None)
+            if t3_model and callable(clone_selector):
+                provider_selector = clone_selector()
+                override_model = getattr(provider_selector, "override_model", None)
+                if callable(override_model):
+                    override_model(t3_model)
+
+            resolver = getattr(provider_selector, "resolve", None)
+            if not callable(resolver):
+                raise RuntimeError("auto_propose provider selector has no resolve()")
+            provider = resolver()
+            workspace_dir = resolve_agent_workspace_dir(agent_id, config)
+            workspace_str = str(workspace_dir) if workspace_dir else None
+            ctx = _make_auto_propose_tool_context(
+                agent_id=agent_id,
+                workspace_dir=workspace_str,
+            )
+            tool_handler = build_tool_handler(svc.tool_registry, ctx)
+            from opensquilla.engine.agent import Agent
+            from opensquilla.engine.types import AgentConfig
+            from opensquilla.skills.creator.proposer import (
+                reset_runtime_e2e_context,
+                set_runtime_e2e_context,
+            )
+            from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
+
+            auto_model_id = t3_model or resolve_agent_model(agent_id, config)
+            auto_metadata: dict[str, Any] = {
+                "routing_source": "meta_skill_auto_propose",
+                "routing_applied": bool(t3_model),
+            }
+            if t3_model:
+                auto_metadata.update({
+                    "routed_tier": "t3",
+                    "routed_model": t3_model,
+                    "applied_model": t3_model,
+                })
+            if t3_thinking_level:
+                auto_metadata.update({
+                    "thinking_requested": True,
+                    "thinking_level": t3_thinking_level,
+                })
+
+            base_config = AgentConfig(
+                model_id=auto_model_id,
+                workspace_dir=workspace_str,
+                metadata=auto_metadata,
+            )
+            tool_definitions = svc.tool_registry.to_tool_definitions(ctx)
+            llm_chat = make_llm_chat_from_provider(
+                provider=provider,
+                base_config=base_config,
+                usage_tracker=svc.usage_tracker,
+                session_key=f"auto_propose:{agent_id}",
+            )
+            base_tool_invoker = make_tool_invoker_from_handler(tool_handler=tool_handler)
+            runtime_e2e_ctx = make_runtime_e2e_context(
+                provider=provider,
+                base_config=base_config,
+                skill_loader=svc.skill_loader,
+                tool_definitions=tool_definitions,
+                tool_handler=tool_handler,
+                agent_factory=Agent,
+                llm_chat=llm_chat,
+                tool_invoker=base_tool_invoker,
+                workspace_dir=workspace_str,
+                usage_tracker=svc.usage_tracker,
+                session_key=f"auto_propose:{agent_id}",
+                tool_registry=svc.tool_registry,
+                tool_context=ctx,
+                system_prompt=base_config.system_prompt or "",
+                baseline_model=base_config.model_id or "",
+            )
+
+            async def _tool_invoker(tool_name: str, args: dict[str, Any]) -> Any:
+                if tool_name == "meta_skill_persist_proposal":
+                    args = dict(args)
+                    args.setdefault("home", str(auto_home))
+                token = set_runtime_e2e_context(runtime_e2e_ctx)
+                try:
+                    return await base_tool_invoker(tool_name, args)
+                finally:
+                    reset_runtime_e2e_context(token)
+
+            return MetaOrchestrator(
+                agent_runner=make_agent_runner_from_parent(
+                    provider=provider,
+                    base_config=base_config,
+                    tool_definitions=tool_definitions,
+                    tool_handler=tool_handler,
+                    agent_factory=Agent,
+                    workspace_dir=workspace_str,
+                    usage_tracker=svc.usage_tracker,
+                    session_key=f"auto_propose:{agent_id}",
+                ),
+                skill_loader=svc.skill_loader,
+                llm_chat=llm_chat,
+                tool_invoker=_tool_invoker,
+                workspace_dir=workspace_str,
+                run_writer=getattr(svc, "meta_run_writer", None),
+                triggered_by=triggered_by,
+                session_key=f"auto_propose:{agent_id}",
+                turn_id=None,
+                usage_tracker=svc.usage_tracker,
+            )
+
+        async def _register_auto_propose_runtime_crons() -> None:
+            await _register_auto_propose_crons(
+                scheduler=svc.cron_scheduler,
+                auto_cfg=auto_cfg,
+                agent_ids=auto_agent_ids,
+            )
+
+        async def _pause_auto_propose_runtime_crons() -> None:
+            await _pause_auto_propose_crons(
+                scheduler=svc.cron_scheduler,
+                agent_ids=auto_agent_ids,
+            )
+
+        async def _post_dream_auto_propose(agent_id: str) -> None:
+            if not bool(getattr(auto_cfg, "on_dream_complete", False)):
+                return
+            result = await auto_propose(
+                orchestrator=_build_auto_propose_orchestrator(
+                    agent_id,
+                    triggered_by="auto_dream",
+                ),
+                skill_loader=svc.skill_loader,
+                log_dir=auto_log_dir,
+                window_days=auto_cfg.window_days,
+                min_freq=auto_cfg.min_freq,
+                top_k=auto_cfg.top_k,
+                triggered_by="dream",
+                proposals_dir=auto_proposals_dir,
+                auto_enable=bool(getattr(auto_cfg, "auto_enable", False)),
+                auto_enable_max_risk=str(
+                    getattr(auto_cfg, "auto_enable_max_risk", "low"),
+                ),
+            )
+            log.info(
+                "auto_propose.dream_hook.complete",
+                agent_id=agent_id,
+                summary=result.summary(),
+                proposal_ids=result.proposals_created,
+                enabled_proposal_ids=result.proposals_enabled,
+                skipped=result.skipped,
+                errors=result.errors,
+            )
+
         agent_handler = make_agent_run_handler(
             delivery_chain=delivery_chain,
             turn_runner_ref=lambda: turn_runner,
@@ -2291,6 +2501,17 @@ async def start_gateway_server(
             default_elevated=lambda: configured_default_elevated(config),
         )
         static_handler = make_static_message_handler(delivery_chain=delivery_chain)
+        auto_propose_handler = make_auto_propose_handler(
+            build_orchestrator=lambda agent_id: _build_auto_propose_orchestrator(
+                agent_id,
+                triggered_by="auto_cron",
+            ),
+            skill_loader=svc.skill_loader,
+            log_dir=auto_log_dir,
+            proposals_dir=auto_proposals_dir,
+            config=auto_cfg,
+            enabled_predicate=lambda: bool(getattr(auto_cfg, "enabled", False)),
+        )
         dream_handler = make_memory_dream_handler(
             build_dream=build_dream_factory(
                 config=config,
@@ -2299,20 +2520,33 @@ async def start_gateway_server(
             should_skip=lambda: (
                 "disabled" if not getattr(config.memory.dream, "enabled", False) else None
             ),
+            post_dream_hook=_post_dream_auto_propose,
         )
         svc.cron_scheduler.register_handler("agent_run", agent_handler)
         svc.cron_scheduler.register_handler("static_message", static_handler)
         svc.cron_scheduler.register_handler("system_event", system_handler)
         svc.cron_scheduler.register_handler("memory_dream", dream_handler)
+        svc.cron_scheduler.register_handler("auto_propose", auto_propose_handler)
         log.info("gateway.cron_handler_registered", handler_key="agent_run")
         log.info("gateway.cron_handler_registered", handler_key="static_message")
         log.info("gateway.cron_handler_registered", handler_key="system_event")
         log.info("gateway.cron_handler_registered", handler_key="memory_dream")
+        log.info("gateway.cron_handler_registered", handler_key="auto_propose")
+        register_runtime(AutoProposeRuntime(
+            config=auto_cfg,
+            home=auto_home,
+            register_crons=_register_auto_propose_runtime_crons,
+            pause_crons=_pause_auto_propose_runtime_crons,
+        ))
         await _register_dream_crons(
             scheduler=svc.cron_scheduler,
             memory_config=config.memory,
             agent_ids=_configured_agent_ids(config),
         )
+        if bool(getattr(auto_cfg, "enabled", False)):
+            await _register_auto_propose_runtime_crons()
+        else:
+            await _pause_auto_propose_runtime_crons()
 
     # Build channel adapters (don't start yet -- app doesn't exist)
     webhook_routes: list = []

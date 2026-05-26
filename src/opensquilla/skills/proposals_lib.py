@@ -24,6 +24,7 @@ from pathlib import Path
 PROPOSAL_ID_PATTERN = re.compile(r"[0-9a-f]{8}")
 SKILL_NAME_PATTERN = re.compile(r"[\w\-]+")
 RISK_LEVELS = frozenset({"low", "medium", "high"})
+_NO_REQUIRED_IMPROVEMENTS = frozenset({"", "none", "no", "n/a", "not applicable"})
 
 
 def proposals_dir(home: Path) -> Path:
@@ -68,22 +69,188 @@ def atomic_write_proposal(
     return proposal_id
 
 
+def _normalise_acceptance_result(acceptance_result: object) -> dict:
+    if acceptance_result is None:
+        return {}
+    if isinstance(acceptance_result, dict):
+        return dict(acceptance_result)
+    if isinstance(acceptance_result, str):
+        text = acceptance_result.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"raw": text}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"raw": text}
+    return {"raw": str(acceptance_result)}
+
+
+def _first_section_item(raw: str, section: str) -> str:
+    pattern = re.compile(
+        rf"^{re.escape(section)}:\s*(.*?)(?=^[A-Z][A-Z _-]*:|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(raw)
+    if not match:
+        return ""
+    body = match.group(1).strip()
+    if not body:
+        return ""
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = lines[0]
+    return first[1:].strip() if first.startswith("-") else first
+
+
+def _evaluate_acceptance_compare(
+    creator_mode: str,
+    acceptance_result: object,
+) -> dict:
+    mode = (creator_mode or "").strip().upper()
+    required = mode == "FULL_GATED"
+    payload = _normalise_acceptance_result(acceptance_result)
+    raw = str(payload.get("raw") or "").strip()
+    winner = str(payload.get("winner") or "").strip().lower()
+    required_improvements = str(
+        payload.get("required_improvements") or payload.get("required_improvement") or ""
+    ).strip()
+
+    if raw:
+        if not winner:
+            match = re.search(r"^WINNER:\s*([^\n]+)", raw, re.MULTILINE | re.IGNORECASE)
+            if match:
+                winner = match.group(1).strip().lower()
+        if not required_improvements:
+            required_improvements = _first_section_item(raw, "REQUIRED_IMPROVEMENTS")
+
+    required_improvements_norm = required_improvements.strip().lower()
+    has_required_improvements = required_improvements_norm not in _NO_REQUIRED_IMPROVEMENTS
+    passed = (
+        not required
+        or (
+            winner in {"orchestrated", "tie"}
+            and not has_required_improvements
+        )
+    )
+    diagnostics: list[str] = []
+    if required and not winner:
+        diagnostics.append("missing WINNER in acceptance comparison")
+    if required and winner not in {"orchestrated", "tie"}:
+        diagnostics.append(f"winner is not orchestrated/tie: {winner or 'missing'}")
+    if required and has_required_improvements:
+        diagnostics.append("required improvements are present")
+
+    return {
+        "required": required,
+        "passed": passed,
+        "winner": winner,
+        "required_improvements": required_improvements,
+        "diagnostics": diagnostics,
+        "raw": raw,
+    }
+
+
+def _normalise_runtime_e2e_result(runtime_e2e_result: object) -> dict:
+    if runtime_e2e_result is None:
+        return {}
+    if isinstance(runtime_e2e_result, dict):
+        return dict(runtime_e2e_result)
+    if isinstance(runtime_e2e_result, str):
+        text = runtime_e2e_result.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"raw": text}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"raw": text}
+    return {"raw": str(runtime_e2e_result)}
+
+
+def _evaluate_runtime_e2e(
+    creator_mode: str,
+    runtime_e2e_result: object,
+) -> dict:
+    mode = (creator_mode or "").strip().upper()
+    required = mode == "FULL_GATED"
+    payload = _normalise_runtime_e2e_result(runtime_e2e_result)
+    if not payload:
+        return {
+            "required": required,
+            "passed": not required,
+            "reason": "missing_runtime_e2e_result" if required else "not_required",
+            "winner": "",
+            "cases": [],
+        }
+    winner = str(payload.get("winner") or "").strip().lower()
+    cases = payload.get("cases")
+    if not isinstance(cases, list):
+        cases = []
+    case_blockers: list[str] = []
+    for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            continue
+        case_winner = str(case.get("winner") or "").strip().lower()
+        regression = str(case.get("regression") or "").strip()
+        if case_winner not in {"meta", "tie"}:
+            case_blockers.append(f"case_{index}_winner:{case_winner or 'missing'}")
+        if regression:
+            case_blockers.append(f"case_{index}_regression")
+    passed = (
+        (not required)
+        or (
+            bool(payload.get("passed", False))
+            and winner in {"meta", "tie"}
+            and not case_blockers
+        )
+    )
+    return {
+        "required": required,
+        "passed": passed,
+        "reason": "ok" if passed else str(payload.get("reason") or "runtime_e2e_failed"),
+        "winner": winner,
+        "baseline_model": payload.get("baseline_model", ""),
+        "cases": cases,
+        "diagnostics": case_blockers,
+        "raw": payload.get("raw", ""),
+    }
+
+
 def write_proposal(
     home: Path,
     skill_md: str,
     lint_result: dict,
     smoke_result: dict,
+    *,
+    creator_mode: str = "",
+    acceptance_result: object = None,
+    runtime_e2e_result: object = None,
 ) -> dict:
     """Atomic write + return the standard ``{status, proposal_id, ...}`` shape."""
-    eligible = (
+    acceptance_gate = _evaluate_acceptance_compare(creator_mode, acceptance_result)
+    runtime_gate = _evaluate_runtime_e2e(creator_mode, runtime_e2e_result)
+    gate_eligible = (
         lint_result.get("G1", {}).get("passed", False)
         and lint_result.get("G2", {}).get("passed", False)
         and smoke_result.get("G3", {}).get("passed", False)
         and smoke_result.get("G4", {}).get("passed", False)
     )
+    eligible = (
+        gate_eligible
+        and bool(acceptance_gate.get("passed", False))
+        and bool(runtime_gate.get("passed", False))
+    )
     gates = {
         "lint": lint_result,
         "smoke": smoke_result,
+        "acceptance_compare": acceptance_gate,
+        "runtime_e2e": runtime_gate,
         "auto_enable_eligible": eligible,
     }
     proposal_id = atomic_write_proposal(home, skill_md, gates)
