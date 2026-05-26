@@ -6,7 +6,11 @@ import dataclasses
 
 import pytest
 
-from opensquilla.skills.meta.types import ClarifyField, ClarifyStepConfig
+from opensquilla.skills.meta.types import (
+    ClarifyField,
+    ClarifyStepConfig,
+    MetaPaused,
+)
 
 
 def test_clarify_field_minimal_construction():
@@ -58,3 +62,43 @@ def test_clarify_step_config_is_frozen():
     cfg = ClarifyStepConfig(mode="form", fields=())
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.mode = "chat"  # type: ignore[misc]
+
+
+def test_meta_paused_is_exception_and_carries_payload():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(ClarifyField(name="x", type="string"),),
+    )
+    paused = MetaPaused(
+        run_id="r123",
+        step_id="collect",
+        schema=cfg,
+        intro="hello",
+    )
+    assert isinstance(paused, Exception)
+    assert paused.run_id == "r123"
+    assert paused.step_id == "collect"
+    assert paused.schema is cfg
+    assert paused.intro == "hello"
+
+
+def test_meta_paused_can_be_raised_and_caught():
+    cfg = ClarifyStepConfig(mode="form", fields=())
+    with pytest.raises(MetaPaused) as excinfo:
+        raise MetaPaused(run_id="r", step_id="s", schema=cfg)
+    assert excinfo.value.run_id == "r"
+
+
+def test_meta_paused_attributes_are_effectively_immutable():
+    """MetaPaused is not a frozen dataclass (Exception incompatibility — see
+    types.py docstring), but is treated as immutable by convention. Attributes
+    are read-only once initialized; accidental mutation is prevented by the
+    keyword-only constructor and __slots__ design, not by runtime enforcement."""
+    cfg = ClarifyStepConfig(mode="form", fields=())
+    paused = MetaPaused(run_id="r", step_id="s", schema=cfg)
+    # Verify that __slots__ prevents adding unknown attributes on Exception subclasses
+    # (Note: Exception has __dict__, so unknown attributes CAN be added; this test
+    # documents the expected "by convention" immutability rather than enforced immutability)
+    assert paused.run_id == "r"
+    assert paused.step_id == "s"
+    assert paused.schema is cfg

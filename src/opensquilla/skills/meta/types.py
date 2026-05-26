@@ -118,6 +118,40 @@ class ClarifyStepConfig:
     nl_extract_tier: str = ""  # "" ⇒ lowest configured router tier
 
 
+class MetaPaused(Exception):  # noqa: N818
+    """Control-flow signal raised by the user_input executor.
+
+    Carries enough information to render a clarify form on any surface
+    (Web / CLI / IM) without re-loading the SkillSpec from disk.
+    Subclasses Exception so it can propagate through asyncio's task
+    machinery; the scheduler intercepts it ahead of CancelledError /
+    generic Exception per design §8.1.
+
+    NOTE: design §6 declares this as ``@dataclass(frozen=True)``, but
+    frozen dataclasses cannot subclass Exception cleanly (the
+    ``__init__`` rewrites collide with BaseException.args bookkeeping).
+    PR1 implements the same surface as a hand-written class with a
+    keyword-only constructor; treat instances as immutable by
+    convention.
+    """
+
+    __slots__ = ("run_id", "step_id", "schema", "intro")
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        schema: ClarifyStepConfig,
+        intro: str = "",
+    ) -> None:
+        super().__init__(f"meta-skill paused at step {step_id!r}")
+        self.run_id = run_id
+        self.step_id = step_id
+        self.schema = schema
+        self.intro = intro
+
+
 @dataclass(frozen=True)
 class MetaPlan:
     """Parsed composition plan for a Meta-Skill."""
