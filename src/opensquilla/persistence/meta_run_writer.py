@@ -97,6 +97,44 @@ class RunRecord:
     steps: tuple[StepRecord, ...] = ()
 
 
+@dataclass
+class AwaitingPeek:
+    """Read-only view of a single `awaiting_user` row.
+
+    Returned by `MetaRunWriter.peek_awaiting`. The schema field is the
+    deserialized `ClarifyStepConfig`; the `_json` strings are exposed
+    raw so callers that just want to forward them (e.g. the surface
+    renderers) don't pay a JSON parse cost.
+    """
+
+    run_id: str
+    step_id: str
+    awaiting_since: float
+    awaiting_session_id: str
+    awaiting_schema_json: str
+    awaiting_filled_json: str
+    step_outputs_json: str
+    inputs_json: str
+    parse_failure_count: int
+
+
+@dataclass
+class ResumePayload:
+    """Full payload required to call MetaOrchestrator.resume.
+
+    Returned by `MetaRunWriter.try_claim_resume` only on rowcount==1
+    (the caller has won the CAS for this run).
+    """
+
+    run_id: str
+    plan_snapshot_json: str
+    inputs_json: str
+    step_outputs_json: str
+    awaiting_step_id: str
+    awaiting_schema_json: str
+    awaiting_filled_json: str
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -476,6 +514,38 @@ class MetaRunWriter:
     ) -> list[RunRecord]:
         return self.list_runs(
             name=name, status="failed", since_ms=since_ms, limit=limit,
+        )
+
+    def peek_awaiting(self, *, session_id: str) -> AwaitingPeek | None:
+        """Read the single awaiting_user record for this session, if any.
+
+        Read-only: does NOT transition state. The partial unique index on
+        session_key WHERE status='awaiting_user' guarantees at most one row.
+        """
+        if not session_id:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT * FROM meta_skill_runs "
+                    "WHERE session_key=? AND status='awaiting_user' LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.peek_awaiting_failed: %s", exc)
+            return None
+        if row is None:
+            return None
+        return AwaitingPeek(
+            run_id=row["run_id"],
+            step_id=row["awaiting_step_id"] or "",
+            awaiting_since=float(row["awaiting_since"] or 0.0),
+            awaiting_session_id=row["session_key"] or "",
+            awaiting_schema_json=row["awaiting_schema_json"] or "{}",
+            awaiting_filled_json=row["awaiting_filled_json"] or "{}",
+            step_outputs_json=row["step_outputs_json"] or "{}",
+            inputs_json=row["inputs_json"] or "{}",
+            parse_failure_count=int(row["parse_failure_count"] or 0),
         )
 
     # ------------- cleanup -------------
