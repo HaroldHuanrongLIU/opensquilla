@@ -115,16 +115,12 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     assert steps["assemble_manuscript_tex"].depends_on == (
         "writing_plan", "persist_sections", "refbib",
     )
-    assert steps["paper_length_gate"].kind == "tool_call"
-    assert set(steps["paper_length_gate"].depends_on) >= {
-        "final_manuscript_package", "citation_plan", "refbib",
-    }
     # citation_integrity_gate now reads citation_map too.
     assert set(steps["citation_integrity_gate"].depends_on) >= {
         "final_manuscript_package", "citation_plan", "refbib", "citation_map",
     }
     assert steps["latex_sanitizer"].depends_on == (
-        "paper_length_gate", "citation_integrity_gate",
+        "citation_integrity_gate",
     )
     assert steps["compile_latex"].depends_on == ("latex_sanitizer",)
     assert steps["compile_latex"].kind == "llm_chat"
@@ -508,13 +504,6 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
             )
         if "E2E citation map fixture" in system_prompt:
             return canned_fragments["citation_map"]
-        if "E2E paper length fixture" in system_prompt:
-            return (
-                "LENGTH_GATE: pass\n"
-                "MANUSCRIPT_PATH: /tmp/e2e-paper.tex\n"
-                "EST_COMPILED_PAGES: 10\n"
-                "CONTEXT_POLICY: artifact-only length check"
-            )
         if "delivery note for a compiled academic paper" in system_prompt:
             return (
                 "Paper compiled\n\n"
@@ -557,11 +546,6 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
                 "citation_map_fixture",
                 "E2E citation map fixture",
                 "Return deterministic citation audit metadata.",
-            ),
-            "paper_length_gate": (
-                "paper_length_fixture",
-                "E2E paper length fixture",
-                "Return deterministic length gate metadata.",
             ),
             "compile_pdf": (
                 "compile_pdf_fixture",

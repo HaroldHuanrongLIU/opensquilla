@@ -122,15 +122,17 @@ def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     assert "refuses to create degraded PDF" in meta
 
 
-def test_meta_paper_write_enforces_user_requested_page_target() -> None:
+def test_meta_paper_write_plans_user_requested_page_target_up_front() -> None:
     meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "TARGET_PAGES:" in meta
-    assert "MIN_TARGET_PAGES" in meta
-    assert "LENGTH_GATE: fail" in meta
-    assert "sys.exit(1)" in meta
-    assert "PDF_PAGE_TARGET_NOT_MET" in meta
+    assert "This writing plan is the length-control point" in meta
+    assert "allocating enough section scope" in meta
     assert "minimum total target_words" in meta
+    assert "PER_SECTION_BLUEPRINT.*.target_words" in meta
+    assert "target_words from writing_plan" in meta
+    assert "PDF_PAGE_TARGET_NOT_MET" not in meta
+    assert "LENGTH_GATE: fail" not in meta
 
 
 def test_paper_preference_planner_declares_two_generation_modes() -> None:

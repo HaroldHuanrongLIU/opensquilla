@@ -168,7 +168,6 @@ def test_paper_meta_skill_has_pre_compile_quality_gates(tmp_path: Path) -> None:
         "persist_sections",
         "assemble_manuscript_tex",
         "citation_map",
-        "paper_length_gate",
         "citation_integrity_gate",
         "latex_sanitizer",
         "compile_latex",
@@ -246,7 +245,6 @@ def test_paper_meta_skill_uses_full_pdf_default_with_clarification(
         "persist_sections",
         "assemble_manuscript_tex",
         "citation_map",
-        "paper_length_gate",
         "compile_pdf",
     ):
         assert steps[step_id].kind == "tool_call", step_id
@@ -306,8 +304,6 @@ def test_paper_meta_skill_uses_full_pdf_default_with_clarification(
     assert "Source Quality" in citation_map_prompt
     assert "INVALID" in citation_map_prompt
     assert "STRONG" in citation_map_prompt
-    length_prompt = str(steps["paper_length_gate"].tool_args)
-    assert "artifact-only length check" in length_prompt
 
 
 def test_pdf_intelligence_preserves_traceable_multi_document_structure(

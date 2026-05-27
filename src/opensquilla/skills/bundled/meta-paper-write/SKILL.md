@@ -568,6 +568,10 @@ composition:
           - Treat paper_preferences.LENGTH_STRATEGY and TARGET_LENGTH as
             authoritative; do not use a fixed default page or word budget when
             the user requested a different length.
+          - This writing plan is the length-control point. Solve length by
+            allocating enough section scope, subclaims, evidence, analysis,
+            and limitations now; do not assume a downstream checker will fix
+            an undersized manuscript later.
           - Convert the requested compiled-page target into an approximate
             total word budget using the paper language, figure/table count,
             and venue style. For normal academic article formatting, set the
@@ -1368,58 +1372,6 @@ composition:
         env:
           MANIFEST: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
           REFBIB: "{{ outputs.refbib }}"
-    - id: paper_length_gate
-      kind: tool_call
-      tool: exec_command
-      tool_allowlist: [exec_command]
-      depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex, citation_plan, refbib]
-      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract"
-      tool_args:
-        command: |
-          python3 - <<'PY'
-          import os, re
-          from pathlib import Path
-
-          pkg = os.environ.get('MANIFEST', '')
-          contract = os.environ.get('PAPER_CONTRACT', '')
-          m = re.search(r'MANUSCRIPT_PATH:\s*(.+)', pkg)
-          tex_path = Path(m.group(1).strip()) if m else Path('paper/paper.tex')
-          tex = tex_path.read_text(encoding='utf-8', errors='ignore') if tex_path.is_file() else pkg
-          body = re.sub(r'\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{[^}]*\})?', ' ', tex)
-          words = re.findall(r'[A-Za-z0-9_\-]+|[\u4e00-\u9fff]', body)
-          figures = len(re.findall(r'\\begin\{figure\}', tex))
-          tables = len(re.findall(r'\\begin\{table\}', tex))
-          est_pages = max(1, round(max(len(words), 1) / 500 + (figures + tables) * 0.25, 1))
-          target_match = re.search(r'TARGET_PAGES:\s*(\d+)', contract)
-          min_target_pages = int(target_match.group(1)) if target_match else 1
-          sections = re.findall(r'\\section\{([^}]+)\}', tex)
-          if est_pages < min_target_pages:
-              print('LENGTH_GATE: fail')
-              print(f'MANUSCRIPT_PATH: {tex_path}')
-              print(f'MIN_TARGET_PAGES: {min_target_pages}')
-              print(f'EST_WORD_UNITS: {len(words)}')
-              print(f'EST_COMPILED_PAGES: {est_pages}')
-              print(f'FIGURES: {figures}')
-              print(f'TABLES: {tables}')
-              print('SECTIONS: ' + ', '.join(sections))
-              print('ERROR: estimated compiled length is below the user-requested page target; expand section target_words before compiling')
-              print('CONTEXT_POLICY: artifact-only length check; full manuscript omitted from LLM context')
-              raise SystemExit(1)
-          print('LENGTH_GATE: pass')
-          print(f'MANUSCRIPT_PATH: {tex_path}')
-          print(f'MIN_TARGET_PAGES: {min_target_pages}')
-          print(f'EST_WORD_UNITS: {len(words)}')
-          print(f'EST_COMPILED_PAGES: {est_pages}')
-          print(f'FIGURES: {figures}')
-          print(f'TABLES: {tables}')
-          print('SECTIONS: ' + ', '.join(sections))
-          print('CONTEXT_POLICY: artifact-only length check; full manuscript omitted from LLM context')
-          PY
-        workdir: "{{ inputs.workspace_dir }}"
-        timeout: 30
-        env:
-          MANIFEST: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
-          PAPER_CONTRACT: "{{ outputs.paper_contract }}"
     - id: citation_integrity_gate
       kind: llm_chat
       depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex, citation_plan, refbib, citation_map]
@@ -1454,9 +1406,6 @@ composition:
           Citation audit table (read this — do NOT re-derive):
           {{ outputs.citation_map | truncate(4000) }}
 
-          Length gate:
-          {{ outputs.paper_length_gate | truncate(2000) }}
-
           Reply with:
           INTEGRITY: <pass|warn|block>
           INVALID_COUNT: <int>
@@ -1468,7 +1417,7 @@ composition:
             - <warning or none>
     - id: latex_sanitizer
       kind: llm_chat
-      depends_on: [paper_length_gate, citation_integrity_gate]
+      depends_on: [citation_integrity_gate]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract or 'PAPER_MODE: COMPILE_ONLY' in outputs.paper_contract"
       with:
         system: "You sanitize LaTeX deliverables and reject process text."
@@ -1479,9 +1428,6 @@ composition:
           Preserve valid LaTeX, CJK text, citations, figure references,
           placeholder figure/table blocks (\fbox + tabular), and section content.
           Reply with a concise readiness note and any blocking issue only.
-
-          Length gate:
-          {{ outputs.paper_length_gate | truncate(2000) }}
 
           Citation gate:
           {{ outputs.citation_integrity_gate | truncate(2000) }}
@@ -1521,10 +1467,6 @@ composition:
           from pathlib import Path
 
           pkg = os.environ.get('MANUSCRIPT_PKG', '')
-          contract = os.environ.get('PAPER_CONTRACT', '')
-          target_match = re.search(r'TARGET_PAGES:\s*(\d+)', contract)
-          full_manuscript_mode = 'PAPER_MODE: FULL_MANUSCRIPT' in contract
-          min_target_pages = int(target_match.group(1)) if (full_manuscript_mode and target_match) else 1
 
           # 1. Try MANUSCRIPT_TEX: / REFERENCES_BIB: contract markers first.
           m = re.search(r'MANUSCRIPT_TEX:\s*(.+?)(?:REFERENCES_BIB:|COMPILE_NOTES:|\Z)', pkg, re.DOTALL)
@@ -1613,13 +1555,6 @@ composition:
               log_text = (paper / 'paper.log').read_text(encoding='utf-8', errors='ignore') if (paper / 'paper.log').is_file() else ''
               pm = re.search(r'Output written on .+?\((\d+) pages?', log_text)
               pages = pm.group(1) if pm else '?'
-              if pages.isdigit() and int(pages) < min_target_pages:
-                  print('PDF_PAGE_TARGET_NOT_MET')
-                  print(f'PDF_PATH: {pdf}')
-                  print(f'PDF_PAGES: {pages}')
-                  print(f'MIN_TARGET_PAGES: {min_target_pages}')
-                  print('ERROR: compiled PDF is shorter than the user-requested page target; refusing to publish the undersized paper')
-                  sys.exit(1)
               print(f'PDF_PATH: {pdf}')
               print(f'PDF_PAGES: {pages}')
               print(f'PDF_BYTES: {pdf.stat().st_size}')
@@ -1637,7 +1572,6 @@ composition:
         timeout: 120
         env:
           MANUSCRIPT_PKG: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
-          PAPER_CONTRACT: "{{ outputs.paper_contract }}"
     - id: publish_pdf
       kind: tool_call
       tool: publish_artifact
@@ -1726,8 +1660,8 @@ DAG (in order):
 11. **`citation_plan`** — assigns concrete cite keys from `refbib` to
     claims; cannot invent keys.
 12. **`writing_plan` + section authors** — the default FULL_MANUSCRIPT path
-    writes section-by-section, then assembles and consistency-edits the
-    manuscript before quality gates.
+    converts the user's page target into section-level `target_words` and
+    citation budgets before prose is written; section authors obey that plan.
 13. **`final_manuscript_package`** — compact / repair modes produce
     MANUSCRIPT_TEX with the figure/table/analysis blocks inlined verbatim,
     plus REFERENCES_BIB containing only the entries actually cited.
@@ -1736,16 +1670,15 @@ DAG (in order):
     with INVALID / UNUSED / WEAK detection. Inlined into the final
     deliverable AND queryable per-run via
     ``opensquilla skills meta runs show``.
-15. **`paper_length_gate`** — page-count check (FULL_MANUSCRIPT only).
-16. **`citation_integrity_gate`** — reads `citation_map` directly; blocks
+15. **`citation_integrity_gate`** — reads `citation_map` directly; blocks
     when INVALID > 0 or any primary claim cites a WEAK source.
-17. **`latex_sanitizer`** — strips process text without rewriting the
+16. **`latex_sanitizer`** — strips process text without rewriting the
     paper.
-18. **`compile_pdf` / `publish_pdf` / `deliver_paper`** — compile and
+17. **`compile_pdf` / `publish_pdf` / `deliver_paper`** — compile and
     publish the final PDF for FULL_MANUSCRIPT, COMPACT_SKELETON, and
     REPAIR_EXISTING. The compiler refuses to create degraded PDFs when
     MANUSCRIPT_TEX is missing.
-19. **`compile_latex`** — handoff note (COMPILE_ONLY mode).
+18. **`compile_latex`** — handoff note (COMPILE_ONLY mode).
 
 Removed from the previous version:
 
