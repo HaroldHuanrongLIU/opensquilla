@@ -664,6 +664,101 @@ class MetaRunWriter:
             log.warning("meta_run_writer.try_claim_resume_failed: %s", exc)
             return None
 
+    def mark_expired(self, *, run_id: str) -> None:
+        """Transition an awaiting_user run to 'expired'.
+
+        Idempotent: a row already in 'expired' is left untouched.
+        """
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    UPDATE meta_skill_runs
+                       SET status='expired', ended_at_ms=?
+                     WHERE run_id=? AND status='awaiting_user'
+                    """,
+                    (self._clock(), run_id),
+                )
+                self._conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.mark_expired_failed: %s", exc)
+
+    def mark_cancelled(self, *, run_id: str, reason: str) -> None:
+        """Transition an awaiting_user run to 'cancelled' with a recorded reason.
+
+        Reason is stored in the existing `error` column (with `cancelled:`
+        prefix); callers must check `status` before interpreting `error`.
+        """
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    UPDATE meta_skill_runs
+                       SET status='cancelled', ended_at_ms=?, error=?
+                     WHERE run_id=? AND status='awaiting_user'
+                    """,
+                    (self._clock(), f"cancelled:{reason}", run_id),
+                )
+                self._conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.mark_cancelled_failed: %s", exc)
+
+    def increment_parse_failures(self, *, run_id: str) -> int:
+        """Atomically increment parse_failure_count; return new value.
+
+        Returns 0 if the row is not in 'awaiting_user' (no-op sentinel).
+        Uses UPDATE ... RETURNING for atomicity across multiple connections.
+        """
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    """
+                    UPDATE meta_skill_runs
+                       SET parse_failure_count = parse_failure_count + 1
+                     WHERE run_id=? AND status='awaiting_user'
+                     RETURNING parse_failure_count
+                    """,
+                    (run_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return 0
+                self._conn.commit()
+                if isinstance(row, sqlite3.Row):
+                    return int(row["parse_failure_count"])
+                return int(row[0])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.increment_parse_failures_failed: %s", exc)
+            return 0
+
+    def update_awaiting_partial(
+        self, *, run_id: str, filled_json: str, awaiting_since: float,
+    ) -> bool:
+        """Persist a partial fill for chat-mode awaiting (design §5.4).
+
+        Resets awaiting_since so the user gets a fresh timeout window.
+        Returns True only if the row was still in awaiting_user.
+        """
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    """
+                    UPDATE meta_skill_runs
+                       SET awaiting_filled_json=?, awaiting_since=?
+                     WHERE run_id=? AND status='awaiting_user'
+                    """,
+                    (filled_json, awaiting_since, run_id),
+                )
+                if cur.rowcount == 0:
+                    self._conn.rollback()
+                    return False
+                self._conn.commit()
+                return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.update_awaiting_partial_failed: %s", exc)
+            return False
+
     # ------------- cleanup -------------
 
     def purge_for_session(self, session_key: str) -> int:

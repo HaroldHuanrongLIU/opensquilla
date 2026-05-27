@@ -174,3 +174,106 @@ def test_try_claim_resume_rejects_session_mismatch(writer):
     payload = writer.try_claim_resume(run_id="r1", session_id="DIFFERENT")
     assert payload is None
     assert writer.peek_awaiting(session_id="S1") is not None
+
+
+def test_mark_expired_moves_awaiting_to_expired(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    writer.mark_expired(run_id="r1")
+    assert writer.peek_awaiting(session_id="S1") is None
+    with writer._lock:
+        row = writer._conn.execute(
+            "SELECT status FROM meta_skill_runs WHERE run_id=?",
+            ("r1",),
+        ).fetchone()
+    assert row["status"] == "expired"
+
+
+def test_mark_cancelled_records_reason_in_error_column(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    writer.mark_cancelled(run_id="r1", reason="user_cancel")
+    with writer._lock:
+        row = writer._conn.execute(
+            "SELECT status, error FROM meta_skill_runs WHERE run_id=?",
+            ("r1",),
+        ).fetchone()
+    assert row["status"] == "cancelled"
+    assert "user_cancel" in (row["error"] or "")
+
+
+def test_increment_parse_failures_returns_new_count(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    assert writer.increment_parse_failures(run_id="r1") == 1
+    assert writer.increment_parse_failures(run_id="r1") == 2
+    assert writer.increment_parse_failures(run_id="r1") == 3
+
+
+def test_increment_parse_failures_atomic_across_connections(tmp_path):
+    db = tmp_path / "test.sqlite"
+    backend = get_backend(f"sqlite:///{db}")
+    backend.apply_migrations(read_migrations("migrations"))
+
+    def _open():
+        c = sqlite3.connect(db, check_same_thread=False, timeout=30.0)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        return MetaRunWriter(c)
+
+    w1 = _open()
+    w2 = _open()
+    _seed_awaiting(w1, run_id="r1", session_key="S1")
+
+    seen = []
+    for w in (w1, w2, w1, w2, w1):
+        seen.append(w.increment_parse_failures(run_id="r1"))
+
+    assert seen == [1, 2, 3, 4, 5], (
+        f"increment_parse_failures must be atomic per connection; got {seen}"
+    )
+
+
+def test_increment_parse_failures_zero_for_non_awaiting(writer):
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("r9", "t", "d", "{}", "soft_meta_invoke", "S9", "ok", 0, "{}"),
+        )
+        writer._conn.commit()
+    assert writer.increment_parse_failures(run_id="r9") == 0
+
+
+def test_update_awaiting_partial_merges_filled_json(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    ok = writer.update_awaiting_partial(
+        run_id="r1",
+        filled_json='{"destination":"Tokyo"}',
+        awaiting_since=1700001000.0,
+    )
+    assert ok is True
+    with writer._lock:
+        row = writer._conn.execute(
+            "SELECT awaiting_filled_json, awaiting_since "
+            "FROM meta_skill_runs WHERE run_id=?",
+            ("r1",),
+        ).fetchone()
+    assert row["awaiting_filled_json"] == '{"destination":"Tokyo"}'
+    assert float(row["awaiting_since"]) == pytest.approx(1700001000.0)
+
+
+def test_update_awaiting_partial_rejects_non_awaiting(writer):
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("r9", "t", "d", "{}", "soft_meta_invoke", "S9", "ok", 0, "{}"),
+        )
+        writer._conn.commit()
+    ok = writer.update_awaiting_partial(
+        run_id="r9", filled_json="{}", awaiting_since=0.0,
+    )
+    assert ok is False
