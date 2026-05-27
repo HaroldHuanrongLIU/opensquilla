@@ -30,6 +30,7 @@ const ChatView = (() => {
   let _aborted = false;
   let _streamBubble = null;
   let _streamRaw = '';           // full accumulated text (for export)
+  let _streamGeneration = 0;
   let _segments = [];             // [{type:'text', raw:'', el:DOM}, {type:'tool', el:DOM}, ...]
   let _activeTextSeg = null;      // pointer to current text segment's DOM element
   let _activeTextRaw = '';        // raw text for current active segment only
@@ -3414,6 +3415,9 @@ const ChatView = (() => {
             last_task: { ...(rawPayload || {}), status: terminalStatus },
           });
         }
+        if (rawEvent === 'task.succeeded') {
+          _scheduleSucceededTaskTerminalSync(rawPayload);
+        }
       }
       const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);
       // Drop normalized terminal events from epochs we've already left behind
@@ -4238,6 +4242,18 @@ const ChatView = (() => {
       : '';
   }
 
+  function _scheduleSucceededTaskTerminalSync(payload = {}) {
+    const streamGeneration = _streamGeneration;
+    setTimeout(() => {
+      if (!_isCurrentSessionPayload(payload) || _isStaleEpoch(payload)) return;
+      _scheduleHistorySync();
+      if (_isStreaming && _streamGeneration === streamGeneration) {
+        _endStreaming();
+        _schedulePendingDrainAfterTerminal();
+      }
+    }, 75);
+  }
+
   function _taskTerminalAsSessionEvent(event, payload) {
     if (event === 'task.cancelled') {
       return {
@@ -4441,6 +4457,7 @@ const ChatView = (() => {
 
   function _startStreaming() {
     _isStreaming = true;
+    _streamGeneration += 1;
     _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
     _streamRaw = '';
     _segments = []; _activeTextSeg = null; _activeTextRaw = '';
