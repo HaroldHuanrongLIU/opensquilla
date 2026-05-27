@@ -1,5 +1,8 @@
+import threading
+
 import pytest
 
+from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import MemoryDurableReceipt
 from opensquilla.session.storage import SessionStorage
 
@@ -175,5 +178,92 @@ async def test_memory_durable_receipt_conflict_updates_mutable_fields(tmp_path):
         assert rows[0].attempt_count == 2
         assert rows[0].next_retry_at_ms == 200
         assert rows[0].updated_at >= first.updated_at
+    finally:
+        await storage.close()
+
+
+async def test_record_memory_checkpoint_preserves_distinct_failure_receipts(
+    tmp_path, monkeypatch
+):
+    import opensquilla.memory.checkpoint as checkpoint
+
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    manager = SessionManager(storage, checkpoint_workspace_dir=tmp_path / "workspace")
+    try:
+        key = "agent:main:webchat:abc"
+        await manager.create(key)
+        await manager.append_message(key, role="user", content="same checkpoint body")
+        errors = iter([RuntimeError("disk full"), RuntimeError("permission denied")])
+
+        def _fail_append(*args, **kwargs):
+            raise next(errors)
+
+        monkeypatch.setattr(checkpoint, "append_checkpoint_events", _fail_append)
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await manager.record_memory_checkpoint(key, turn_id="turn-failed")
+        with pytest.raises(RuntimeError, match="permission denied"):
+            await manager.record_memory_checkpoint(key, turn_id="turn-failed")
+
+        rows = await storage.list_memory_durable_receipts(
+            session_key=key,
+            status="checkpoint_failed",
+        )
+
+        assert len(rows) == 2
+        assert {row.reason for row in rows} == {"disk full", "permission denied"}
+        assert len({row.idempotency_key for row in rows}) == 2
+    finally:
+        await storage.close()
+
+
+async def test_record_memory_checkpoint_requires_explicit_checkpoint_workspace(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    manager = SessionManager(storage)
+    manager.workspace_dir = tmp_path / "dynamic-attribute"
+    try:
+        key = "agent:main:webchat:abc"
+        await manager.create(key)
+        await manager.append_message(key, role="user", content="checkpoint body")
+
+        with pytest.raises(RuntimeError, match="checkpoint workspace_dir is not configured"):
+            await manager.record_memory_checkpoint(key, turn_id="turn-no-workspace")
+
+        rows = await storage.list_memory_durable_receipts(
+            session_key=key,
+            status="checkpoint_failed",
+        )
+        assert len(rows) == 1
+        assert rows[0].reason == "checkpoint workspace_dir is not configured"
+        assert not (tmp_path / "dynamic-attribute").exists()
+    finally:
+        await storage.close()
+
+
+async def test_record_memory_checkpoint_writes_checkpoint_off_event_loop(
+    tmp_path, monkeypatch
+):
+    import opensquilla.memory.checkpoint as checkpoint
+
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    manager = SessionManager(storage, checkpoint_workspace_dir=tmp_path / "workspace")
+    event_loop_thread = threading.get_ident()
+    writer_thread_ids: list[int] = []
+    original_append = checkpoint.append_checkpoint_events
+    try:
+        key = "agent:main:webchat:abc"
+        await manager.create(key)
+        await manager.append_message(key, role="user", content="checkpoint body")
+
+        def _spy_append(*args, **kwargs):
+            writer_thread_ids.append(threading.get_ident())
+            return original_append(*args, **kwargs)
+
+        monkeypatch.setattr(checkpoint, "append_checkpoint_events", _spy_append)
+
+        await manager.record_memory_checkpoint(key, turn_id="turn-threaded")
+
+        assert writer_thread_ids
+        assert writer_thread_ids[0] != event_loop_thread
     finally:
         await storage.close()

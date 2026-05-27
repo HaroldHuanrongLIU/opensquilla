@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,9 +7,11 @@ import opensquilla.memory.checkpoint as checkpoint
 from opensquilla.memory.checkpoint import (
     CheckpointEvent,
     append_checkpoint_events,
+    build_checkpoint_events,
     checkpoint_event_hash,
     checkpoint_relative_path,
 )
+from opensquilla.provider import ContentBlockText, Message
 
 
 def _checkpoint_event(
@@ -75,6 +78,49 @@ def test_checkpoint_hash_is_stable_for_normalized_content() -> None:
 
     assert first == second
     assert len(first) == 64
+
+
+def test_build_checkpoint_events_preserves_content_and_reasoning_content() -> None:
+    message = Message(
+        role="assistant",
+        content="visible answer",
+        reasoning_content="private chain",
+    )
+
+    events = build_checkpoint_events(
+        session_key="agent:main:webchat:abc",
+        session_id="session-1",
+        entries=[message],
+        source="turn_runner",
+        turn_id="turn-1",
+    )
+
+    assert len(events) == 1
+    payload = json.loads(events[0].content)
+    assert payload == {
+        "content": "visible answer",
+        "reasoning_content": "private chain",
+    }
+    assert events[0].content_type == "json"
+
+
+def test_build_checkpoint_events_serializes_provider_content_blocks_as_json() -> None:
+    message = Message(
+        role="assistant",
+        content=[ContentBlockText(text="visible block")],
+    )
+
+    events = build_checkpoint_events(
+        session_key="agent:main:webchat:abc",
+        session_id="session-1",
+        entries=[message],
+        source="turn_runner",
+        turn_id="turn-1",
+    )
+
+    assert len(events) == 1
+    assert json.loads(events[0].content) == [{"type": "text", "text": "visible block"}]
+    assert events[0].content_type == "json"
 
 
 async def test_append_checkpoint_events_writes_jsonl_once(tmp_path):

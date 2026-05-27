@@ -181,10 +181,10 @@ class _FailingResultCompactionSessionManager(_ResultCompactionSessionManager):
 
 
 @pytest.fixture
-async def session_mgr():
+async def session_mgr(tmp_path):
     storage = SessionStorage(":memory:")
     await storage.connect()
-    mgr = SessionManager(storage)
+    mgr = SessionManager(storage, checkpoint_workspace_dir=tmp_path)
     yield mgr
     await storage.close()
 
@@ -1052,7 +1052,6 @@ async def test_preflight_exactly_at_threshold_does_not_compact() -> None:
 async def test_preflight_integration_with_real_session_manager(session_mgr, tmp_path) -> None:
     """Integration: pre-flight with real SessionManager compacts when over threshold."""
     mgr = session_mgr
-    mgr.workspace_dir = tmp_path
     key = "user:preflight-test"
     await mgr.create(key)
 

@@ -62,6 +62,41 @@ def checkpoint_event_hash(content: str) -> str:
     return hashlib.sha256(normalized).hexdigest()
 
 
+def _json_ready(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    return value
+
+
+def _serialize_checkpoint_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(_json_ready(value), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _entry_checkpoint_content(entry: Any) -> str:
+    content = getattr(entry, "content", None)
+    reasoning_content = getattr(entry, "reasoning_content", None)
+    if content is not None and reasoning_content:
+        return _serialize_checkpoint_content(
+            {
+                "content": _json_ready(content),
+                "reasoning_content": reasoning_content,
+            }
+        )
+    if content is not None:
+        return _serialize_checkpoint_content(content)
+    return _serialize_checkpoint_content(reasoning_content)
+
+
 def checkpoint_turn_id(entries: list[Any]) -> str:
     entry_ids = [
         int(entry_id)
@@ -138,11 +173,7 @@ def build_checkpoint_events(
     timestamp_ms = int(time() * 1000)
     for entry in entries:
         sequence = len(events) + 1
-        content = str(
-            getattr(entry, "content", None)
-            or getattr(entry, "reasoning_content", None)
-            or ""
-        )
+        content = _entry_checkpoint_content(entry)
         event_seed = (
             f"{session_key}:{resolved_turn_id}:{sequence}:"
             f"{getattr(entry, 'role', '')}:{checkpoint_event_hash(content)}"

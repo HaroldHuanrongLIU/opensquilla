@@ -1440,7 +1440,11 @@ async def build_services(
         Path(session_db_path).parent.mkdir(parents=True, exist_ok=True)
         storage = SessionStorage(session_db_path)
         await storage.connect()
-        session_manager = SessionManager(storage, agent_registry=agent_registry)
+        session_manager = SessionManager(
+            storage,
+            agent_registry=agent_registry,
+            checkpoint_workspace_dir=config.workspace_dir,
+        )
 
     # Wire session manager into tool layer (like set_scheduler, set_gateway_config)
     from opensquilla.tools.builtin.sessions import (

@@ -128,6 +128,7 @@ class SessionManager:
         time_prefix_tz: str | None = None,
         agent_registry: Any = None,
         task_runtime: Any = None,
+        checkpoint_workspace_dir: str | Path | None = None,
     ) -> None:
         self._storage = storage
         self._memory_sync_notify = memory_sync_notify
@@ -135,6 +136,11 @@ class SessionManager:
         self._time_prefix_tz = time_prefix_tz
         self._agent_registry = agent_registry
         self._task_runtime = task_runtime
+        self._checkpoint_workspace_dir = (
+            Path(checkpoint_workspace_dir).expanduser()
+            if checkpoint_workspace_dir is not None
+            else None
+        )
         # In-process epoch cache so _emit_to_subscribers can
         # read the current epoch without a DB round-trip on every event.
         # Invalidated (updated) whenever increment_epoch commits a new value.
@@ -763,6 +769,7 @@ class SessionManager:
             build_checkpoint_events,
             checkpoint_event_hash,
             checkpoint_turn_id,
+            serialize_checkpoint_event,
         )
 
         session_key = canonicalize_session_key(session_key)
@@ -785,17 +792,22 @@ class SessionManager:
             source=source,
             turn_id=resolved_turn_id,
         )
-        workspace = Path(
-            getattr(self, "workspace_dir", None)
-            or (default_opensquilla_home() / "workspace")
-        ).expanduser()
+        workspace = self._checkpoint_workspace_dir
+        event_body_hash = checkpoint_event_hash(
+            "\n".join(serialize_checkpoint_event(event) for event in events)
+        )
         failure_key = (
             f"checkpoint:{session_key}:{resolved_turn_id}:"
-            f"{checkpoint_event_hash(str(len(events)))}"
+            f"{event_body_hash}"
         )
         try:
-            result = append_checkpoint_events(workspace, events)
+            if workspace is None:
+                raise RuntimeError("checkpoint workspace_dir is not configured")
+            result = await asyncio.to_thread(append_checkpoint_events, workspace, events)
         except Exception as exc:
+            failure_key = (
+                f"{failure_key}:failed:{checkpoint_event_hash(str(exc))[:16]}"
+            )
             receipt = MemoryDurableReceipt(
                 session_key=session_key,
                 session_id=node.session_id,
