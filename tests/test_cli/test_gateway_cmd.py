@@ -126,7 +126,11 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
         f"Set memory key: {_env_hint('OPENAI_EMBEDDINGS_API_KEY')}".replace(" ", "")
         in compact
     )
-    assert f"opensquillaonboardstatus--config{target}" in compact
+    expected_config = str(target).replace("\\", "/")
+    assert (
+        f"opensquillaonboardstatus--config{expected_config}"
+        in compact.replace("\\", "/")
+    )
     assert "Traceback" not in output
 
 
