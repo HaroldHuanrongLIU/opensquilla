@@ -11,6 +11,12 @@ triggers:
   - "trip itinerary"
   - "travel itinerary"
   - "day-by-day travel"
+  - "days in"
+  - "day in"
+  - "plan my trip"
+  - "plan our trip"
+  - "plan a trip"
+  - "itinerary for"
   - "旅游计划"
   - "出差行程"
   - "行程安排"
@@ -24,57 +30,56 @@ provenance:
 composition:
   steps:
     - id: trip_collect
-      kind: user_input
-      clarify:
-        mode: form
-        intro: |
-          在开始规划之前，请先确认 4 件事 —— 我会用它生成完整行程。
-        nl_extract: true
-        fields:
-          - name: destination
-            type: string
-            required: true
-            prompt: "目的地（城市或地区）"
-            max_chars: 80
-          - name: days
-            type: int
-            required: true
-            min: 1
-            max: 30
-            prompt: "行程天数（1–30）"
-          - name: party_size
-            type: int
-            required: true
-            min: 1
-            max: 20
-            prompt: "出行人数（1–20）"
-          - name: budget
-            type: enum
-            choices: [budget, mid, premium]
-            default: mid
-            prompt: "预算档次（budget / mid / premium）"
-        cancel_keywords: ["算了", "取消", "cancel", "stop"]
-        timeout_hours: 24
+      kind: llm_chat
+      with:
+        system: "You extract travel requirements without asking a follow-up unless the destination or trip length is genuinely absent."
+        task: |
+          Extract a structured trip brief from the original user request.
+          Do NOT ask the user to confirm details that are already stated or
+          safely inferable. If a value is missing, make a conservative
+          assumption and mark it as ASSUMED. The next steps need a usable
+          contract, not a clarification question.
+
+          Do not invent exact calendar dates, weekdays, booking status, or
+          weather probabilities from vague timing such as "late June" or
+          "sometime next year". Preserve the user's wording when the year or
+          exact dates are absent.
+
+          Original user request:
+          {{ inputs.user_message | xml_escape | truncate(1400) }}
+
+          Return exactly:
+          DESTINATION: <city/region, or ASSUMED: ...>
+          DAYS: <integer or ASSUMED: ...>
+          DATES: <date range/season, or ASSUMED: ...>
+          PARTY: <party size/type, or ASSUMED: ...>
+          BUDGET: <budget|mid|premium, or ASSUMED: mid>
+          PACE: <relaxed|balanced|packed>
+          INTERESTS:
+            - <interest>
+          MUST_INCLUDE:
+            - <explicit user requirement>
+          ASSUMPTIONS:
+            - <assumption>
     - id: trip_preferences
       kind: llm_chat
       depends_on: [trip_collect]
       with:
-        system: "You expand user-confirmed travel facts into a structured planning contract."
+        system: "You expand extracted travel facts into a structured planning contract."
         task: |
-          Expand the user-confirmed travel facts into a full planning contract.
+          Expand the extracted travel facts into a full planning contract.
+          Never return a clarification question. If facts are uncertain, keep
+          the assumption explicit and continue with a practical default.
 
-          User-confirmed facts:
-          DESTINATION: {{ inputs.collected.trip_collect.destination | xml_escape }}
-          DAYS: {{ inputs.collected.trip_collect.days }}
-          PARTY: {{ inputs.collected.trip_collect.party_size }}
-          BUDGET: {{ inputs.collected.trip_collect.budget }}
+          Extracted facts:
+          {{ outputs.trip_collect | truncate(1200) }}
 
-          Original user request (context only, do NOT override confirmed facts):
+          Original user request:
           {{ inputs.user_message | xml_escape | truncate(1200) }}
 
           Return exactly:
           DESTINATION: <city/region>
-          DATES: <duration or date range>
+          DATES: <duration, date range, season, or ASSUMED value>
           PARTY: <party size/type>
           BUDGET: <budget level>
           PACE: <relaxed|balanced|packed>
@@ -107,6 +112,16 @@ composition:
           Extract itinerary constraints from weather and POI results: opening
           hours, transit time assumptions, weather risks, neighborhoods to
           group together, and any likely booking constraints.
+
+          Evidence boundary:
+          - Weather tools often return short-range/current forecasts. If the
+            trip timing is vague, seasonal, or outside the forecast window, do
+            not convert current weather into trip-day probabilities. Use
+            seasonal risk language and mark exact forecast as unavailable.
+          - If POI search is thin or missing, do not list restaurants, opening
+            hours, events, or booking requirements as verified.
+          - Preserve explicit mobility, dietary, fixed-booking, budget, and
+            rest constraints before adding optional attractions.
 
           Preferences:
           {{ outputs.trip_preferences | truncate(1200) }}
@@ -169,26 +184,34 @@ composition:
           Preserve concrete timings, neighborhoods, transit grouping, food
           ideas, weather constraints, and budget constraints. Do not open with
           "I researched" or imply live verification unless a tool result is
-          shown in the evidence notes. Keep each day to 5-7 highly actionable
+          shown in the evidence notes. Do not invent exact trip calendar dates,
+          weekdays, or daily rain percentages from vague timing such as
+          "late June" unless the user supplied exact dates and weather evidence
+          covers those dates. If weather evidence is short-range/current but
+          the trip is future or seasonal, say "seasonal planning assumption"
+          rather than "forecast". Keep each day to 5-7 highly actionable
           bullets or a compact schedule. Include:
           - a Route spine line for each day, e.g. Neighborhood A -> B -> C
           - no more than 2-3 main anchors per day unless the user requested a
             packed pace
           - an explicit pacing note: relaxed/balanced/packed and what to skip
             if tired
+          - one rest block or pacing reset per day for balanced/relaxed trips
           - transit-coherent neighborhood adjacency; avoid cross-city zigzags
           - relaxed version
           - efficient/packed version
           - bad-weather backup
-          - weather switch points: if rain/heavy heat, swap X for Y
-          - rough daily budget notes
+          - weather switch points: if rain/heavy heat, swap X for Y, framed as
+            seasonal risk unless exact forecast evidence covers the trip dates
+          - rough daily budget notes as ranges and flex levers, not false
+            precision
           - specific checks before booking, including opening-hours checks,
             timed-entry reservations, and transit-pass choice
           - mark specific restaurants, opening hours, and seasonal events as
             "verify before booking" unless they came from explicit search
             evidence in this run
-          - a short note that a styled HTML itinerary can be generated only if
-            the user explicitly asks for a file
+          - omit artifact generation suggestions unless the user explicitly
+            asked for an artifact or file
 
           If search or weather evidence is thin, state assumptions plainly
           instead of inventing sources. Include map/search links only as
