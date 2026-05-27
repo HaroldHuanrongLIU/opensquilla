@@ -1367,6 +1367,18 @@ async def _gateway_chat(model: str | None, session_id: str | None) -> None:
             active_state.transcript.add("user", user_input)
             active_state.transcript.add("assistant", result.text)
             active_state.usage.apply(result.usage)
+
+            # PR6: when the turn paused at a meta-skill user_input step,
+            # drop into the interactive form right away and submit the
+            # collected values as the next turn — feels like a single
+            # continuous chat from the user's perspective.
+            await _maybe_resume_clarify_form(
+                result,
+                client,
+                active_state,
+                elevated_state,
+                scope,
+            )
             return True
 
         await _run_concurrent_repl(
@@ -1376,6 +1388,89 @@ async def _gateway_chat(model: str | None, session_id: str | None) -> None:
         )
     finally:
         await client.close()
+
+
+async def _maybe_resume_clarify_form(
+    result: TurnResult,
+    client: _GatewayClientLike,
+    state: ChatSessionState,
+    elevated_state: dict[str, str | None],
+    scope: dict,
+) -> None:
+    """PR6 CLI bridge: after a turn returns with a meta-skill user_input
+    pause signal, render the interactive form, then submit the values
+    as the next turn so the DAG resumes inline.
+
+    If the user cancels the form (typed a cancel keyword or hit Ctrl-D),
+    we send the cancel keyword text back so meta_resolution's awaiting
+    branch terminates the run cleanly.
+
+    Empty submissions (zero collected fields) silently no-op — the
+    awaiting run stays in place; the user can answer freely next turn.
+    """
+    from opensquilla.cli.gateway_client import GatewayRPCError
+    from opensquilla.cli.repl.clarify_form import (
+        fields_to_chat_send_message,
+        prompt_clarify_form,
+    )
+
+    if result.clarify_request is None:
+        return
+
+    form_result = await prompt_clarify_form(result.clarify_request)
+
+    if form_result.cancelled:
+        # Send a configured cancel keyword (first one) so the awaiting
+        # branch marks the run as cancelled. If none configured, fall
+        # back to the literal "cancel" string — meta_resolution will
+        # treat it as a regular reply and a parse-failure strike, which
+        # is fine; the user can also hit Ctrl-C to abort entirely.
+        keywords = result.clarify_request.get("cancel_keywords") or []
+        cancel_text = keywords[0] if keywords else "cancel"
+        try:
+            cancel_result = await _stream_response_gateway(
+                client,
+                state.session_key,
+                cancel_text,
+                elevated_state,
+                chat_app=scope.get("chat_app"),
+            )
+        except GatewayRPCError as exc:
+            console.print(error_panel(str(exc)))
+            return
+        state.transcript.add("user", cancel_text)
+        state.transcript.add("assistant", cancel_result.text)
+        state.usage.apply(cancel_result.usage)
+        return
+
+    if not form_result.fields:
+        return
+
+    submission_text = fields_to_chat_send_message(form_result.fields)
+    if not submission_text:
+        return
+
+    try:
+        submit_result = await _stream_response_gateway(
+            client,
+            state.session_key,
+            submission_text,
+            elevated_state,
+            chat_app=scope.get("chat_app"),
+        )
+    except GatewayRPCError as exc:
+        console.print(error_panel(str(exc)))
+        return
+    state.transcript.add("user", submission_text)
+    state.transcript.add("assistant", submit_result.text)
+    state.usage.apply(submit_result.usage)
+    state.model = submit_result.model_after or state.model
+
+    # If the resumed turn paused again (multi-clarify chain or chat-mode
+    # next-field prompt), loop into the form once more.
+    await _maybe_resume_clarify_form(
+        submit_result, client, state, elevated_state, scope,
+    )
 
 
 async def _handle_gateway_slash_command(
@@ -2138,6 +2233,11 @@ async def _stream_response_gateway(
     cancelled = False
     artifacts: list[dict[str, Any]] = []
     model_after: str | None = None
+    # PR6: Capture meta-skill user_input paused signal from the
+    # scheduler-side synthetic ToolResultEvent. Surfaced on TurnResult
+    # so the outer REPL can render an interactive form.
+    clarify_request: dict[str, Any] | None = None
+    clarify_run_id: str = ""
 
     approval_surface = (
         chat_app.surface
@@ -2162,6 +2262,19 @@ async def _stream_response_gateway(
                             event.get("tool_use_id") or event.get("toolUseId"),
                         )
                     elif event_name == "session.event.tool_result":
+                        # PR6: detect the meta-skill user_input pause
+                        # signal carried in the synthetic ToolResultEvent.
+                        # The scheduler embeds the surface protocol
+                        # schema in ``arguments.clarify_schema``.
+                        _tr_args = event.get("arguments") or event.get("input") or {}
+                        if (
+                            isinstance(_tr_args, dict)
+                            and _tr_args.get("kind") == "user_input"
+                            and _tr_args.get("paused") is True
+                            and isinstance(_tr_args.get("clarify_schema"), dict)
+                        ):
+                            clarify_request = _tr_args["clarify_schema"]
+                            clarify_run_id = str(_tr_args.get("run_id") or "")
                         await _maybe_handle_approval(
                             event.get("result"),
                             renderer,
@@ -2213,6 +2326,8 @@ async def _stream_response_gateway(
         cancelled=cancelled,
         artifacts=artifacts,
         model_after=model_after,
+        clarify_request=clarify_request,
+        clarify_run_id=clarify_run_id,
     )
 
 

@@ -240,6 +240,15 @@ class TurnResult:
     cancelled: bool = False
     artifacts: list[dict[str, Any]] | None = None
     model_after: str | None = None
+    # PR6: when set, the gateway told us the meta-skill paused at a
+    # ``user_input`` step. ``clarify_request`` is the surface payload
+    # dict from ``opensquilla.skills.meta.clarify_schema.schema_to_protocol``
+    # (forwarded verbatim from the scheduler-side ToolResultEvent), and
+    # ``clarify_run_id`` is the awaiting run id. The REPL outer loop
+    # checks these and drops into the interactive form before
+    # prompting the user for a free-form next turn.
+    clarify_request: dict[str, Any] | None = None
+    clarify_run_id: str = ""
 
 
 def _summarize_args(name: str, args: dict | None) -> str:

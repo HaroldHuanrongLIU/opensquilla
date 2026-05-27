@@ -24,7 +24,7 @@ from opensquilla.persistence.meta_run_writer import (
     open_meta_run_writer,
 )
 from opensquilla.skills.meta.parser import parse_meta_plan
-from opensquilla.skills.meta.types import MetaPlan, MetaStep, RouteCase
+from opensquilla.skills.meta.types import MetaPlan
 
 meta_app = typer.Typer(
     help="Meta-skill operations: runs, replay, proposals.",
@@ -238,29 +238,14 @@ def runs_failures(
 
 
 def _deserialize_plan(snapshot_json: str) -> MetaPlan:
-    data = json.loads(snapshot_json)
-    steps = tuple(
-        MetaStep(
-            id=s["id"],
-            skill=s["skill"],
-            kind=s["kind"],
-            with_args=s["with_args"],
-            depends_on=tuple(s["depends_on"]),
-            route=tuple(RouteCase(when=r["when"], to=r["to"]) for r in s["route"]),
-            output_choices=tuple(s["output_choices"]),
-            tool=s["tool"],
-            tool_args=s["tool_args"],
-            tool_allowlist=tuple(s["tool_allowlist"]),
-            on_failure=s["on_failure"],
-        )
-        for s in data["steps"]
-    )
-    return MetaPlan(
-        name=data["name"],
-        triggers=tuple(data["triggers"]),
-        priority=data["priority"],
-        steps=steps,
-    )
+    """Restore a MetaPlan snapshot from its JSON column.
+
+    Delegates to ``plan_serde.from_jsonable`` so we honour the envelope
+    format (``{"v": 1, "plan": {...}}``) PR2 introduced and still accept
+    legacy snapshots written before PR2 (which used the bare plan dict).
+    """
+    from opensquilla.skills.meta.plan_serde import from_jsonable
+    return from_jsonable(json.loads(snapshot_json))
 
 
 def _print_dag(
