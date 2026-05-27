@@ -829,6 +829,8 @@ class SessionStorage:
             raise ValueError(
                 f"Unknown memory durable receipt fields: {', '.join(unknown)}"
             )
+        if "session_key" in fields:
+            fields["session_key"] = canonicalize_session_key(fields["session_key"])
         fields.setdefault("updated_at", _now_ms())
         assignments = ", ".join(f"{name} = ?" for name in fields)
         values = [_serialize(value) for value in fields.values()]
