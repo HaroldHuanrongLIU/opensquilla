@@ -152,6 +152,41 @@ def test_llm_chat_step_lifecycle(writer: MetaRunWriter) -> None:
     assert steps[0].output_text == "baseline-output"
 
 
+def test_user_input_step_lifecycle(writer: MetaRunWriter) -> None:
+    plan = MetaPlan(
+        name="demo",
+        triggers=("demo trigger",),
+        priority=50,
+        steps=(MetaStep(id="collect", skill="collect", kind="user_input"),),
+    )
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "x"},
+        session_key=None,
+        turn_id=None,
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[0],
+        effective_skill="collect",
+        rendered_inputs={"topic": "travel"},
+    )
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="collect",
+        status="ok",
+        output_text="collected",
+    )
+
+    steps = writer.get_steps(run_id)
+    assert len(steps) == 1
+    assert steps[0].step_kind == "user_input"
+    assert steps[0].status == "ok"
+    assert steps[0].output_text == "collected"
+
+
 def test_on_step_failover_records_substitution(writer: MetaRunWriter) -> None:
     """C3: original failed step gets status='substituted' + substitute_step_id."""
     plan = _make_plan()
