@@ -35,7 +35,7 @@ from opensquilla.skills.meta.templating import (
     render_with_args,
     resolve_route,
 )
-from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
+from opensquilla.skills.meta.types import MetaMatch, MetaPaused, MetaResult, MetaStep
 
 log = structlog.get_logger(__name__)
 
@@ -139,7 +139,7 @@ async def run_dag(
     event_queue: asyncio.Queue[
         tuple[
             str,
-            AgentEvent | MetaResult | _StepDone | _FailoverTriggered | Exception,
+            AgentEvent | MetaResult | _StepDone | _FailoverTriggered | MetaPaused | Exception,
         ]
     ] = asyncio.Queue()
     scope_prefix = usage_scope_prefix or f"meta:{match.plan.name}:{id(match)}"
@@ -320,6 +320,13 @@ async def run_dag(
                 ),
             )
             await event_queue.put((step.id, _StepDone(text=final_text)))
+        except MetaPaused as paused:
+            # Pause is not failure. Stash on the queue so the main loop
+            # can shut down siblings cleanly and emit a single terminal
+            # MetaResult(paused=True). on_failure substitute is intentionally
+            # NOT triggered (design §8.1).
+            await event_queue.put((step.id, paused))
+            return
         except asyncio.CancelledError:
             # Re-raise so gather/wait see the cancellation, but the
             # queue drain in iter_events will not see a _StepDone for
@@ -477,6 +484,38 @@ async def run_dag(
                     unstarted.add(item.substitute_step_id)
                 _spawn_ready()
                 continue
+            if isinstance(item, MetaPaused):
+                # The per-step task already emitted a ToolUseStartEvent
+                # before invoking dispatch_step_stream. Without a matching
+                # ToolResultEvent, Web UI tool cards stay "in flight" forever.
+                # Emit a synthetic paused ToolResultEvent first so the card
+                # closes cleanly.
+                paused_use_id = f"meta_step_{item.step_id}"
+                paused_tool_name = f"meta-step:{item.step_id}"
+                yield ToolResultEvent(
+                    tool_use_id=paused_use_id,
+                    tool_name=paused_tool_name,
+                    result=f"paused: awaiting user input (step {item.step_id!r})",
+                    is_error=False,
+                    arguments={
+                        "kind": "user_input",
+                        "paused": True,
+                        "step": item.step_id,
+                    },
+                )
+                # Cancel all in-flight sibling tasks.
+                for task in running.values():
+                    if not task.done():
+                        task.cancel()
+                if running:
+                    await asyncio.gather(*running.values(), return_exceptions=True)
+                yield MetaResult(
+                    ok=False,
+                    paused=True,
+                    paused_payload=item,
+                    step_outputs=dict(outputs),
+                )
+                return
             if isinstance(item, Exception):
                 failure = item
                 failed_step_id = step_id
