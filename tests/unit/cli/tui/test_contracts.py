@@ -349,6 +349,25 @@ def test_tui_stream_uses_tui_prompt_toolbar_context() -> None:
     assert not _imports_from_module(stream_path, "opensquilla.cli.repl.prompt")
 
 
+def test_import_source_parser_reads_utf8_source(monkeypatch, tmp_path) -> None:
+    source_path = tmp_path / "sample.py"
+    source_path.write_text(
+        "from opensquilla.cli.tui.terminal import prompt\n",
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+    encodings: list[str | None] = []
+
+    def read_text(self: Path, *args, **kwargs) -> str:
+        encodings.append(kwargs.get("encoding"))
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert _imports_from_module(source_path, "opensquilla.cli.tui.terminal")
+    assert encodings == ["utf-8"]
+
+
 def test_tui_prompt_uses_tui_chat_application_driver() -> None:
     prompt_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal/prompt.py"
 
@@ -780,7 +799,7 @@ def test_tui_owned_compat_modules_do_not_import_repl_modules() -> None:
 
 def _imports_from_module(path: Path, module_name: str) -> bool:
     package_name, _, imported_name = module_name.rpartition(".")
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(alias.name == module_name for alias in node.names):

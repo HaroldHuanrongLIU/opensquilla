@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from opensquilla.artifacts import artifact_payload
+from opensquilla.artifacts import artifact_payload, strip_artifact_markers_from_text
 
 
 def transcript_entries_to_chat_messages(
@@ -35,11 +35,7 @@ def transcript_entries_to_chat_messages(
                             if isinstance(item, dict)
                         ]
                         if artifacts:
-                            from opensquilla.channels.artifact_delivery import (  # noqa: PLC0415
-                                strip_artifact_markers_from_channel_text,
-                            )
-
-                            content = strip_artifact_markers_from_channel_text(content)
+                            content = strip_artifact_markers_from_text(content)
             except (ValueError, KeyError):
                 pass
         if content and content.lstrip().startswith("[ContentBlock"):
@@ -57,9 +53,7 @@ def transcript_entries_to_chat_messages(
             "text": content,
             "timestamp": getattr(entry, "created_at", None),
             "provenance_kind": getattr(entry, "provenance_kind", None),
-            "provenance_source_session_key": getattr(
-                entry, "provenance_source_session_key", None
-            ),
+            "provenance_source_session_key": getattr(entry, "provenance_source_session_key", None),
             "provenance_source_tool": getattr(entry, "provenance_source_tool", None),
         }
         if attachments:
@@ -73,9 +67,7 @@ def transcript_entries_to_chat_messages(
             if model:
                 msg["model"] = model
             input_tokens = int(usage.get("input_tokens") or usage.get("inputTokens") or 0)
-            output_tokens = int(
-                usage.get("output_tokens") or usage.get("outputTokens") or 0
-            )
+            output_tokens = int(usage.get("output_tokens") or usage.get("outputTokens") or 0)
             msg["input"] = input_tokens
             msg["output"] = output_tokens
             msg["input_tokens"] = input_tokens
