@@ -225,3 +225,40 @@ async def test_meta_paused_does_not_trigger_on_failure_substitute():
         pass
 
     assert rescue_ran is False
+
+
+@pytest.mark.asyncio
+async def test_resume_from_skips_already_completed_steps():
+    """When `seed_outputs` is set, steps whose id is in seed_outputs
+    are treated as already-finished and not dispatched."""
+    plan = MetaPlan(
+        name="t",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(id="a", skill="a", kind="agent"),
+            MetaStep(id="b", skill="b", kind="agent", depends_on=("a",)),
+        ),
+    )
+
+    dispatched: list[str] = []
+
+    async def _dispatch(step, effective_skill, match_inputs, outputs):
+        dispatched.append(step.id)
+        yield _StepDone(text=f"out-{step.id}", status="ok")
+
+    match = MetaMatch(plan=plan, inputs={"user_message": "hi"})
+
+    seed_outputs = {"a": "previously completed"}
+
+    async for ev in run_dag(
+        match,
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_yield_skill_view,
+        seed_outputs=seed_outputs,
+    ):
+        pass
+
+    # 'a' was skipped (already in outputs); 'b' ran.
+    assert "a" not in dispatched
+    assert "b" in dispatched

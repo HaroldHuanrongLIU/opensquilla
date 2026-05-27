@@ -61,6 +61,7 @@ async def run_dag(
     usage_tracker: Any | None = None,
     session_key: str | None = None,
     usage_scope_prefix: str | None = None,
+    seed_outputs: dict[str, str] | None = None,
 ) -> AsyncIterator[AgentEvent | MetaResult]:
     """Run the plan and stream a flat sequence of events for the UI.
 
@@ -98,7 +99,7 @@ async def run_dag(
     Callback exceptions are swallowed and logged at warning level —
     observer bugs must never break the scheduler.
     """
-    outputs: dict[str, str] = {}
+    outputs: dict[str, str] = dict(seed_outputs) if seed_outputs else {}
     try:
         ordered = list(topological_order(match.plan.steps))
     except Exception as exc:  # noqa: BLE001
@@ -112,7 +113,7 @@ async def run_dag(
 
     steps_by_id: dict[str, MetaStep] = {s.id: s for s in ordered}
     pending_deps: dict[str, set[str]] = {
-        s.id: set(s.depends_on) for s in ordered
+        s.id: set(s.depends_on) - set(outputs.keys()) for s in ordered
     }
     # Steps that are *only* reachable as another step's ``on_failure``
     # substitute must not run autonomously — they exist on the DAG so
@@ -123,7 +124,9 @@ async def run_dag(
     substitute_only: set[str] = {
         s.on_failure for s in ordered if s.on_failure
     }
-    unstarted: set[str] = set(steps_by_id.keys()) - substitute_only
+    unstarted: set[str] = (
+        set(steps_by_id.keys()) - substitute_only - set(outputs.keys())
+    )
     running: dict[str, asyncio.Task[None]] = {}
     # Aliases populated when a step fails over: maps the substitute step
     # id to the original failed step id. On the substitute's ``_StepDone``
