@@ -50,7 +50,6 @@ site/
 /plugins/
 crontab-*
 ~/
-/docs/
 /reference-*
 /reference-mem
 /bench-mem
