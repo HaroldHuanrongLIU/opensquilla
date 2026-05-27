@@ -364,6 +364,7 @@ class _ToolResultHandler:
                     segment.get("type") == "tool_use"
                     and segment.get("tool_use_id") == event.tool_use_id
                 ):
+                    segment["name"] = event.tool_name
                     segment["input"] = _persisted_tool_use_input(
                         event.tool_name,
                         event.tool_use_id,
