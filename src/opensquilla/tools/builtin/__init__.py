@@ -21,6 +21,7 @@ _NAMES = [
     "meta_tools",
     "nodes",
     "patch",
+    "router_control",
     "sessions",
     "session_search",
     "shell",

@@ -89,6 +89,17 @@ class ToolResultEvent:
 
 
 @dataclass
+class RouterControlReplayEvent:
+    kind: Literal["router_control_replay"] = field(default="router_control_replay", init=False)
+    action: str = ""
+    target_tier: str | None = None
+    target_model: str | None = None
+    target_provider: str | None = None
+    target_id: str | None = None
+    replay_depth: int = 0
+
+
+@dataclass
 class ArtifactEvent:
     kind: Literal["artifact"] = "artifact"
     id: str = ""
@@ -204,6 +215,7 @@ AgentEvent = (
     | RunHeartbeatEvent
     | ToolUseStartEvent
     | ToolResultEvent
+    | RouterControlReplayEvent
     | ArtifactEvent
     | StateChangeEvent
     | ErrorEvent

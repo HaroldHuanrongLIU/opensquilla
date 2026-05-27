@@ -19,6 +19,7 @@ import structlog
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
 from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
+from opensquilla.router_control import RouterControlHoldStore
 from opensquilla.squilla_router.controller import (
     derive_prompt_policy,
     derive_thinking_mode,
@@ -843,6 +844,43 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     valid_tiers = [name for name, tier in tiers.items() if not tier.get("image_only", False)]
     if not valid_tiers:
         return ctx
+
+    hold_store = ctx.metadata.get("router_control_hold_store")
+    if isinstance(hold_store, RouterControlHoldStore):
+        hold = hold_store.get_valid(ctx.session_key, decrement=True)
+        if hold is not None and hold.tier in tiers and hold.tier in valid_tiers:
+            decision = RoutingDecision(
+                tier=hold.tier,
+                model=hold.model,
+                confidence=1.0,
+                source="router_control_hold",
+            )
+            ctx.metadata["baseline_model"] = ctx.model
+            ctx.model = decision.model
+            ctx.metadata["routed_tier"] = decision.tier
+            ctx.metadata["routed_model"] = decision.model
+            ctx.metadata["routing_applied"] = True
+            ctx.metadata["applied_model"] = ctx.model
+            ctx.metadata["routing_confidence"] = decision.confidence
+            ctx.metadata["routing_source"] = decision.source
+            ctx.metadata["router_control_hold_applied"] = True
+            ctx.metadata["router_control_action"] = "set_hold"
+            ctx.metadata["router_control_target_tier"] = hold.tier
+            ctx.metadata["router_control_target_model"] = hold.model
+            ctx.metadata["router_control_target_provider"] = hold.provider
+            ctx.metadata["router_control_evidence"] = hold.evidence
+            if hold.duplicate_model_resolution:
+                ctx.metadata["router_control_duplicate_model_resolution"] = True
+            ctx.metadata.update(_compute_savings(decision.model, tiers))
+            _record_thinking_metadata(ctx, router_cfg, tiers[decision.tier])
+            log.debug(
+                "squilla_router.router_control_hold_applied",
+                tier=decision.tier,
+                model=decision.model,
+                session=ctx.session_key,
+            )
+            return ctx
+
     strategy = _get_strategy(router_cfg)
     strategy_name = _strategy_name(router_cfg)
     defer_history = bool(ctx.metadata.get(_DEFER_ROUTING_HISTORY_KEY))

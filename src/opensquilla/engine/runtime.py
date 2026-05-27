@@ -108,6 +108,7 @@ from opensquilla.engine.types import (
     AgentEvent,
     DoneEvent,
     ErrorEvent,
+    RouterControlReplayEvent,
     ThinkingLevel,
     ToolResultEvent,
     WarningEvent,
@@ -135,6 +136,10 @@ from opensquilla.provider import (
     ProviderRecoveryAction,
     classify_provider_error,
     decide_recovery_action,
+)
+from opensquilla.router_control import (
+    RouterControlHoldStore,
+    render_router_control_prompt_block,
 )
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
 from opensquilla.session.compaction_lifecycle import (
@@ -1306,6 +1311,7 @@ class TurnRunner:
         self._session_flush_service = session_flush_service
         self._diagnostics_state = diagnostics_state
         self._meta_run_writer = meta_run_writer
+        self._router_control_hold_store = RouterControlHoldStore()
         # TurnHook surface. The default trace hook reproduces the inline trace
         # event behavior while keeping the event sink replaceable at construction.
         if turn_hooks is None:
@@ -1676,6 +1682,7 @@ class TurnRunner:
         bootstrap_context_mode: str | None = None,
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
+        router_control_replay_depth: int = 0,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn with full orchestration.
 
@@ -1695,6 +1702,10 @@ class TurnRunner:
             tool_context,
             session_key=session_key,
             tool_run_budget_key=f"{session_key}:{uuid.uuid4().hex}",
+            router_control_config=getattr(self._config, "squilla_router", None),
+            router_control_hold_store=self._router_control_hold_store,
+            router_control_replay_depth=router_control_replay_depth,
+            router_control_turn_hold_applied=False,
         )
         # Re-entry detection: check whether this call chain already owns the
         # session lock (gateway path: TaskRuntime._execute holds the shared
@@ -1733,6 +1744,7 @@ class TurnRunner:
                     bootstrap_context_mode=bootstrap_context_mode,
                     no_memory_capture=no_memory_capture,
                     ingress_pipeline_steps=ingress_pipeline_steps,
+                    router_control_replay_depth=router_control_replay_depth,
                 ):
                     yield event
             finally:
@@ -1771,6 +1783,7 @@ class TurnRunner:
                         bootstrap_context_mode=bootstrap_context_mode,
                         no_memory_capture=no_memory_capture,
                         ingress_pipeline_steps=ingress_pipeline_steps,
+                        router_control_replay_depth=router_control_replay_depth,
                     ):
                         yield event
                 finally:
@@ -1803,6 +1816,7 @@ class TurnRunner:
         bootstrap_context_mode: str | None = None,
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
+        router_control_replay_depth: int = 0,
     ) -> AsyncIterator[AgentEvent]:
         # Observability: bracket turn setup + stream loop with monotonic clock
         # so latency_ms reflects the full turn.
@@ -1978,6 +1992,15 @@ class TurnRunner:
                 resolved=resolved_model,
                 squilla_router_tier=pa_out.squilla_router_tier,
             )
+            if tool_context is not None:
+                tool_context.router_control_config = getattr(
+                    self._config, "squilla_router", None
+                )
+                tool_context.router_control_hold_store = self._router_control_hold_store
+                tool_context.router_control_replay_depth = router_control_replay_depth
+                tool_context.router_control_turn_hold_applied = bool(
+                    turn.metadata.get("router_control_hold_applied")
+                )
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,
@@ -2095,8 +2118,43 @@ class TurnRunner:
                 state=stream_state,
                 tool_context=tool_context,
             )
+            router_control_replay_event: RouterControlReplayEvent | None = None
             async for event in self._stream_consumer_stage.run(stream_inp):
+                if isinstance(event, RouterControlReplayEvent):
+                    router_control_replay_event = event
+                    yield event
+                    break
                 yield event
+            if router_control_replay_event is not None:
+                async for replayed_event in self._run_turn(
+                    message,
+                    session_key,
+                    agent_id,
+                    model,
+                    attachments,
+                    tool_context,
+                    timeout=timeout,
+                    max_iterations=max_iterations,
+                    iteration_timeout=iteration_timeout,
+                    tool_timeout=tool_timeout,
+                    request_timeout=request_timeout,
+                    max_provider_retries=max_provider_retries,
+                    length_capped_continuations=length_capped_continuations,
+                    input_mode=input_mode,
+                    persist_input=False,
+                    input_provenance=input_provenance,
+                    history_has_persisted_user=True,
+                    session_intent=session_intent,
+                    semantic_message=semantic_message,
+                    run_kind=run_kind,
+                    heartbeat_ack_max_chars=heartbeat_ack_max_chars,
+                    bootstrap_context_mode=bootstrap_context_mode,
+                    no_memory_capture=no_memory_capture,
+                    ingress_pipeline_steps=ingress_pipeline_steps,
+                    router_control_replay_depth=router_control_replay_depth + 1,
+                ):
+                    yield replayed_event
+                return
             # Read terminal state off the shared _StreamState. The
             # four pass-by-reference lists were mutated in place, so
             # this preserves the harness's read-after-stream
@@ -3339,6 +3397,12 @@ class TurnRunner:
         )
         if volatile_block:
             dynamic_blocks.append(volatile_block)
+        if tool_defs and any(getattr(td, "name", "") == "router_control" for td in tool_defs):
+            router_block = render_router_control_prompt_block(
+                getattr(self._config, "squilla_router", None)
+            )
+            if router_block:
+                dynamic_blocks.append(f"## Router Control\n\n{router_block}")
 
         if dynamic_blocks:
             return base_prompt, "\n\n".join(dynamic_blocks)
@@ -3491,12 +3555,9 @@ class TurnRunner:
             )
 
         async def _bounded_apply_squilla_router(turn: TurnContext) -> TurnContext:
-            async def _run_router_step() -> TurnContext:
-                return await apply_squilla_router(_copy_router_turn(turn))
-
             try:
                 routed = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: asyncio.run(_run_router_step())),
+                    apply_squilla_router(_copy_router_turn(turn)),
                     timeout=router_timeout,
                 )
                 return commit_deferred_router_history(routed)
@@ -3505,7 +3566,10 @@ class TurnRunner:
 
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 
-        initial_metadata: dict[str, Any] = {"skill_loader": self._skill_loader}
+        initial_metadata: dict[str, Any] = {
+            "skill_loader": self._skill_loader,
+            "router_control_hold_store": self._router_control_hold_store,
+        }
         if ingress_pipeline_steps:
             initial_metadata["pipeline_steps"] = list(ingress_pipeline_steps)
         if prev_assistant_text:
