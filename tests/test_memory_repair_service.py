@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -371,6 +372,81 @@ async def test_memory_repair_run_uses_target_path_for_task7_flush_receipt(tmp_pa
         assert rows[0].target_path == "memory/.raw_fallbacks/raw.md"
         assert rows[0].status == "repair_done"
         assert flush_service.calls[0][0][0].content == "task7 marker"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_repair_run_skips_future_retry_rows_until_due(tmp_path):
+    from opensquilla.gateway.memory_repair_service import run_memory_repair_once
+
+    raw_dir = tmp_path / "memory" / ".raw_fallbacks"
+    raw_dir.mkdir(parents=True)
+    statuses = ("repair_pending", "distill_failed", "flush_failed")
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    flush_service = _FlushService()
+    future_retry = int(time.time() * 1000) + 60 * 60 * 1000
+    past_retry = int(time.time() * 1000) - 1000
+
+    class _SessionManager:
+        def __init__(self) -> None:
+            self.storage = storage
+
+    try:
+        for index, status in enumerate(statuses, start=1):
+            path = f"memory/.raw_fallbacks/{status}.md"
+            (raw_dir / f"{status}.md").write_text(
+                f"# Raw flush ({status})\n\nuser: {status} marker\n",
+                encoding="utf-8",
+            )
+            await storage.upsert_memory_durable_receipt(
+                MemoryDurableReceipt(
+                    session_key=f"agent:main:webchat:s{index}",
+                    session_id=f"session-{index}",
+                    scope="repair",
+                    source_path=path,
+                    idempotency_key=f"repair:{status}",
+                    status=status,
+                    reason=status,
+                    next_retry_at_ms=future_retry,
+                )
+            )
+
+        skipped = await run_memory_repair_once(
+            session_manager=_SessionManager(),
+            flush_service=flush_service,
+            memory_roots={"main": tmp_path},
+            agent_id="main",
+            limit=5,
+        )
+        future_rows = await storage.list_memory_durable_receipts(limit=10)
+
+        assert skipped == []
+        assert flush_service.calls == []
+        assert {row.status for row in future_rows} == set(statuses)
+
+        for row in future_rows:
+            await storage.update_memory_durable_receipt(
+                row.receipt_id,
+                next_retry_at_ms=past_retry,
+            )
+
+        repaired = await run_memory_repair_once(
+            session_manager=_SessionManager(),
+            flush_service=flush_service,
+            memory_roots={"main": tmp_path},
+            agent_id="main",
+            limit=5,
+        )
+        due_rows = await storage.list_memory_durable_receipts(limit=10)
+
+        assert [result["status"] for result in repaired] == [
+            "repaired",
+            "repaired",
+            "repaired",
+        ]
+        assert len(flush_service.calls) == 3
+        assert {row.status for row in due_rows} == {"repair_done"}
     finally:
         await storage.close()
 

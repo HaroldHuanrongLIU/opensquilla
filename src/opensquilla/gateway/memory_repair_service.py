@@ -251,17 +251,31 @@ def raw_fallback_rows(root: Path, *, include_repaired: bool = False) -> list[dic
     return rows
 
 
-async def list_repair_queue(storage: Any, limit: int = 100) -> list[MemoryDurableReceipt]:
+async def list_repair_queue(
+    storage: Any,
+    limit: int = 100,
+    *,
+    due_only: bool = False,
+    now_ms: int | None = None,
+) -> list[MemoryDurableReceipt]:
     limit = max(0, int(limit))
     if limit == 0:
         return []
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     conn = getattr(storage, "conn", None)
     if conn is not None:
         placeholders = ", ".join("?" for _ in _REPAIR_QUEUE_STATUSES)
+        due_clause = ""
+        params: list[Any] = [*_REPAIR_QUEUE_STATUSES]
+        if due_only:
+            due_clause = "AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)"
+            params.append(now_ms)
+        params.append(limit)
         async with conn.execute(
             f"""
             SELECT * FROM memory_durable_receipts
             WHERE status IN ({placeholders})
+            {due_clause}
             ORDER BY
                 next_retry_at_ms IS NOT NULL ASC,
                 next_retry_at_ms ASC,
@@ -269,7 +283,7 @@ async def list_repair_queue(storage: Any, limit: int = 100) -> list[MemoryDurabl
                 rowid ASC
             LIMIT ?
             """,
-            (*_REPAIR_QUEUE_STATUSES, limit),
+            params,
         ) as cur:
             sql_rows = await cur.fetchall()
         return [MemoryDurableReceipt(**dict(row)) for row in sql_rows]
@@ -281,6 +295,13 @@ async def list_repair_queue(storage: Any, limit: int = 100) -> list[MemoryDurabl
     scan_limit = max(limit, 1000)
     for status in _REPAIR_QUEUE_STATUSES:
         receipt_rows.extend(await list_receipts(status=status, limit=scan_limit))
+    if due_only:
+        receipt_rows = [
+            row
+            for row in receipt_rows
+            if getattr(row, "next_retry_at_ms", None) is None
+            or int(getattr(row, "next_retry_at_ms", 0) or 0) <= now_ms
+        ]
     receipt_rows.sort(
         key=lambda row: (
             getattr(row, "next_retry_at_ms", None) is not None,
@@ -547,7 +568,7 @@ async def run_memory_repair_once(
     if root is not None:
         await import_legacy_raw_fallback_receipts(storage, root, agent_id=agent_id)
     if storage is not None:
-        queue_rows = await list_repair_queue(storage, limit=scan_limit)
+        queue_rows = await list_repair_queue(storage, limit=scan_limit, due_only=True)
         if "path" in params:
             selected = raw_fallback_rel_path(str(params.get("path") or "")).as_posix()
             queue_rows = [
@@ -576,8 +597,7 @@ async def run_memory_repair_once(
                     agent_id=agent_id,
                 )
             )
-        if "path" in params or results:
-            return results
+        return results
 
     compaction_sources = []
     if storage is None and "path" not in params:
