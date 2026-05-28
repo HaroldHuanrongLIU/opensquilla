@@ -11,7 +11,6 @@ from opensquilla.gateway.memory_repair_service import (
     import_legacy_raw_fallback_receipts,
     list_repair_queue,
     parse_raw_fallback_entries,
-    repair_receipt_path,
     repair_receipt_to_wire,
     run_memory_repair_once,
 )
@@ -547,14 +546,12 @@ async def _handle_memory_repair_list(
         root = _memory_root(memory_manager).resolve()
         await import_legacy_raw_fallback_receipts(storage, root, agent_id=agent_id)
     if storage is not None and not has_compaction_selector:
-        rows = await list_repair_queue(storage, limit=limit)
-        if "path" in params:
-            selected = _raw_fallback_rel_path(str(params.get("path") or ""))
-            rows = [
-                row
-                for row in rows
-                if repair_receipt_path(row) == selected
-            ]
+        selected = (
+            _raw_fallback_rel_path(str(params.get("path") or ""))
+            if "path" in params
+            else None
+        )
+        rows = await list_repair_queue(storage, limit=limit, path=selected)
         items = [repair_receipt_to_wire(row) for row in rows[:limit]]
     else:
         rows = await _repair_summaries(manager, agent_id=agent_id, params=params, limit=limit)

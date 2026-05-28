@@ -777,6 +777,55 @@ async def test_memory_repair_admin_list_uses_durable_ledger_queue(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_memory_repair_admin_list_path_filter_searches_beyond_page_limit(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    try:
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-1",
+                scope="repair",
+                source_path="memory/.raw_fallbacks/first.md",
+                idempotency_key="repair:first.md",
+                status="repair_pending",
+                reason="parse_failed_archived",
+                created_at=1,
+            )
+        )
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s2",
+                session_id="session-2",
+                scope="repair",
+                source_path="memory/.raw_fallbacks/second.md",
+                idempotency_key="repair:second.md",
+                status="repair_pending",
+                reason="parse_failed_archived",
+                created_at=2,
+            )
+        )
+        session_manager = FakeStorageRepairSessionManager(storage)
+        ctx = _ctx(session_manager=session_manager)
+
+        listed = await get_dispatcher().dispatch(
+            "rr-path-limit",
+            "memory.repair.list",
+            {
+                "agentId": "main",
+                "limit": 1,
+                "path": "memory/.raw_fallbacks/second.md",
+            },
+            ctx,
+        )
+
+        assert listed.error is None, listed.error
+        assert listed.payload["count"] == 1
+        assert listed.payload["items"][0]["path"] == "memory/.raw_fallbacks/second.md"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_doctor_memory_status_deep_surfaces_repair_and_raw_sidecars(tmp_path):
     raw_dir = tmp_path / "memory" / ".raw_fallbacks"
     raw_dir.mkdir(parents=True)
