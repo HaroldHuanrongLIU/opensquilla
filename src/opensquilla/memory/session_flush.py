@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -1274,6 +1275,24 @@ class FlushReceipt:
         return asdict(self)
 
 
+def _receipt_allows_destructive_flush_ledger(receipt: FlushReceipt) -> bool:
+    if receipt.mode != "llm":
+        return False
+    if receipt.indexed_chunk_count <= 0:
+        return False
+    if receipt.integrity_status != "ok":
+        return False
+    if receipt.output_coverage_status != "ok":
+        return False
+    if receipt.invalid_candidate_count > 0:
+        return False
+    if receipt.candidate_missing_ids:
+        return False
+    if receipt.obligation_status not in {"ok", "backfilled"}:
+        return False
+    return not receipt.obligation_missing_ids
+
+
 def _receipt_audit_kwargs(
     audit: Any,
     *,
@@ -1913,12 +1932,14 @@ class SessionFlushService:
         tool_handler: MemoryToolHandler,
         default_message_window: int = 30,
         default_timeout: float = 30.0,
+        receipt_writer: Callable[..., Any] | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
         self._tool_handler = tool_handler
         self._default_message_window = default_message_window
         self._default_timeout = default_timeout
+        self._receipt_writer = receipt_writer
         self._extraction_stats_by_session: dict[tuple[str, str], dict[str, Any]] = {}
         self._last_extraction_stats: dict[str, Any] = {}
         self._raw_fallback_receipts: dict[tuple[str, str, str, str], FlushReceipt] = {}
@@ -1960,6 +1981,80 @@ class SessionFlushService:
             },
         )
 
+    def _ledger_receipt_fields(
+        self,
+        receipt: FlushReceipt,
+        *,
+        checkpoint_exists: bool | None,
+    ) -> dict[str, str | None] | None:
+        result_status = receipt.result_status
+        target_path = receipt.flushed_paths[0] if receipt.flushed_paths else None
+        if result_status in {"parse_failed_archived", "provider_failed_archived"}:
+            return {
+                "scope": "repair",
+                "status": "repair_pending",
+                "reason": result_status,
+                "target_path": target_path,
+            }
+        if result_status == "archive_failed":
+            if checkpoint_exists is False:
+                return {
+                    "scope": "checkpoint",
+                    "status": "checkpoint_failed",
+                    "reason": "archive_failed",
+                    "target_path": target_path,
+                }
+            return {
+                "scope": "repair",
+                "status": "repair_failed",
+                "reason": "archive_failed",
+                "target_path": target_path,
+            }
+        if not _receipt_allows_destructive_flush_ledger(receipt):
+            return None
+        return {
+            "scope": "flush",
+            "status": "flush_appended",
+            "reason": None,
+            "target_path": target_path,
+        }
+
+    async def _write_receipt_ledger(
+        self,
+        receipt: FlushReceipt,
+        *,
+        agent_id: str,
+        session_key: str,
+        checkpoint_exists: bool | None,
+    ) -> None:
+        if self._receipt_writer is None:
+            return
+        fields = self._ledger_receipt_fields(
+            receipt,
+            checkpoint_exists=checkpoint_exists,
+        )
+        if fields is None:
+            return
+        try:
+            result = self._receipt_writer(
+                receipt,
+                agent_id=agent_id,
+                session_key=session_key,
+                **fields,
+            )
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "session_flush.receipt_write_failed",
+                extra={
+                    "agent_id": agent_id,
+                    "session_key": session_key,
+                    "result_status": receipt.result_status,
+                    "error": str(exc),
+                },
+            )
+
     async def execute(
         self,
         transcript: list[Any],
@@ -1972,17 +2067,24 @@ class SessionFlushService:
         segment_mode: SegmentMode = "off",
         segment_max_chars: int | None = None,
         segment_overlap_messages: int = 0,
+        checkpoint_exists: bool | None = None,
     ) -> FlushReceipt:
-        def _done(receipt: FlushReceipt) -> FlushReceipt:
+        async def _done(receipt: FlushReceipt) -> FlushReceipt:
             self._record_flush_done(
                 receipt,
                 agent_id=agent_id,
                 session_key=session_key,
             )
+            await self._write_receipt_ledger(
+                receipt,
+                agent_id=agent_id,
+                session_key=session_key,
+                checkpoint_exists=checkpoint_exists,
+            )
             return receipt
 
         if not transcript:
-            return _done(
+            return await _done(
                 FlushReceipt(
                     mode="skipped",
                     flushed_paths=[],
@@ -2019,7 +2121,7 @@ class SessionFlushService:
             has_memory_save = self._has_memory_save_tool()
 
             if provider is None:
-                return _done(
+                return await _done(
                     await self._raw_dump_fallback(
                         messages,
                         reason="no_provider",
@@ -2027,10 +2129,11 @@ class SessionFlushService:
                         session_key=session_key,
                         input_message_count=input_message_count,
                         selected_start_index=selected_start_index,
+                        record_receipt=False,
                     )
                 )
             if not has_memory_save:
-                return _done(
+                return await _done(
                     await self._raw_dump_fallback(
                         messages,
                         reason="no_tools",
@@ -2038,11 +2141,12 @@ class SessionFlushService:
                         session_key=session_key,
                         input_message_count=input_message_count,
                         selected_start_index=selected_start_index,
+                        record_receipt=False,
                     )
                 )
 
             try:
-                return _done(
+                return await _done(
                     await asyncio.wait_for(
                         self._llm_flush(
                             messages,
@@ -2060,7 +2164,7 @@ class SessionFlushService:
                     ),
                 )
             except TimeoutError as exc:
-                return _done(
+                return await _done(
                     await self._raw_dump_fallback(
                         messages,
                         reason="timeout",
@@ -2069,6 +2173,7 @@ class SessionFlushService:
                         session_key=session_key,
                         input_message_count=input_message_count,
                         selected_start_index=selected_start_index,
+                        record_receipt=False,
                     )
                 )
             except asyncio.CancelledError:
@@ -2087,7 +2192,7 @@ class SessionFlushService:
                         **error_payload,
                     },
                 )
-                return _done(
+                return await _done(
                     await self._raw_dump_fallback(
                         messages,
                         reason="llm_error",
@@ -2097,6 +2202,7 @@ class SessionFlushService:
                         session_key=session_key,
                         input_message_count=input_message_count,
                         selected_start_index=selected_start_index,
+                        record_receipt=False,
                     )
                 )
         except asyncio.CancelledError:
@@ -2110,7 +2216,7 @@ class SessionFlushService:
                 "session_flush.error",
                 extra={"session_key": session_key, "error": str(exc)},
             )
-            return _done(
+            return await _done(
                 FlushReceipt(
                     mode="error",
                     flushed_paths=[],
@@ -2933,6 +3039,8 @@ class SessionFlushService:
         session_key: str | None = None,
         input_message_count: int | None = None,
         selected_start_index: int | None = None,
+        record_receipt: bool = True,
+        checkpoint_exists: bool | None = None,
     ) -> FlushReceipt:
         error_payload = _raw_error_payload(raw_error)
         archive_status = result_status or _raw_fallback_result_status(reason)
@@ -2942,7 +3050,7 @@ class SessionFlushService:
             session_key=session_key or "",
             fallback_reason=f"raw:{reason}",
         )
-        logger.warning(
+        logger.info(
             "session_flush.raw_fallback",
             extra={
                 "reason": reason,
@@ -3002,7 +3110,7 @@ class SessionFlushService:
                     "error": result_text,
                 },
             )
-            return FlushReceipt(
+            receipt = FlushReceipt(
                 mode="error",
                 flushed_paths=[],
                 slug=None,
@@ -3019,6 +3127,14 @@ class SessionFlushService:
                     prompt_char_count=len(body),
                 ),
             )
+            if record_receipt:
+                await self._write_receipt_ledger(
+                    receipt,
+                    agent_id=agent_id,
+                    session_key=session_key or "",
+                    checkpoint_exists=checkpoint_exists,
+                )
+            return receipt
         receipt = FlushReceipt(
             mode="raw",
             flushed_paths=[path],
@@ -3039,4 +3155,11 @@ class SessionFlushService:
         self._raw_fallback_receipts[cache_key] = receipt
         if len(self._raw_fallback_receipts) > RAW_FALLBACK_DEDUPE_MAX_ENTRIES:
             self._raw_fallback_receipts.pop(next(iter(self._raw_fallback_receipts)))
+        if record_receipt:
+            await self._write_receipt_ledger(
+                receipt,
+                agent_id=agent_id,
+                session_key=session_key or "",
+                checkpoint_exists=checkpoint_exists,
+            )
         return receipt

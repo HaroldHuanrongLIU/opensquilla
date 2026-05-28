@@ -431,12 +431,18 @@ async def test_session_flush_invalid_json_records_parse_failed_archive_status() 
             content="Saved to memory/.raw_fallbacks/raw.md (0 chunks indexed).",
         )
 
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
     service = SessionFlushService(
         provider_selector=lambda _agent_id: InvalidJsonProvider(),
         tool_registry=SimpleNamespace(
             to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
         ),
         tool_handler=handler,
+        receipt_writer=receipt_writer,
     )
 
     receipt = await service.execute(
@@ -448,6 +454,16 @@ async def test_session_flush_invalid_json_records_parse_failed_archive_status() 
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "parse_failed_archived"
+    assert receipt_rows == [
+        {
+            "agent_id": "main",
+            "session_key": "agent:main:webchat:s1",
+            "scope": "repair",
+            "status": "repair_pending",
+            "reason": "parse_failed_archived",
+            "target_path": receipt.flushed_paths[0],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -463,12 +479,18 @@ async def test_session_flush_provider_exception_records_provider_failed_archive_
             content="Saved to memory/.raw_fallbacks/raw.md (0 chunks indexed).",
         )
 
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
     service = SessionFlushService(
         provider_selector=lambda _agent_id: FailingProvider(),
         tool_registry=SimpleNamespace(
             to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
         ),
         tool_handler=handler,
+        receipt_writer=receipt_writer,
     )
 
     receipt = await service.execute(
@@ -480,6 +502,79 @@ async def test_session_flush_provider_exception_records_provider_failed_archive_
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "provider_failed_archived"
+    assert receipt_rows == [
+        {
+            "agent_id": "main",
+            "session_key": "agent:main:webchat:s1",
+            "scope": "repair",
+            "status": "repair_pending",
+            "reason": "provider_failed_archived",
+            "target_path": receipt.flushed_paths[0],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_flush_successful_llm_flush_records_flush_appended() -> None:
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/session.md (1 chunks indexed; integrity=ok).",
+        )
+
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: object(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+        receipt_writer=receipt_writer,
+    )
+
+    async def safe_llm_flush(*_args: Any, **_kwargs: Any) -> FlushReceipt:
+        return FlushReceipt(
+            mode="llm",
+            flushed_paths=["memory/session.md"],
+            slug="session",
+            message_count=1,
+            duration_ms=1,
+            raw_reason=None,
+            error=None,
+            result_status="ok_candidates_written",
+            integrity_status="ok",
+            indexed_chunk_count=1,
+            output_coverage_status="ok",
+            invalid_candidate_count=0,
+            candidate_missing_ids=[],
+            obligation_status="ok",
+            obligation_missing_ids=[],
+        )
+
+    service._llm_flush = safe_llm_flush  # type: ignore[method-assign]
+
+    receipt = await service.execute(
+        [Message(role="user", content="remember this durable fact")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+    )
+
+    assert receipt.result_status == "ok_candidates_written"
+    assert receipt_rows == [
+        {
+            "agent_id": "main",
+            "session_key": "agent:main:webchat:s1",
+            "scope": "flush",
+            "status": "flush_appended",
+            "reason": None,
+            "target_path": "memory/session.md",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -495,10 +590,16 @@ async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> 
             is_error=True,
         )
 
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
     service = SessionFlushService(
         provider_selector=lambda _agent_id: None,
         tool_registry=SimpleNamespace(to_tool_definitions=lambda: []),
         tool_handler=handler,
+        receipt_writer=receipt_writer,
     )
     messages = [Message(role="user", content="same transcript")]
 
@@ -522,6 +623,50 @@ async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> 
     assert first.error == "raw fallback memory_save failed: disk full"
     assert first.result_status == "archive_failed"
     assert second.mode == "error"
+    assert [row["scope"] for row in receipt_rows] == ["repair", "repair"]
+    assert [row["status"] for row in receipt_rows] == ["repair_failed", "repair_failed"]
+
+
+@pytest.mark.asyncio
+async def test_session_flush_archive_failed_without_checkpoint_records_checkpoint_failed() -> None:
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="disk full",
+            is_error=True,
+        )
+
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: None,
+        tool_registry=SimpleNamespace(to_tool_definitions=lambda: []),
+        tool_handler=handler,
+        receipt_writer=receipt_writer,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="same transcript")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+        checkpoint_exists=False,
+    )
+
+    assert receipt.result_status == "archive_failed"
+    assert receipt_rows == [
+        {
+            "agent_id": "main",
+            "session_key": "agent:main:webchat:s1",
+            "scope": "checkpoint",
+            "status": "checkpoint_failed",
+            "reason": "archive_failed",
+            "target_path": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
