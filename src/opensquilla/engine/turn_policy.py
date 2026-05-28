@@ -49,8 +49,10 @@ def resolve_turn_policy(
             return TurnPolicy(env_value, "env OPENSQUILLA_AGENT_MAX_ITERATIONS")
 
     config_value = getattr(gateway_config, "agent_max_iterations", None)
-    if _non_bool_int(config_value) and config_value >= 0:
-        return TurnPolicy(int(config_value), "gateway config")
+    if isinstance(config_value, int) and not isinstance(config_value, bool):
+        config_iterations = int(config_value)
+        if config_iterations >= 0:
+            return TurnPolicy(config_iterations, "gateway config")
 
     return TurnPolicy(
         AgentConfig().max_iterations if agent_default is None else int(agent_default),

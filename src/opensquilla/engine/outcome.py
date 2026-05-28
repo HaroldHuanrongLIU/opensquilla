@@ -22,9 +22,21 @@ _BUDGET_CODES = frozenset(
         "provider_output_limit",
         "tool_run_budget_exhausted",
         "llm_budget_exhausted",
+        "turn_llm_call_budget_exceeded",
+        "turn_input_token_budget_exceeded",
+        "turn_output_token_budget_exceeded",
+        "turn_billed_cost_budget_exceeded",
     }
 )
-_PARTIAL_CODES = frozenset({"max_iterations", "output_truncated", "provider_output_truncated"})
+_PARTIAL_CODES = frozenset(
+    {
+        "max_iterations",
+        "output_truncated",
+        "provider_output_truncated",
+        "turn_tool_error_budget_exceeded",
+        "tool_failure_loop_exhausted",
+    }
+)
 _INTERRUPTED_CODES = frozenset({"cancelled", "interrupted", "timeout", "iteration_timeout"})
 _BLOCKED_CODES = frozenset(
     {
@@ -32,6 +44,12 @@ _BLOCKED_CODES = frozenset(
         "approval_required",
         "external_dependency",
         "provider_unavailable",
+        "sandbox_threshold_exceeded",
+        "tool_policy_denied",
+        "compaction_refused_flush_timeout",
+        "compaction_refused_memory_flush",
+        "compaction_refused_empty_summary",
+        "context_unsalvageable",
     }
 )
 

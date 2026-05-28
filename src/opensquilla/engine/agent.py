@@ -29,6 +29,7 @@ from opensquilla.engine.cache_break_monitor import (
 )
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
+from opensquilla.engine.progress_watchdog import ProgressObservation, ProgressWatchdog
 from opensquilla.engine.session_sanitize import (
     SessionSanitizeResult,
     project_historical_tool_payloads,
@@ -1802,6 +1803,10 @@ class Agent:
         artifact_delivery_final_response_pending = False
         artifact_delivery_degraded_final_response = False
         artifact_delivery_final_response_artifacts: list[dict[str, Any]] = []
+        max_iterations_finalization_attempted = False
+        max_iterations_finalization_pending = False
+        max_iterations_finalization_message: Message | None = None
+        progress_watchdog = ProgressWatchdog(observe_only=True)
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
             base_backoff_ms=self.config.retry_base_backoff_ms,
@@ -1963,26 +1968,46 @@ class Agent:
                         max_iterations_guidance = (
                             "Set AgentConfig.max_iterations=0 for unlimited tasks."
                         )
-                    self._write_turn_call_log(
-                        "turn_policy_decision",
-                        action="stop",
-                        reason="max_iterations",
-                        code="max_iterations",
-                        iteration=iterations,
-                        max_iterations=self.config.max_iterations,
-                        max_iterations_source=max_iterations_source,
-                    )
-                    yield self._transition(AgentState.ERROR)
-                    terminal_error = ErrorEvent(
-                        message=(
-                            f"Reached max_iterations={self.config.max_iterations} "
-                            f"from {max_iterations_source}. "
-                            f"{max_iterations_guidance}"
-                        ),
-                        code="max_iterations",
-                    )
-                    yield terminal_error
-                    break
+                    if not max_iterations_finalization_attempted:
+                        max_iterations_finalization_attempted = True
+                        max_iterations_finalization_pending = True
+                        max_iterations_finalization_message = Message(
+                            role="user",
+                            content=(
+                                "The configured iteration limit has been reached. "
+                                "Do not call tools. Provide the best concise final "
+                                "answer from the work completed so far."
+                            ),
+                        )
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="finalize_partial",
+                            reason="max_iterations",
+                            code="max_iterations",
+                            iteration=iterations,
+                            max_iterations=self.config.max_iterations,
+                            max_iterations_source=max_iterations_source,
+                        )
+                    else:
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="partial",
+                            reason="max_iterations",
+                            code="max_iterations",
+                            iteration=iterations,
+                            max_iterations=self.config.max_iterations,
+                            max_iterations_source=max_iterations_source,
+                        )
+                        terminal_error = ErrorEvent(
+                            message=(
+                                f"Reached max_iterations={self.config.max_iterations} "
+                                f"from {max_iterations_source} after a finalization attempt. "
+                                f"{max_iterations_guidance}"
+                            ),
+                            code="max_iterations",
+                        )
+                        yield terminal_error
+                        break
 
                 # Check total turn deadline (if configured)
                 if _total_deadline is not None and _loop.time() > _total_deadline:
@@ -2031,18 +2056,31 @@ class Agent:
                     call_started_at = time.monotonic()
                     provider_tools_for_call = (
                         None
-                        if artifact_delivery_final_response_pending
+                        if (
+                            artifact_delivery_final_response_pending
+                            or max_iterations_finalization_pending
+                        )
                         else provider_tool_definitions
                     )
                     tools_supported_for_call = (
-                        tools_supported and not artifact_delivery_final_response_pending
+                        tools_supported
+                        and not artifact_delivery_final_response_pending
+                        and not max_iterations_finalization_pending
                     )
                     ignored_post_delivery_tool_use = False
+                    request_turn_messages = (
+                        [*turn_messages, max_iterations_finalization_message]
+                        if (
+                            max_iterations_finalization_pending
+                            and max_iterations_finalization_message is not None
+                        )
+                        else turn_messages
+                    )
                     (
                         request_messages,
                         request_sanitize_result,
                     ) = self._provider_request_messages_with_sanitize(
-                        turn_messages,
+                        request_turn_messages,
                         request_context_message=request_context_message,
                         request_context_insert_index=request_context_insert_index,
                         runtime_context_message=runtime_context_message,
@@ -2136,7 +2174,10 @@ class Agent:
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
-                                    if artifact_delivery_final_response_pending:
+                                    if (
+                                        artifact_delivery_final_response_pending
+                                        or max_iterations_finalization_pending
+                                    ):
                                         ignored_post_delivery_tool_use = True
                                     continue
                                 pending_tools[raw_ev.tool_use_id] = _StreamAccumulator(
@@ -2181,7 +2222,10 @@ class Agent:
 
                             elif isinstance(raw_ev, ToolUseEndEvent):
                                 if not tools_supported_for_call:
-                                    if artifact_delivery_final_response_pending:
+                                    if (
+                                        artifact_delivery_final_response_pending
+                                        or max_iterations_finalization_pending
+                                    ):
                                         ignored_post_delivery_tool_use = True
                                     continue
                                 acc = pending_tools.pop(raw_ev.tool_use_id, None)
@@ -2341,17 +2385,20 @@ class Agent:
                             yield terminal_error
                         break
                     response_text = "".join(assistant_text_parts)
-                    if (
-                        artifact_delivery_final_response_pending
-                        and ignored_post_delivery_tool_use
-                        and not response_text.strip()
-                    ):
-                        response_text = self._artifact_delivery_final_response_text(
-                            artifact_delivery_final_response_artifacts
-                        )
-                        assistant_text_parts.append(response_text)
-                        attempt_user_visible_emitted = True
-                        yield TextDeltaEvent(text=response_text)
+                    if ignored_post_delivery_tool_use and not response_text.strip():
+                        if artifact_delivery_final_response_pending:
+                            response_text = self._artifact_delivery_final_response_text(
+                                artifact_delivery_final_response_artifacts
+                            )
+                        elif max_iterations_finalization_pending:
+                            response_text = (
+                                "I reached the configured iteration limit after completing "
+                                "the available tool step. Here is the best partial result so far."
+                            )
+                        if response_text:
+                            assistant_text_parts.append(response_text)
+                            attempt_user_visible_emitted = True
+                            yield TextDeltaEvent(text=response_text)
                     last_request_msg = request_messages[-1] if request_messages else None
                     post_tool_turn = _message_has_tool_result(last_request_msg)
                     stop_reason = (
@@ -2646,6 +2693,26 @@ class Agent:
                                 reason=provider_error.message,
                                 code=provider_error.code,
                             )
+                            break
+                        if max_iterations_finalization_pending:
+                            response_text = (
+                                "I reached the configured iteration limit, and the "
+                                "provider could not generate an additional wrap-up. "
+                                "Returning the best partial result from completed work."
+                            )
+                            assistant_text_parts.append(response_text)
+                            provider_done_for_log = ProviderDoneEvent(stop_reason="stop")
+                            _got_done_event = True
+                            _got_error = False
+                            max_iterations_finalization_pending = False
+                            self._write_turn_call_log(
+                                "turn_policy_decision",
+                                action="partial_after_finalization_provider_error",
+                                reason="max_iterations",
+                                code="max_iterations",
+                                provider_error_code=provider_error.code,
+                            )
+                            yield TextDeltaEvent(text=response_text)
                             break
                         if (
                             failure_kind == ProviderFailureKind.EMPTY_RESPONSE
@@ -3011,6 +3078,7 @@ class Agent:
 
                 # No tool calls → we're done
                 if not tool_calls:
+                    max_iterations_finalization_pending = False
                     break
                 tool_calls = [self._coerce_meta_skill_view_tool_call(tc) for tc in tool_calls]
 
@@ -3360,6 +3428,36 @@ class Agent:
                     artifact_delivery_final_response_artifacts = terminal_artifacts
 
                 turn_tool_errors += sum(1 for result in executed_results if result.is_error)
+                first_tool_error = next(
+                    (result for result in executed_results if result.is_error),
+                    None,
+                )
+                watchdog_decision = progress_watchdog.observe(
+                    ProgressObservation(
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                        successful_tool_result=any(
+                            not result.is_error for result in executed_results
+                        ),
+                        user_visible_output=bool("".join(final_text_parts).strip()),
+                        artifact_completed=bool(terminal_artifacts),
+                        tool_error_signature=(
+                            None
+                            if first_tool_error is None
+                            else (
+                                f"{first_tool_error.tool_name}:"
+                                f"{str(first_tool_error.content)[:160]}"
+                            )
+                        ),
+                    )
+                )
+                if watchdog_decision.action != "observe":
+                    self._write_turn_call_log(
+                        "progress_watchdog",
+                        action=watchdog_decision.action,
+                        reason=watchdog_decision.reason,
+                        details=watchdog_decision.details,
+                    )
                 terminal_error = _turn_budget_error()
                 if terminal_error is not None:
                     if artifact_delivery_final_response_pending:

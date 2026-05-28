@@ -54,6 +54,7 @@ from opensquilla.engine.hooks import (
 from opensquilla.engine.outcome import outcome_from_error, turn_outcome_details
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import PriceEntry, lookup_price
+from opensquilla.engine.turn_policy import resolve_turn_policy
 from opensquilla.engine.turn_runner import (
     AgentBootstrapStage,
     AgentBootstrapStageInput,
@@ -2680,19 +2681,19 @@ class TurnRunner:
             raise ValueError("max_iterations must be an integer >= 0")
 
         sm = self._session_manager
+        session_value = None
         if sm is not None and hasattr(sm, "get_session_config"):
             try:
                 session_cfg = sm.get_session_config(session_key)
                 if session_cfg is not None:
-                    value = getattr(session_cfg, "agent_max_iterations", None)
-                    if self._non_bool_int(value) and value >= 0:
-                        self._last_agent_max_iterations_source = "session config"
-                        return int(value)
-                    if value is not None:
+                    session_value = getattr(session_cfg, "agent_max_iterations", None)
+                    if session_value is not None and not (
+                        self._non_bool_int(session_value) and session_value >= 0
+                    ):
                         log.warning(
                             "turn_runner.invalid_agent_max_iterations",
                             source="session",
-                            value=value,
+                            value=session_value,
                         )
             except Exception:  # noqa: BLE001
                 pass
@@ -2701,30 +2702,36 @@ class TurnRunner:
         if env_value is not None and env_value.strip():
             raw = env_value.strip()
             try:
-                value = int(raw)
+                parsed_env = int(raw)
             except ValueError:
                 log.warning("turn_runner.invalid_agent_max_iterations", source="env", raw=raw)
             else:
-                if value >= 0:
-                    self._last_agent_max_iterations_source = (
-                        "env OPENSQUILLA_AGENT_MAX_ITERATIONS"
+                if parsed_env < 0:
+                    log.warning(
+                        "turn_runner.invalid_agent_max_iterations",
+                        source="env",
+                        value=parsed_env,
                     )
-                    return value
-                log.warning("turn_runner.invalid_agent_max_iterations", source="env", value=value)
 
-        value = getattr(self._config, "agent_max_iterations", None)
-        if self._non_bool_int(value) and value >= 0:
-            self._last_agent_max_iterations_source = "gateway config"
-            return int(value)
-        if value is not None:
+        config_value = getattr(self._config, "agent_max_iterations", None)
+        if config_value is not None and not (
+            self._non_bool_int(config_value) and config_value >= 0
+        ):
             log.warning(
                 "turn_runner.invalid_agent_max_iterations",
                 source="config",
-                value=value,
+                value=config_value,
             )
 
-        self._last_agent_max_iterations_source = "AgentConfig default"
-        return AgentConfig().max_iterations
+        policy = resolve_turn_policy(
+            session_key=session_key,
+            explicit_max_iterations=explicit,
+            session_manager=self._session_manager,
+            gateway_config=self._config,
+            env=os.environ,
+        )
+        self._last_agent_max_iterations_source = policy.max_iterations_source
+        return policy.max_iterations
 
     def _resolve_agent_iteration_timeout(
         self,

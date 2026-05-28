@@ -13,8 +13,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
 from .request_proof import (
-    ProviderRequestBudgetExceeded,
-    prove_or_compact_provider_payload,
+    ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
 from .types import (
@@ -358,21 +357,32 @@ class AnthropicProvider:
         if thinking_payload:
             payload["thinking"] = thinking_payload
 
-        try:
-            payload, _proof = prove_or_compact_provider_payload(
-                payload,
-                projection_adapter="anthropic",
-                proof_budget=cfg.provider_request_max_chars,
-                status_projection_mode="native_is_error",
+        from opensquilla.engine.context_budget import coordinate_provider_context_budget
+
+        budget_decision = coordinate_provider_context_budget(
+            payload,
+            projection_adapter="anthropic",
+            proof_budget=cfg.provider_request_max_chars,
+            status_projection_mode="native_is_error",
+        )
+        if budget_decision.action == "budget_limited":
+            proof = budget_decision.proof or {}
+            log.warning("provider.request_budget_exhausted", **proof)
+            yield ErrorEvent(
+                message=json.dumps(proof, ensure_ascii=False, sort_keys=True),
+                code="provider_request_budget_exhausted",
             )
-            if _proof is not None:
-                log.info("provider.request_proof", **_proof)
+            return
+        payload = budget_decision.payload or payload
+        if budget_decision.proof is not None:
+            log.info("provider.request_proof", **budget_decision.proof)
+        try:
             prove_provider_payload_from_env(
                 payload,
                 projection_adapter="anthropic",
                 status_projection_mode="native_is_error",
             )
-        except ProviderRequestBudgetExceeded as exc:
+        except ProviderRequestBudgetExceededError as exc:
             log.warning("provider.request_budget_exhausted", **exc.proof)
             yield ErrorEvent(
                 message=json.dumps(exc.proof, ensure_ascii=False, sort_keys=True),

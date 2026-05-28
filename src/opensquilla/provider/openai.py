@@ -26,8 +26,7 @@ from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .request_proof import (
-    ProviderRequestBudgetExceeded,
-    prove_or_compact_provider_payload,
+    ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
 from .types import (
@@ -863,23 +862,34 @@ class OpenAIProvider:
             if any(message.get("role") == "tool" for message in openai_messages)
             else None
         )
-        try:
-            payload, _proof = prove_or_compact_provider_payload(
-                payload,
-                projection_adapter=self._provider_kind,
-                proof_budget=cfg.provider_request_max_chars,
-                status_projection_mode="content_envelope",
-                fallback_reason=fallback_reason,
+        from opensquilla.engine.context_budget import coordinate_provider_context_budget
+
+        budget_decision = coordinate_provider_context_budget(
+            payload,
+            projection_adapter=self._provider_kind,
+            proof_budget=cfg.provider_request_max_chars,
+            status_projection_mode="content_envelope",
+            fallback_reason=fallback_reason,
+        )
+        if budget_decision.action == "budget_limited":
+            proof = budget_decision.proof or {}
+            log.warning("provider.request_budget_exhausted", **proof)
+            yield ErrorEvent(
+                message=json.dumps(proof, ensure_ascii=False, sort_keys=True),
+                code="provider_request_budget_exhausted",
             )
-            if _proof is not None:
-                log.info("provider.request_proof", **_proof)
+            return
+        payload = budget_decision.payload or payload
+        if budget_decision.proof is not None:
+            log.info("provider.request_proof", **budget_decision.proof)
+        try:
             prove_provider_payload_from_env(
                 payload,
                 projection_adapter=self._provider_kind,
                 status_projection_mode="content_envelope",
                 fallback_reason=fallback_reason,
             )
-        except ProviderRequestBudgetExceeded as exc:
+        except ProviderRequestBudgetExceededError as exc:
             log.warning("provider.request_budget_exhausted", **exc.proof)
             yield ErrorEvent(
                 message=json.dumps(exc.proof, ensure_ascii=False, sort_keys=True),
