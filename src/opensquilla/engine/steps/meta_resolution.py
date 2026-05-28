@@ -386,7 +386,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 ctx.metadata["meta_clarify_reprompt"] = awaiting
                 return ctx
 
-            # Parse-success path (codex P0 #3: CAS lives here, not in PR4).
+            # Parse-success path: the resume CAS belongs before DAG reentry.
             claim = await asyncio.to_thread(
                 writer.try_claim_resume,
                 run_id=awaiting.run_id,

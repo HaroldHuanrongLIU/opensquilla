@@ -76,9 +76,9 @@ def _resolve_path(path: str) -> Path:
     stdout, ``default_workspace_dir()/...`` from LLM training priors)
     are translated back to the active host workspace before any
     sensitive-path / workspace-strict enforcement runs. Without this,
-    LLM-guessed paths under ``/root/.opensquilla/workspace`` are
-    hard-blocked by the sensitive_path check even though the same file
-    written under the gateway-configured workspace would be valid.
+    model-guessed default-workspace paths are hard-blocked by the
+    sensitive_path check even though the same file written under the
+    gateway-configured workspace would be valid.
     """
     from opensquilla.tools.path_aliases import resolve_workspace_alias
 

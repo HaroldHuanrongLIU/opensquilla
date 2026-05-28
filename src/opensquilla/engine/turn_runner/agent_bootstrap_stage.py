@@ -391,7 +391,7 @@ class AgentBootstrapStage:
         # handler, sub-Agent factory, etc.). Without this, the bootstrap
         # stage left workspace_dir=None, the meta_invoke fallback chain
         # collapsed to ContextVar lookups, and sub-Agents ended up using
-        # ``default_workspace_dir()`` (``/root/.opensquilla/workspace``).
+        # the process default workspace instead of the configured one.
         agent_config = AgentConfig(
             max_iterations=budgets.max_iterations,
             system_prompt=inp.final_prompt,

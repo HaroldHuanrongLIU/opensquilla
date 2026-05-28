@@ -990,9 +990,8 @@ def make_agent_runner_from_parent(
     # Last-mile safety: if the caller chain (Agent meta_invoke /
     # meta_resume handlers) ended up resolving workspace_dir to None,
     # the sub-Agent's system prompt would not have a ``## Workspace``
-    # section and the LLM would invent paths from its training prior
-    # (most commonly ``/root/.opensquilla/workspace/...`` for the root
-    # user). That tripped sandbox sensitive-path blocks repeatedly.
+    # section and the LLM would invent default-workspace paths from its
+    # training prior. That tripped sandbox sensitive-path blocks repeatedly.
     # Pull from ``current_tool_context`` as the authoritative fallback
     # — the gateway always seeds it with the
     # ``resolve_agent_workspace_dir`` value at turn start (see

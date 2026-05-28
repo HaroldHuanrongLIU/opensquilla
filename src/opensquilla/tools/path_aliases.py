@@ -7,11 +7,11 @@ typical sources observed in production:
 * ``/workspace/...`` — the canonical cwd that ``execute_code`` sandboxes
   expose to the model. The LLM sees this in stdout and reuses it in
   subsequent ``read_file`` / ``write_file`` / ``publish_artifact`` calls.
-* ``/root/.opensquilla/workspace/...`` — ``default_workspace_dir()`` for
-  the root user. LLMs trained on OpenSquilla docs default to this even
-  when the gateway has overridden ``workspace_dir`` in config.toml.
-* ``/home/<other-user>/.opensquilla/workspace/...`` — same prior on
-  non-root deployments.
+* ``<default-home>/.opensquilla/workspace/...`` — the default workspace
+  pattern. LLMs trained on OpenSquilla docs may emit this even when the
+  gateway has overridden ``workspace_dir`` in config.toml.
+* ``<other-home>/.opensquilla/workspace/...`` — same prior on alternate
+  deployments.
 
 Rather than maintain a growing list of known prefixes, we recognise
 the **shape**: any absolute path with a segment literally named
@@ -19,14 +19,14 @@ the **shape**: any absolute path with a segment literally named
 the last such segment** becomes the workspace-relative tail. The tail
 is then resolved against the real ``workspace_root``.
 
-Examples (with ``workspace_root = /tmp/opensquilla-e2e/workspace``):
+Examples (with ``workspace_root = <configured-workspace>``):
 
-* ``/root/.opensquilla/workspace/abstract.tex``
-  → tail ``abstract.tex`` → ``/tmp/opensquilla-e2e/workspace/abstract.tex``
-* ``/home/foo/.opensquilla/workspace/papers/intro.tex``
-  → tail ``papers/intro.tex`` → ``/tmp/.../workspace/papers/intro.tex``
-* ``/workspace/foo`` → ``/tmp/.../workspace/foo``
-* ``/tmp/opensquilla-e2e/workspace/x.tex`` (the real path)
+* ``<default-home>/.opensquilla/workspace/abstract.tex``
+  → tail ``abstract.tex`` → ``<configured-workspace>/abstract.tex``
+* ``<other-home>/.opensquilla/workspace/papers/intro.tex``
+  → tail ``papers/intro.tex`` → ``<configured-workspace>/papers/intro.tex``
+* ``/workspace/foo`` → ``<configured-workspace>/foo``
+* ``<configured-workspace>/x.tex`` (the real path)
   → tail ``x.tex`` → identical resolved path (idempotent, harmless)
 * ``/etc/passwd`` — no ``workspace`` segment, ``None`` returned, the
   caller's pre-existing sensitive-path / workspace-strict checks run
