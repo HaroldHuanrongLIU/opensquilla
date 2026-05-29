@@ -1549,6 +1549,7 @@ class Agent:
                     if result.execution_status is not None
                     else None
                 ),
+                terminates_turn=result.terminates_turn,
             )
             self.config.metadata["tool_json_guard_applied"] = True
             self.config.metadata["tool_json_guard_calls"] = (
@@ -1659,6 +1660,7 @@ class Agent:
                 if result.execution_status is not None
                 else None
             ),
+            terminates_turn=result.terminates_turn,
         )
 
     # ------------------------------------------------------------------
@@ -3373,7 +3375,7 @@ class Agent:
                         )
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
-                    if self._is_turn_yield_result(result):
+                    if self._is_turn_yield_result(result) or result.terminates_turn:
                         turn_yielded = True
                     tool_result_blocks.append(
                         ContentBlockToolResult(
