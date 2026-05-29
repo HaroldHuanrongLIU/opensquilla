@@ -99,6 +99,26 @@ class ToolRegistry:
         }
 
     @staticmethod
+    def _parameters_for(rt: RegisteredTool, ctx: ToolContext) -> dict[str, Any]:
+        parameters = {key: dict(value) for key, value in rt.spec.parameters.items()}
+        if rt.spec.name != "router_control":
+            return parameters
+        router_cfg = getattr(ctx, "router_control_config", None)
+        if router_cfg is None:
+            return parameters
+        try:
+            from opensquilla.router_control import build_router_control_targets
+
+            target_ids = [
+                target.target_id for target in build_router_control_targets(router_cfg)
+            ]
+        except Exception:  # noqa: BLE001 - schema enrichment must not hide the tool
+            return parameters
+        if target_ids and "target_id" in parameters:
+            parameters["target_id"]["enum"] = target_ids
+        return parameters
+
+    @staticmethod
     def _description_for(rt: RegisteredTool, ctx: ToolContext) -> str:
         description = rt.spec.description
         scratch_dir = getattr(ctx, "scratch_dir", None)
@@ -131,7 +151,7 @@ class ToolRegistry:
                 description=self._description_for(rt, active_ctx),
                 input_schema=ToolInputSchema(
                     type="object",
-                    properties=rt.spec.parameters,
+                    properties=self._parameters_for(rt, active_ctx),
                     required=rt.spec.required,
                 ),
                 execution_timeout_seconds=rt.spec.execution_timeout_seconds,
@@ -173,7 +193,11 @@ class ToolRegistry:
             {
                 "name": rt.spec.name,
                 "description": self._description_for(rt, ctx),
-                "schema": self._schema_for(rt),
+                "schema": {
+                    "type": "object",
+                    "properties": self._parameters_for(rt, ctx),
+                    "required": rt.spec.required,
+                },
                 "source": "plugin" if "." in rt.spec.name else "builtin",
                 "enabled": True,
             }
@@ -201,7 +225,11 @@ class ToolRegistry:
             {
                 "name": rt.spec.name,
                 "description": self._description_for(rt, ctx),
-                "schema": self._schema_for(rt),
+                "schema": {
+                    "type": "object",
+                    "properties": self._parameters_for(rt, ctx),
+                    "required": rt.spec.required,
+                },
             }
             for rt in self._iter_visible_tools(ctx, sort=True)
         ]

@@ -80,6 +80,7 @@ from opensquilla.result_budget import (
     compact_tool_result_content,
     resolve_budget_class,
 )
+from opensquilla.router_control import router_control_replay_event_from_payload
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -3304,6 +3305,9 @@ class Agent:
                         arguments=tc.arguments,
                         execution_status=result.execution_status,
                     )
+                    replay_event = router_control_replay_event_from_payload(result.content)
+                    if replay_event is not None:
+                        yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
                     if pending_approval is not None and not tc.arguments.get("approval_id"):
                         await _wait_for_pending_approval_resolution(
@@ -3331,6 +3335,9 @@ class Agent:
                             arguments=retry_arguments,
                             execution_status=result.execution_status,
                         )
+                        replay_event = router_control_replay_event_from_payload(result.content)
+                        if replay_event is not None:
+                            yield replay_event
                     executed_results.append(result)
                     compressed_result = await self._compress_tool_result(
                         result,

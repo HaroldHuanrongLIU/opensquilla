@@ -76,6 +76,10 @@ class ToolContext:
     tool_run_budget_policy: Any | None = None
     tool_run_budget_tracker_factory: Callable[[], Any] | None = None
     tool_run_budget_key: str | None = None
+    router_control_config: Any | None = None
+    router_control_hold_store: Any | None = None
+    router_control_replay_depth: int = 0
+    router_control_turn_hold_applied: bool = False
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.
