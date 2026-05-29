@@ -739,7 +739,9 @@ def test_router_fx_live_routes_keep_random_chase_animation() -> None:
     handler_end = source.index("  // History-load entry point", handler_start)
     handler_body = source[handler_start:handler_end]
     subscription_start = source.index("function _subscribeRpcEvents() {")
-    subscription_end = source.index("    // Text delta: accumulate into streaming bubble", subscription_start)
+    subscription_end = source.index(
+        "    // Text delta: accumulate into streaming bubble", subscription_start
+    )
     subscription_body = source[subscription_start:subscription_end]
 
     assert "function _routerFxShouldAnimateIdentity" not in source
@@ -765,7 +767,10 @@ def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None
     assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
     assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
     assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
-    assert "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();" in source
+    assert (
+        "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();"
+        in source
+    )
     assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
 
 
