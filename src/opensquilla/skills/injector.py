@@ -35,6 +35,10 @@ class SkillInjector:
             'When one entry is clearly relevant, call skill_view(name="<skill_name>") '
             "to load that skill's instructions, then use only the tools available "
             "in this session.",
+            "A user may use the word \"skill\" for their own workflow design. "
+            "If that name is not listed below, do not search host filesystem "
+            "paths to recover it; follow the user's described workflow with "
+            "available tools or state that no listed skill playbook matches.",
             "When no entry is relevant, answer without loading a skill.",
             "",
             "<available_skills>",
@@ -61,6 +65,8 @@ class SkillInjector:
             "Skill names are identifiers for `skill_view`; they are not callable tools.",
             'Call skill_view(name="<skill_name>") only when the current request '
             "matches a listed entry.",
+            "If a user names a skill that is not listed, treat it as user workflow "
+            "language; do not search host filesystem paths to recover it.",
             "",
             "<available_skills>",
         ]

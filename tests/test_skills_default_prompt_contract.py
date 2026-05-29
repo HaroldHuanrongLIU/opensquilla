@@ -10,7 +10,9 @@ from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.steps.skills_filter import filter_skills
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.skills.eligibility import EligibilityContext
+from opensquilla.skills.injector import SkillInjector
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.types import SkillLayer, SkillSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
@@ -31,6 +33,17 @@ DEFAULTS = {
     "weather",
     "xlsx",
 }
+
+
+def _skill_spec(name: str, description: str) -> SkillSpec:
+    return SkillSpec(
+        name=name,
+        description=description,
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content=f"# {name}\n",
+    )
 
 
 def _ctx(
@@ -264,3 +277,26 @@ def test_retained_default_skills_are_parseable_and_not_disabled(tmp_path: Path) 
         assert name in skills
         assert skills[name].disable_model_invocation is False
         assert skills[name].description
+
+
+def test_skill_prompt_treats_unlisted_skill_names_as_user_workflow_language() -> None:
+    prompt = SkillInjector().inject_skills(
+        "base",
+        [_skill_spec("summarize", "Summarize text.")],
+        max_chars=100_000,
+    )
+
+    assert "A user may use the word \"skill\" for their own workflow design" in prompt
+    assert "If that name is not listed below, do not search host filesystem" in prompt
+    assert "follow the user's described workflow" in prompt
+
+
+def test_compact_skill_prompt_blocks_host_search_for_unlisted_skill_names() -> None:
+    prompt = SkillInjector().inject_skills(
+        "base",
+        [_skill_spec(f"skill-{idx}", "x" * 200) for idx in range(10)],
+        max_chars=320,
+    )
+
+    assert "If a user names a skill that is not listed" in prompt
+    assert "do not search host filesystem paths to recover it" in prompt
