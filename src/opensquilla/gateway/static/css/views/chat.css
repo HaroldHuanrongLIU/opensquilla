@@ -2444,8 +2444,14 @@
   0%, 100% { transform: translateX(0); }
   50%      { transform: translateX(3px); }
 }
+/* Settled header — keeps a faint accent tint so the strip reads "dial
+   locked on a tier" rather than "abandoned." Glyph arrows go translucent
+   accent so the "← MODEL ROUTER →" line continues to point at the pick. */
 .router-fx[data-state="settled"] .router-fx-header {
-  color: var(--text-dim);
+  color: color-mix(in srgb, var(--accent) 38%, var(--text-dim));
+}
+.router-fx[data-state="settled"] .router-fx-header .glyph {
+  color: color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
 /* The grid surface — circuit-board hairlines with a faint dot field
@@ -2494,7 +2500,8 @@
 /* Real (operator-configured) cells: brighter type only — the accent
  * dot in the top-right corner is the sole "this is on the dial"
  * marker; the cell border stays neutral hairline so the grid reads
- * as one field, not as two segregated zones. */
+ * as one field, not as two segregated zones. The dot breathes slowly
+ * so the dial reads alive while idle. */
 .router-fx-cell[data-kind="real"] {
   color: var(--text);
 }
@@ -2508,6 +2515,15 @@
   border-radius: 50%;
   background: var(--accent);
   opacity: 0.7;
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: router-fx-dot-idle 3.2s ease-in-out infinite;
+}
+@keyframes router-fx-dot-idle {
+  0%, 100% { opacity: 0.55; box-shadow: 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  50%      { opacity: 0.95; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell[data-kind="real"]::after { animation: none; }
 }
 
 /* Decoy cells: dim, italic, no dot — clearly "not on the dial" but
@@ -2533,29 +2549,89 @@
   animation-duration: 170ms;
 }
 
-/* Winner: solid orange border, accent text, gentle lift. */
+/* Winner: solid orange border, accent text, with a soft outer halo +
+ * inner top-edge highlight + a one-shot scan-line that sweeps top-to-
+ * bottom on landing. Reads as the locked pick, not just "selected".
+ * The dot in the corner accelerates its pulse to confirm the lock. */
 .router-fx-cell.win {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--accent) 7%, var(--bg)) 100%);
   border-color: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
   font-style: normal;
-  transform: translateY(-1px);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--accent) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  z-index: 4;
 }
 .router-fx-cell.win::after {
   opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 75%, transparent);
+  animation: router-fx-dot-locked 1.4s ease-in-out infinite;
+}
+/* Scan-line sweep — fires once when .win lands. Sits above the cell
+   surface but below text via z-index management. Pointer-events stay
+   off so it never interferes with click/copy on the model name. */
+.router-fx-cell.win::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 90%, transparent) 50%,
+    transparent 100%);
+  pointer-events: none;
+  opacity: 0;
+  animation: router-fx-scan 720ms cubic-bezier(.4,0,.2,1) 1 forwards;
+  z-index: 1;
+}
+@keyframes router-fx-scan {
+  0%   { opacity: 0;    top: 0;    }
+  20%  { opacity: 1;    top: 10%;  }
+  80%  { opacity: 0.85; top: 90%;  }
+  100% { opacity: 0;    top: 100%; }
+}
+@keyframes router-fx-dot-locked {
+  0%, 100% { opacity: 0.9; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent); }
+  50%      { opacity: 1;   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 85%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell.win::before { animation: none; opacity: 0; }
+  .router-fx-cell.win::after { animation: none; }
 }
 
-/* Fallback variant — chosen tier was the safe net, not the routed pick. */
+/* Fallback variant — chosen tier was the safe net, not the routed pick.
+   Mirrors the locked-winner treatment but in the danger palette so the
+   shape is the same and the colour change carries the signal. */
 .router-fx[data-source="fallback"] .router-fx-cell.win {
   color: var(--danger);
   border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, var(--bg));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--danger) 35%, transparent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--danger) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--danger) 7%, var(--bg)) 100%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--danger) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--danger) 40%, transparent);
 }
 .router-fx[data-source="fallback"] .router-fx-cell.win::after {
   background: var(--danger);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--danger) 75%, transparent);
+}
+.router-fx[data-source="fallback"] .router-fx-cell.win::before {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--danger) 90%, transparent) 50%,
+    transparent 100%);
 }
 
 /* Hammer selector — absolutely positioned, JS sets transform per hop.
