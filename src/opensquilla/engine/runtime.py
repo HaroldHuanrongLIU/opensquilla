@@ -3674,9 +3674,12 @@ class TurnRunner:
             )
 
         async def _bounded_apply_squilla_router(turn: TurnContext) -> TurnContext:
+            def _run_router() -> TurnContext:
+                return asyncio.run(apply_squilla_router(_copy_router_turn(turn)))
+
             try:
                 routed = await asyncio.wait_for(
-                    apply_squilla_router(_copy_router_turn(turn)),
+                    asyncio.to_thread(_run_router),
                     timeout=router_timeout,
                 )
                 return commit_deferred_router_history(routed)

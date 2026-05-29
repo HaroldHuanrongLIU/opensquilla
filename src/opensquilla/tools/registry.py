@@ -100,7 +100,10 @@ class ToolRegistry:
 
     @staticmethod
     def _parameters_for(rt: RegisteredTool, ctx: ToolContext) -> dict[str, Any]:
-        parameters = {key: dict(value) for key, value in rt.spec.parameters.items()}
+        parameters = {
+            key: dict(value) if isinstance(value, Mapping) else value
+            for key, value in rt.spec.parameters.items()
+        }
         if rt.spec.name != "router_control":
             return parameters
         router_cfg = getattr(ctx, "router_control_config", None)
@@ -114,7 +117,7 @@ class ToolRegistry:
             ]
         except Exception:  # noqa: BLE001 - schema enrichment must not hide the tool
             return parameters
-        if target_ids and "target_id" in parameters:
+        if target_ids and "target_id" in parameters and isinstance(parameters["target_id"], dict):
             parameters["target_id"]["enum"] = target_ids
         return parameters
 

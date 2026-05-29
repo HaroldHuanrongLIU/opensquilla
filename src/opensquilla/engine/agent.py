@@ -80,7 +80,7 @@ from opensquilla.result_budget import (
     compact_tool_result_content,
     resolve_budget_class,
 )
-from opensquilla.router_control import router_control_replay_event_from_payload
+from opensquilla.router_control import router_control_replay_payload
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -111,6 +111,7 @@ from .types import (
     CompactionOutcome,
     DoneEvent,
     ErrorEvent,
+    RouterControlReplayEvent,
     RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
@@ -253,6 +254,24 @@ def _pending_approval_payload(content: str) -> dict[str, Any] | None:
     if not isinstance(approval_id, str) or not approval_id:
         return None
     return payload
+
+
+def _router_control_replay_event(
+    content: object,
+    *,
+    replay_depth: int = 0,
+) -> RouterControlReplayEvent | None:
+    payload = router_control_replay_payload(content)
+    if payload is None:
+        return None
+    return RouterControlReplayEvent(
+        action=str(payload.get("action") or ""),
+        target_tier=payload.get("target_tier"),
+        target_model=payload.get("target_model"),
+        target_provider=payload.get("target_provider"),
+        target_id=payload.get("target_id"),
+        replay_depth=replay_depth,
+    )
 
 
 async def _wait_for_pending_approval_resolution(
@@ -3305,7 +3324,7 @@ class Agent:
                         arguments=tc.arguments,
                         execution_status=result.execution_status,
                     )
-                    replay_event = router_control_replay_event_from_payload(result.content)
+                    replay_event = _router_control_replay_event(result.content)
                     if replay_event is not None:
                         yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
@@ -3335,7 +3354,7 @@ class Agent:
                             arguments=retry_arguments,
                             execution_status=result.execution_status,
                         )
-                        replay_event = router_control_replay_event_from_payload(result.content)
+                        replay_event = _router_control_replay_event(result.content)
                         if replay_event is not None:
                             yield replay_event
                     executed_results.append(result)
