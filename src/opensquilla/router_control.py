@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_HOLD_TURNS = 4
@@ -301,5 +301,5 @@ def router_control_payload_asdict(content: object) -> dict[str, Any]:
     if payload is not None:
         return payload
     if hasattr(content, "__dataclass_fields__"):
-        return asdict(content)
+        return dict(vars(content))
     return {}
