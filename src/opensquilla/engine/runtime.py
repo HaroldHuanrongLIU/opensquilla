@@ -153,6 +153,7 @@ from opensquilla.session.compaction_lifecycle import (
     COMPACTION_REPLAYED_EVENT,
     COMPACTION_SUMMARY_VERIFIED_EVENT,
     COMPACTION_TRIGGERED_EVENT,
+    compaction_effect_payload,
     compaction_lifecycle_payload,
     compaction_memory_status,
     compaction_result_payload,
@@ -1357,6 +1358,7 @@ class TurnRunner:
         # churn the cacheable prefix mid-session.
         self._bootstrap_snapshots: dict[tuple[str, str, str], BootstrapSnapshot] = {}
         self._compaction_failures: dict[str, _CompactionFailureState] = {}
+        self._turn_compaction_attempted_sessions: set[str] = set()
         self._turn_compacted_sessions: set[str] = set()
         self._active_pre_compaction_flush_tasks: dict[str, asyncio.Task] = {}
         self._emergency_compaction_overrides: dict[str, _EmergencyCompactionOverride] = {}
@@ -1441,7 +1443,17 @@ class TurnRunner:
     def mark_compacted_this_turn(self, session_key: str) -> None:
         self._turn_compacted_sessions.add(session_key)
 
+    def has_attempted_compaction_this_turn(self, session_key: str) -> bool:
+        return session_key in self._turn_compaction_attempted_sessions
+
+    def mark_compaction_attempted_this_turn(self, session_key: str) -> None:
+        self._turn_compaction_attempted_sessions.add(session_key)
+
     def clear_compacted_this_turn(self, session_key: str) -> None:
+        self._turn_compacted_sessions.discard(session_key)
+
+    def clear_compaction_turn_state(self, session_key: str) -> None:
+        self._turn_compaction_attempted_sessions.discard(session_key)
         self._turn_compacted_sessions.discard(session_key)
 
     def refresh_memory_snapshot(self, agent_id: str) -> None:
@@ -1784,7 +1796,7 @@ class TurnRunner:
                 ):
                     yield event
             finally:
-                self.clear_compacted_this_turn(session_key)
+                self.clear_compaction_turn_state(session_key)
         else:
             async with lock:
                 # Record this Task as the lock owner in the ContextVar so that
@@ -1823,7 +1835,7 @@ class TurnRunner:
                     ):
                         yield event
                 finally:
-                    self.clear_compacted_this_turn(session_key)
+                    self.clear_compaction_turn_state(session_key)
                     _SESSION_LOCK_OWNER.reset(_token)
 
     async def _run_turn(
@@ -4202,13 +4214,18 @@ class TurnRunner:
         if self._session_manager is None:
             return _T3_NOT_APPLICABLE
 
-        if self._compaction_circuit_open(session_key):
-            return _T3_HANDLED
         if self.has_compacted_this_turn(session_key):
             log.info(
                 "t3_upgrade_compaction.skipped",
                 session_key=session_key,
                 reason="already_compacted_this_turn",
+            )
+            return _T3_HANDLED
+        if self.has_attempted_compaction_this_turn(session_key):
+            log.info(
+                "t3_upgrade_compaction.skipped",
+                session_key=session_key,
+                reason="already_attempted_this_turn",
             )
             return _T3_HANDLED
 
@@ -4245,6 +4262,17 @@ class TurnRunner:
                 safety_margin=safety_margin,
             )
             return _T3_HANDLED
+        if self._compaction_circuit_open(session_key):
+            self.mark_compaction_attempted_this_turn(session_key)
+            await self._record_emergency_ephemeral_compaction(
+                session_key,
+                transcript,
+                context_window_tokens,
+                compaction_id=new_compaction_id(),
+                phase="t3_upgrade",
+                reason="durable_compaction_circuit_open",
+            )
+            return _T3_HANDLED
 
         log.info(
             "t3_upgrade_compaction.triggered",
@@ -4253,6 +4281,7 @@ class TurnRunner:
             final_tier="t3",
             context_window_tokens=context_window_tokens,
         )
+        self.mark_compaction_attempted_this_turn(session_key)
         compaction_id = new_compaction_id()
         notify_compaction(
             session_key,
@@ -4261,6 +4290,7 @@ class TurnRunner:
             status="started",
             previous_tier=previous,
             context_window_tokens=context_window_tokens,
+            **compaction_effect_payload(status="started"),
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
 
@@ -4310,6 +4340,10 @@ class TurnRunner:
                     flush_receipt_status=flush_receipt_status,
                     memory_safety_status=memory_status.safety_status,
                     semantic_memory_status=memory_status.semantic_status,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason="unsafe_flush_receipt",
+                    ),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4367,6 +4401,7 @@ class TurnRunner:
                         status="observed",
                         context_window_tokens=context_window_tokens,
                         flush_receipt_status=flush_receipt_status,
+                        **compaction_effect_payload(status="observed"),
                         **observed_payload,
                     )
             if result:
@@ -4382,6 +4417,7 @@ class TurnRunner:
                     status="completed",
                     context_window_tokens=context_window_tokens,
                     flush_receipt_status=flush_receipt_status,
+                    **compaction_effect_payload(status="completed"),
                     **completed_payload,
                     **compaction_lifecycle_payload(compaction_id, COMPACTION_PERSISTED_EVENT),
                 )
@@ -4390,8 +4426,16 @@ class TurnRunner:
                     getattr(compaction_result, "skip_reason", None) or "empty_summary"
                 )
                 if skip_reason != "stale_preimage":
-                    self.mark_compacted_this_turn(session_key)
-                    self._record_compaction_success(session_key)
+                    emergency_applied = await self._record_emergency_ephemeral_compaction(
+                        session_key,
+                        transcript,
+                        context_window_tokens,
+                        compaction_id=compaction_id,
+                        phase="t3_upgrade",
+                        reason=skip_reason,
+                    )
+                    if emergency_applied:
+                        return _T3_HANDLED
                 notify_compaction(
                     session_key,
                     source="automatic",
@@ -4400,6 +4444,10 @@ class TurnRunner:
                     reason=skip_reason,
                     context_window_tokens=context_window_tokens,
                     flush_receipt_status=flush_receipt_status,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason=skip_reason,
+                    ),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4438,6 +4486,7 @@ class TurnRunner:
                 message=str(exc),
                 context_window_tokens=context_window_tokens,
                 flush_receipt_status=flush_receipt_status,
+                **compaction_effect_payload(status="failed"),
                 **compaction_lifecycle_payload(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
@@ -4466,13 +4515,18 @@ class TurnRunner:
         # Skip ephemeral sessions
         if session_key.startswith(("cron:", "subagent:")):
             return
-        if self._compaction_circuit_open(session_key):
-            return
         if self.has_compacted_this_turn(session_key):
             log.info(
                 "preflight_compaction.skipped",
                 session_key=session_key,
                 reason="already_compacted_this_turn",
+            )
+            return
+        if self.has_attempted_compaction_this_turn(session_key):
+            log.info(
+                "preflight_compaction.skipped",
+                session_key=session_key,
+                reason="already_attempted_this_turn",
             )
             return
         try:
@@ -4489,6 +4543,17 @@ class TurnRunner:
         threshold = int(context_window_tokens * ratio)
         if total_tokens <= threshold:
             return
+        if self._compaction_circuit_open(session_key):
+            self.mark_compaction_attempted_this_turn(session_key)
+            await self._record_emergency_ephemeral_compaction(
+                session_key,
+                transcript,
+                context_window_tokens,
+                compaction_id=new_compaction_id(),
+                phase="preflight",
+                reason="durable_compaction_circuit_open",
+            )
+            return
 
         log.info(
             "preflight_compaction.triggered",
@@ -4497,6 +4562,7 @@ class TurnRunner:
             threshold=threshold,
             ratio=ratio,
         )
+        self.mark_compaction_attempted_this_turn(session_key)
         compaction_id = new_compaction_id()
         notify_compaction(
             session_key,
@@ -4505,6 +4571,7 @@ class TurnRunner:
             status="started",
             tokens_before=total_tokens,
             context_window_tokens=context_window_tokens,
+            **compaction_effect_payload(status="started"),
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
         checkpoint_saved = await self._record_checkpoint_before_compaction(
@@ -4554,6 +4621,10 @@ class TurnRunner:
                     flush_receipt_status=flush_receipt_status,
                     memory_safety_status=memory_status.safety_status,
                     semantic_memory_status=memory_status.semantic_status,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason="unsafe_flush_receipt",
+                    ),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4561,6 +4632,7 @@ class TurnRunner:
                 )
                 return
         compaction_config = None
+        skip_reason = "empty_summary"
         if compaction_provider is not None or compaction_model:
             from opensquilla.session.compaction import build_compaction_config_from_provider
 
@@ -4624,13 +4696,9 @@ class TurnRunner:
                         status="observed",
                         context_window_tokens=context_window_tokens,
                         flush_receipt_status=flush_receipt_status,
+                        **compaction_effect_payload(status="observed"),
                         **observed_payload,
                     )
-            skip_reason = str(
-                getattr(compaction_result, "skip_reason", None) or "empty_summary"
-            )
-            if skip_reason != "stale_preimage":
-                self.mark_compacted_this_turn(session_key)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -4659,6 +4727,7 @@ class TurnRunner:
                 tokens_before=total_tokens,
                 context_window_tokens=context_window_tokens,
                 flush_receipt_status=flush_receipt_status,
+                **compaction_effect_payload(status="failed"),
                 **compaction_lifecycle_payload(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
@@ -4679,6 +4748,10 @@ class TurnRunner:
                     tokens_before=total_tokens,
                     context_window_tokens=context_window_tokens,
                     flush_receipt_status=flush_receipt_status,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason=skip_reason,
+                    ),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4694,11 +4767,10 @@ class TurnRunner:
                 reason=skip_reason,
             )
             if emergency_applied:
-                self._record_compaction_success(session_key)
                 return
-
-        self._record_compaction_success(session_key)
         if result:
+            self.mark_compacted_this_turn(session_key)
+            self._record_compaction_success(session_key)
             completed_payload = {"tokens_before": total_tokens}
             if compaction_result is not None:
                 completed_payload.update(
@@ -4714,6 +4786,7 @@ class TurnRunner:
                 status="completed",
                 context_window_tokens=context_window_tokens,
                 flush_receipt_status=flush_receipt_status,
+                **compaction_effect_payload(status="completed"),
                 **completed_payload,
                 **compaction_lifecycle_payload(compaction_id, COMPACTION_PERSISTED_EVENT),
             )
@@ -4727,6 +4800,10 @@ class TurnRunner:
                 tokens_before=total_tokens,
                 context_window_tokens=context_window_tokens,
                 flush_receipt_status=flush_receipt_status,
+                **compaction_effect_payload(
+                    status="skipped",
+                    reason=skip_reason,
+                ),
                 **compaction_lifecycle_payload(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
@@ -5136,13 +5213,16 @@ class TurnRunner:
             source="automatic",
             phase=phase,
             status="emergency_ephemeral",
-            durability="request_scoped",
             reason=reason,
             removed_count=result.removed_count,
             kept_count=len(kept_entries),
             tokens_before=result.tokens_before,
             tokens_after=result.tokens_after,
             flush_receipt_status="emergency_ephemeral",
+            **compaction_effect_payload(
+                status="emergency_ephemeral",
+                reason=reason,
+            ),
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
         return True

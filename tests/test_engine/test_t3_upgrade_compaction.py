@@ -283,6 +283,9 @@ async def test_t3_completed_event_reports_compaction_metadata(
     assert events[1][1]["event"] == "compaction.chunk_summarized"
     assert events[2][1]["event"] == "compaction.summary_verified"
     completed = events[-1][1]
+    assert completed["applied"] is True
+    assert completed["durability"] == "durable"
+    assert completed["user_visible"] is True
     assert completed["event"] == "compaction.persisted"
     assert completed["event_chain"] == [
         "compaction.triggered",
@@ -322,6 +325,9 @@ async def test_t3_stale_preimage_skip_does_not_mark_compacted(
     assert runner.has_compacted_this_turn(session_key) is False
     skipped = [payload for _, payload in events if payload.get("status") == "skipped"]
     assert skipped[-1]["reason"] == "stale_preimage"
+    assert skipped[-1]["applied"] is False
+    assert skipped[-1]["durability"] == "none"
+    assert skipped[-1]["user_visible"] is False
 
 
 @pytest.mark.asyncio
@@ -652,3 +658,47 @@ async def test_t3_compact_failure_uses_emergency_ephemeral_history_trim(
     assert "failed" not in statuses
     emergency = next(payload for _, payload in events if payload["status"] == "emergency_ephemeral")
     assert emergency["durability"] == "request_scoped"
+    assert runner._compaction_failures[session_key].count == 1
+
+
+@pytest.mark.asyncio
+async def test_t3_open_circuit_still_uses_request_scoped_emergency_trim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_key = "agent:main:webchat:t3-open-circuit"
+    transcript = [
+        TranscriptEntry(
+            session_id="s1",
+            session_key=session_key,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"historic t3 message {index} " + ("x" * 500),
+            token_count=300,
+        )
+        for index in range(8)
+    ]
+    sm = _FakeSessionManager(transcript)
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runtime_module,
+        "notify_compaction",
+        lambda session_key, **payload: events.append((session_key, payload)),
+    )
+    runner = _make_runner(session_manager=sm, flush_service=_FakeFlushService())
+    runner._compaction_failures[session_key] = runtime_module._CompactionFailureState(
+        count=3,
+        opened_at=runtime_module.time.monotonic(),
+    )
+
+    result = await runner._maybe_compact_on_t3_upgrade(
+        session_key,
+        _make_turn(routed_tier="t3", previous_tier="t2"),
+        1000,
+    )
+
+    assert result == "handled"
+    assert sm.compact_calls == []
+    assert [payload["status"] for _, payload in events] == ["emergency_ephemeral"]
+    emergency = events[-1][1]
+    assert emergency["reason"] == "durable_compaction_circuit_open"
+    assert emergency["durability"] == "request_scoped"
+    assert runner._compaction_failures[session_key].count == 3

@@ -23,6 +23,7 @@ from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import Message, ModelInfo
 from opensquilla.provider import TextDeltaEvent as ProviderText
+from opensquilla.provider.model_catalog import ModelCatalog
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import TranscriptEntry
@@ -484,6 +485,9 @@ async def test_preflight_completed_event_reports_compaction_metadata(
     assert events[1][1]["event"] == "compaction.chunk_summarized"
     assert events[2][1]["event"] == "compaction.summary_verified"
     completed = events[-1][1]
+    assert completed["applied"] is True
+    assert completed["durability"] == "durable"
+    assert completed["user_visible"] is True
     assert completed["event"] == "compaction.persisted"
     assert completed["event_chain"] == [
         "compaction.triggered",
@@ -785,15 +789,61 @@ async def test_preflight_compact_failure_reports_emergency_without_failed_event(
         lambda session_key, **payload: events.append((session_key, payload)),
     )
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=sm)
+    runner._compaction_failures[session_key] = runtime_module._CompactionFailureState(count=1)
 
     await runner._maybe_preflight_compact(session_key, context_window)
 
     statuses = [payload["status"] for _, payload in events]
     assert statuses == ["started", "emergency_ephemeral"]
     emergency = events[-1][1]
+    assert emergency["applied"] is True
     assert emergency["durability"] == "request_scoped"
+    assert emergency["user_visible"] is True
     assert emergency["reason"] == "compact_failed"
     assert emergency["flush_receipt_status"] == "emergency_ephemeral"
+    assert runner._compaction_failures[session_key].count == 2
+
+
+@pytest.mark.asyncio
+async def test_preflight_open_circuit_still_uses_request_scoped_emergency_trim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_key = "agent:ops:preflight-open-circuit"
+    context_window = 1000
+    entries = [
+        TranscriptEntry(
+            session_id="test-session-id",
+            session_key=session_key,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"historic message {index} " + ("x" * 500),
+            token_count=300,
+        )
+        for index in range(8)
+    ]
+    mock_sm = MagicMock()
+    mock_sm.compact = AsyncMock()
+    mock_sm.get_transcript = AsyncMock(return_value=entries)
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runtime_module,
+        "notify_compaction",
+        lambda session_key, **payload: events.append((session_key, payload)),
+    )
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=mock_sm)
+    runner._compaction_failures[session_key] = runtime_module._CompactionFailureState(
+        count=3,
+        opened_at=runtime_module.time.monotonic(),
+    )
+
+    await runner._maybe_preflight_compact(session_key, context_window)
+
+    mock_sm.compact.assert_not_awaited()
+    assert [payload["status"] for _, payload in events] == ["emergency_ephemeral"]
+    emergency = events[-1][1]
+    assert emergency["reason"] == "durable_compaction_circuit_open"
+    assert emergency["applied"] is True
+    assert emergency["durability"] == "request_scoped"
+    assert runner._compaction_failures[session_key].count == 3
 
 
 @pytest.mark.asyncio
@@ -880,13 +930,18 @@ async def test_preflight_stale_preimage_skip_does_not_use_emergency_trim(
         lambda session_key, **payload: events.append((session_key, payload)),
     )
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=sm)
+    runner._compaction_failures[session_key] = runtime_module._CompactionFailureState(count=1)
 
     await runner._maybe_preflight_compact(session_key, context_window)
 
     assert sm.compact_with_result_calls == [(session_key, context_window, None)]
     assert runner.has_compacted_this_turn(session_key) is False
+    assert runner._compaction_failures[session_key].count == 1
     skipped = [payload for _, payload in events if payload.get("status") == "skipped"]
     assert skipped[-1]["reason"] == "stale_preimage"
+    assert skipped[-1]["applied"] is False
+    assert skipped[-1]["durability"] == "none"
+    assert skipped[-1]["user_visible"] is False
 
     class _HistoryCapture:
         provider = SimpleNamespace(provider_name="test")
@@ -1190,7 +1245,11 @@ async def test_run_falls_back_to_generic_preflight_after_t3_flush_failed() -> No
 @pytest.mark.asyncio
 async def test_run_forwards_routed_provider_and_model_to_preflight() -> None:
     selector = _FakeProviderSelector()
-    runner = TurnRunner(provider_selector=selector, config=GatewayConfig())
+    runner = TurnRunner(
+        provider_selector=selector,
+        config=GatewayConfig(),
+        model_catalog=ModelCatalog(),
+    )
     seen: dict[str, object] = {}
 
     async def spy_preflight(session_key, context_window_tokens, **kwargs):
@@ -1205,15 +1264,16 @@ async def test_run_forwards_routed_provider_and_model_to_preflight() -> None:
         "hello",
         "agent:main:abc123",
         tool_context=tool_ctx,
-        model="routed/model",
+        model="z-ai/glm-5.1",
     ):
         pass
 
     assert seen["session_key"] == "agent:main:abc123"
-    assert seen["compaction_model"] == "routed/model"
-    assert getattr(seen["compaction_provider"], "model") == "routed/model"
+    assert seen["context_window_tokens"] == 202_752
+    assert seen["compaction_model"] == "z-ai/glm-5.1"
+    assert getattr(seen["compaction_provider"], "model") == "z-ai/glm-5.1"
     assert selector.override_calls == []
-    assert selector.clone_instance.override_calls[-1] == "routed/model"
+    assert selector.clone_instance.override_calls[-1] == "z-ai/glm-5.1"
 
 
 @pytest.mark.asyncio
@@ -1337,6 +1397,7 @@ async def test_preflight_compaction_circuit_breaker_retries_after_cooldown() -> 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
         for _ in range(4):
             await runner._maybe_preflight_compact("user:session", context_window)
+            runner.clear_compaction_turn_state("user:session")
 
     assert mock_sm.compact.await_count == 3
 

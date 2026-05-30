@@ -598,6 +598,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             tokens_before=0,
             tokens_after=0,
             remaining_budget_tokens=max(window, 0),
+            skip_reason="no_entries",
         )
 
     # If we're within budget, no compaction needed.
@@ -611,6 +612,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             tokens_before=total_tokens,
             tokens_after=total_tokens,
             remaining_budget_tokens=max(window - total_tokens, 0),
+            skip_reason="within_compaction_budget",
         )
 
     keep_budget = window // 2
@@ -630,6 +632,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             tokens_before=total_tokens,
             tokens_after=total_tokens,
             remaining_budget_tokens=max(window - total_tokens, 0),
+            skip_reason="no_safe_turn_boundary",
         )
 
     chunk_ratio = max(cfg.min_chunk_ratio, cfg.base_chunk_ratio / cfg.default_parts)
@@ -700,6 +703,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             coverage_status=coverage.status,
             missing_obligations=coverage.missing_obligations,
             critical_carry_forward=coverage.critical_carry_forward,
+            skip_reason="coverage_blocked",
         )
 
     log.info(

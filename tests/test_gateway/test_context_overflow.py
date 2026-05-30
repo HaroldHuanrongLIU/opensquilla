@@ -70,6 +70,23 @@ class _ResultCompactionSessionManager(_FakeSessionManager):
         )
 
 
+class _InsufficientResultCompactionSessionManager(_FakeSessionManager):
+    async def compact_with_result(self, session_key: str, budget: int, config=None, **kwargs):
+        self.compact_calls.append((session_key, budget, config))
+        self.compact_kwargs.append(dict(kwargs))
+        self._transcript = [_FakeEntry(content="[still too large]", token_count=100)]
+        return SimpleNamespace(
+            summary="[summary]",
+            kept_entries=[{"role": "assistant", "content": "[still too large]"}],
+            removed_count=5,
+            chunks_processed=2,
+            summary_source="llm",
+            tokens_before=900,
+            tokens_after=100,
+            remaining_budget_tokens=0,
+        )
+
+
 class _InsufficientCompactionSessionManager(_FakeSessionManager):
     async def compact(self, session_key: str, budget: int, config=None) -> str:
         self.compact_calls.append((session_key, budget, config))
@@ -488,6 +505,43 @@ async def test_auto_summarize_emits_started_and_completed_events(
     assert completed["removed_count"] == 5
     assert completed["kept_count"] == 1
     assert completed["tokens_after"] < completed["tokens_before"]
+    assert completed["applied"] is True
+    assert completed["durability"] == "durable"
+    assert completed["user_visible"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_summarize_reports_durable_effect_when_request_still_over_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10)
+    sm = _InsufficientResultCompactionSessionManager(_history(6, 40))
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        context_overflow,
+        "notify_compaction",
+        lambda session_key, **payload: events.append((session_key, payload)),
+    )
+
+    outcome = await apply_context_overflow_policy(
+        config=cfg,
+        message="m",
+        transcript=sm._transcript,
+        session_key="s-auto-durable-refused",
+        session_manager=sm,
+    )
+
+    assert outcome.summarized is False
+    assert outcome.lifecycle is not None
+    assert outcome.lifecycle.compacted is True
+    assert outcome.lifecycle.refused is True
+    failed = events[-1][1]
+    assert failed["status"] == "failed"
+    assert failed["request_status"] == "refused"
+    assert failed["reason"] == "compaction_insufficient"
+    assert failed["applied"] is True
+    assert failed["durability"] == "durable"
+    assert failed["removed_count"] == 5
 
 
 @pytest.mark.asyncio
@@ -515,8 +569,11 @@ async def test_auto_summarize_uses_ephemeral_trim_on_compaction_exception(
     assert outcome.reason == "emergency_ephemeral"
     assert outcome.refusal is None
     assert outcome.retried is True
-    assert [payload["status"] for _, payload in events] == ["started", "failed"]
+    assert [payload["status"] for _, payload in events] == ["started", "emergency_ephemeral"]
     assert events[-1][1]["reason"] == "emergency_ephemeral"
+    assert events[-1][1]["applied"] is True
+    assert events[-1][1]["durability"] == "request_scoped"
+    assert events[-1][1]["user_visible"] is True
     assert "compact boom" in events[-1][1]["message"]
 
 
@@ -548,8 +605,9 @@ async def test_auto_summarize_uses_ephemeral_trim_when_marker_fails(
     assert outcome.retried is True
     assert outcome.flush_receipt is None
     assert sm.compact_calls == []
-    assert [payload["status"] for _, payload in events] == ["failed"]
+    assert [payload["status"] for _, payload in events] == ["emergency_ephemeral"]
     assert events[-1][1]["reason"] == "emergency_ephemeral"
+    assert events[-1][1]["durability"] == "request_scoped"
     assert events[-1][1]["flush_receipt_status"] == "not_required"
     assert "marker unavailable" in events[-1][1]["message"]
 

@@ -2859,15 +2859,65 @@ const ChatView = (() => {
     return 'Compacting context...';
   }
 
+  const _INTERNAL_COMPACTION_SKIP_REASONS = new Set([
+    'already_attempted_this_turn',
+    'already_compacted_this_turn',
+    'no_entries',
+    'stale_preimage',
+    'structured_content_noop',
+    'within_budget',
+    'within_compaction_budget',
+  ]);
+
+  const _COMPACTION_SKIP_MESSAGES = {
+    coverage_blocked: 'Context was left unchanged because required details could not be preserved.',
+    empty_ephemeral_webchat_session: 'No compactable chat history yet.',
+    empty_summary: 'Context was left unchanged because no usable summary was produced.',
+    no_entries: 'No compactable chat history yet.',
+    no_safe_turn_boundary: 'Context cannot be compacted safely during the current tool turn.',
+  };
+
+  const _COMPACTION_SKIP_DETAILS = {
+    coverage_blocked: 'Required details could not be preserved',
+    empty_ephemeral_webchat_session: 'No compactable history',
+    empty_summary: 'No usable summary was produced',
+    no_entries: 'No compactable history',
+    no_safe_turn_boundary: 'Current tool turn boundary is not safe to compact',
+    unsafe_flush_receipt: 'Memory safety check did not complete',
+  };
+
+  function _compactionReason(payload) {
+    return String(payload && (payload.reason || payload.skip_reason) || '');
+  }
+
+  function _compactionUserVisible(payload, source, status) {
+    if (payload && Object.prototype.hasOwnProperty.call(payload, 'user_visible')) {
+      return payload.user_visible !== false;
+    }
+    if (source === 'manual') return true;
+    if (status === 'skipped') {
+      const reason = _compactionReason(payload);
+      return !_INTERNAL_COMPACTION_SKIP_REASONS.has(reason);
+    }
+    return true;
+  }
+
   function _compactionSkipMessage(payload, source) {
-    if (source === 'manual') return 'Already within context budget; no compact was applied.';
-    const reason = String(payload && (payload.reason || payload.skip_reason) || '');
+    const reason = _compactionReason(payload);
+    if (source === 'manual') {
+      return _COMPACTION_SKIP_MESSAGES[reason] || 'Already within context budget; no compact was applied.';
+    }
+    if (_COMPACTION_SKIP_MESSAGES[reason]) return 'Context compaction could not be applied';
     if (reason) return 'Context compaction skipped';
     return 'Already within context budget; no compact was applied.';
   }
 
-  function _compactionStatusDetail(payload) {
-    const reason = String(payload && (payload.reason || payload.skip_reason) || '');
+  function _compactionStatusDetail(payload, source = '', status = '') {
+    if (!_compactionUserVisible(payload, source, status)) return '';
+    if (status === 'emergency_ephemeral') return 'Request-scoped; session history was not rewritten';
+    const reason = _compactionReason(payload);
+    if (_INTERNAL_COMPACTION_SKIP_REASONS.has(reason)) return '';
+    if (_COMPACTION_SKIP_DETAILS[reason]) return _COMPACTION_SKIP_DETAILS[reason];
     if (reason) return reason.replace(/_/g, ' ');
     return '';
   }
@@ -2884,23 +2934,22 @@ const ChatView = (() => {
       _setCompactInFlight(true, payload && payload.key || _sessionKey);
       _setCompactStatus('started', 'Compacting context...', {
         tone: 'info',
-        detail: _compactionStatusDetail(payload || {}),
+        detail: _compactionStatusDetail(payload || {}, source, status),
       });
-      UI.toast('Compacting context...', 'info', 2500);
       return;
     }
     if (status === 'observed') {
       if (_isCompactInFlightForCurrentSession()) {
         _setCompactStatus('started', _compactionProgressMessage(payload || {}), {
           tone: 'info',
-          detail: _compactionStatusDetail(payload || {}),
+          detail: _compactionStatusDetail(payload || {}, source, status),
         });
       }
       return;
     }
     if (status === 'emergency_ephemeral') {
       _settleCompactInFlight(payload || {});
-      const detail = _compactionStatusDetail(payload || {}) || 'Request-scoped; session history was not rewritten';
+      const detail = _compactionStatusDetail(payload || {}, source, status) || 'Request-scoped; session history was not rewritten';
       _setCompactStatus('completed', 'Continuing with temporary context compaction', {
         tone: 'warn',
         detail,
@@ -2911,13 +2960,16 @@ const ChatView = (() => {
     }
     if (status === 'skipped') {
       _settleCompactInFlight(payload || {});
+      if (!_compactionUserVisible(payload || {}, source, status)) {
+        _hideCompactStatus();
+        return;
+      }
       const skippedMessage = _compactionSkipMessage(payload || {}, source);
       _setCompactStatus('skipped', skippedMessage, {
         tone: 'info',
-        detail: _compactionStatusDetail(payload || {}),
+        detail: _compactionStatusDetail(payload || {}, source, status),
         dismissMs: 5000,
       });
-      UI.toast(skippedMessage, 'info', 3500);
       return;
     }
     const semanticNotice = _compactSemanticMemoryNotice(payload || {});
@@ -2927,7 +2979,6 @@ const ChatView = (() => {
         tone: 'ok',
         dismissMs: 5000,
       });
-      UI.toast(semanticNotice, 'info', 3500);
       return;
     }
     if (status === 'failed' || status === 'error') {
@@ -2944,7 +2995,7 @@ const ChatView = (() => {
         : (recovered ? '; pending message recovered to input' : '');
       _setCompactStatus('failed', 'Compact failed' + msg + pendingSuffix, {
         tone: 'err',
-        detail: _compactionStatusDetail(payload || {}),
+        detail: _compactionStatusDetail(payload || {}, source, status),
         dismissMs: 10000,
       });
       UI.toast(
@@ -2975,18 +3026,12 @@ const ChatView = (() => {
         tone: 'ok',
         dismissMs: 5000,
       });
-      UI.toast('Context compacted' + details, 'info', 4500);
       return;
     }
     _setCompactStatus('completed', 'Context compacted' + details, {
       tone: 'ok',
       dismissMs: 5000,
     });
-    UI.toast(
-      'Context compacted older messages to keep this session within budget' + details,
-      'info',
-      4500,
-    );
   }
 
   /* ── Router slider — arcade-brutalist whac-a-mole grid ─────────────

@@ -17,6 +17,7 @@ FlushCompactionDecision = Literal[
 FlushCompactionSafetyMode = Literal["protect", "best_effort", "block", "off"]
 CompactionSafetyStatus = Literal["safe", "degraded_archive", "unsafe", "not_required"]
 SemanticMemoryStatus = Literal["healthy", "pending", "degraded", "failed", "not_required"]
+CompactionDurability = Literal["durable", "request_scoped", "none"]
 
 SAFE_FLUSH_OUTPUT_COVERAGE_STATUSES: Final[frozenset[str]] = frozenset({"ok"})
 SAFE_FLUSH_OBLIGATION_STATUSES: Final[frozenset[str]] = frozenset(
@@ -28,6 +29,17 @@ COMPACTION_SUMMARY_VERIFIED_EVENT: Final[str] = "compaction.summary_verified"
 COMPACTION_PERSISTED_EVENT: Final[str] = "compaction.persisted"
 COMPACTION_REPLAYED_EVENT: Final[str] = "compaction.replayed"
 COMPACTION_COVERAGE_UNKNOWN: Final[str] = "unknown"
+BENIGN_AUTOMATIC_COMPACTION_SKIP_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "already_attempted_this_turn",
+        "already_compacted_this_turn",
+        "no_entries",
+        "stale_preimage",
+        "structured_content_noop",
+        "within_budget",
+        "within_compaction_budget",
+    }
+)
 NOOP_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset({"ok_noop_no_memory"})
 ARCHIVE_ONLY_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
     {"ok_archive_only"}
@@ -103,6 +115,55 @@ def compaction_lifecycle_payload(compaction_id: str, event: str) -> dict[str, An
     }
     if event not in {COMPACTION_PERSISTED_EVENT, COMPACTION_REPLAYED_EVENT}:
         payload["coverage_status"] = COMPACTION_COVERAGE_UNKNOWN
+    return payload
+
+
+def compaction_effect_payload(
+    *,
+    status: str,
+    source: str = "automatic",
+    reason: str | None = None,
+    skip_reason: str | None = None,
+    applied: bool | None = None,
+    durability: CompactionDurability | None = None,
+    user_visible: bool | None = None,
+) -> dict[str, Any]:
+    """Return normalized user-facing semantics for a compaction event."""
+
+    normalized_status = str(status or "").lower()
+    normalized_source = str(source or "").lower()
+    normalized_reason = str(skip_reason or reason or "").strip() or None
+
+    if applied is None:
+        applied = normalized_status in {"completed", "emergency_ephemeral"}
+    if durability is None:
+        if normalized_status == "completed":
+            durability = "durable"
+        elif normalized_status == "emergency_ephemeral":
+            durability = "request_scoped"
+        else:
+            durability = "none"
+    if user_visible is None:
+        if normalized_source == "manual":
+            user_visible = True
+        elif normalized_status in {"started", "observed", "completed", "emergency_ephemeral"}:
+            user_visible = True
+        elif normalized_status in {"failed", "error", "cancelled"}:
+            user_visible = True
+        elif normalized_status == "skipped":
+            user_visible = (
+                normalized_reason not in BENIGN_AUTOMATIC_COMPACTION_SKIP_REASONS
+            )
+        else:
+            user_visible = False
+
+    payload: dict[str, Any] = {
+        "applied": bool(applied),
+        "durability": durability,
+        "user_visible": bool(user_visible),
+    }
+    if normalized_status == "skipped" and normalized_reason:
+        payload["skip_reason"] = normalized_reason
     return payload
 
 

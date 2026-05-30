@@ -730,6 +730,7 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
         from opensquilla.engine.cache_break_monitor import notify_compaction
         from opensquilla.session.compaction_lifecycle import (
             COMPACTION_PERSISTED_EVENT,
+            compaction_effect_payload,
             compaction_lifecycle_payload,
             new_compaction_id,
         )
@@ -763,6 +764,7 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
             status="completed",
             kept_count=len(kept_entries),
             summary_len=len(summary or ""),
+            **compaction_effect_payload(status="completed"),
             **compaction_lifecycle_payload(
                 compaction_id,
                 COMPACTION_PERSISTED_EVENT,

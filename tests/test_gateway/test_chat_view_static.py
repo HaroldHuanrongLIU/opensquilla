@@ -849,7 +849,7 @@ def test_chat_tracks_background_task_groups_as_active_run_state() -> None:
     assert "_activeTaskGroups.size > 0" in source
 
 
-def test_chat_surfaces_compaction_lifecycle_toasts() -> None:
+def test_chat_surfaces_compaction_lifecycle_status_and_exception_toasts() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     compact_block = source[
         source.index("case 'compact_context':") : source.index("case 'usage_status':")
@@ -862,15 +862,22 @@ def test_chat_surfaces_compaction_lifecycle_toasts() -> None:
     assert "_setCompactInFlight(true, compactKey);" in compact_block
     assert "Compacting context..." in body
     assert "Already within context budget; no compact was applied." in source
+    assert "Context compaction could not be applied" in source
+    assert "No compactable chat history yet." in source
+    assert "Context was left unchanged because no usable summary was produced." in source
     assert "if (compactKey !== _sessionKey) return;" in compact_block
     assert (
         "_showCompactionToast({ ...(result || {}), key: compactKey, source: 'manual'"
         in compact_block
     )
     assert "session.event.compaction" in source
-    assert "Context compacted older messages to keep this session within budget" in source
+    assert "Context compacted older messages to keep this session within budget" not in source
     assert "Continuing with temporary context compaction" in source
+    assert "Continuing with temporary context compaction for this turn" in body
     assert "Compact cancelled" in source
+    assert "function _compactionUserVisible(payload, source, status)" in source
+    assert "if (!_compactionUserVisible(payload || {}, source, status))" in body
+    assert "structured content noop" not in source.lower()
 
 
 def test_chat_surfaces_persistent_compaction_status_row() -> None:
@@ -888,7 +895,11 @@ def test_chat_surfaces_persistent_compaction_status_row() -> None:
     assert "_compactStatusEl = _el.querySelector('#chat-compact-status');" in source
     assert "_setCompactStatus('started', 'Compacting context...'" in body
     assert "function _compactionSkipMessage(payload, source)" in source
+    assert "if (_INTERNAL_COMPACTION_SKIP_REASONS.has(reason)) return '';" in source
+    assert "Request-scoped; session history was not rewritten" in source
+    assert "No usable summary was produced" in source
     assert "_setCompactStatus('skipped', skippedMessage" in body
+    assert "_hideCompactStatus();" in body
     assert "_setCompactStatus('completed', 'Context compacted' + details" in body
     assert "_setCompactStatus('failed', 'Compact failed' + msg + pendingSuffix" in body
     assert "_setCompactStatus('cancelled', 'Compact cancelled'" in body
@@ -912,7 +923,8 @@ def test_chat_compaction_token_details_are_success_only() -> None:
     skipped_block = body[skipped_start:skipped_end]
 
     assert "const skippedMessage = _compactionSkipMessage(payload || {}, source);" in skipped_block
-    assert "UI.toast(skippedMessage, 'info', 3500);" in skipped_block
+    assert "if (!_compactionUserVisible(payload || {}, source, status))" in skipped_block
+    assert "UI.toast(skippedMessage" not in skipped_block
     assert "_compactionTokenStats" not in skipped_block
     assert "payload && payload.tokens_after || 0" not in stats_body
     assert body.index("_compactionTokenStats(payload || {})") > body.index(
@@ -929,7 +941,8 @@ def test_chat_semantic_memory_degraded_is_non_blocking_and_path_safe() -> None:
     assert "function _compactSemanticMemoryNotice(payload)" in source
     assert "payload.semanticMemory || payload.semantic_memory" in source
     assert "Memory saved; organizing" in source
-    assert "UI.toast(semanticNotice, 'info', 3500);" in body
+    assert "_setCompactStatus('completed', semanticNotice" in body
+    assert "UI.toast(semanticNotice" not in body
     assert body.index("const semanticNotice = _compactSemanticMemoryNotice") < body.index(
         "if (status === 'failed' || status === 'error')"
     )

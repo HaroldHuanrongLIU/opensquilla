@@ -1789,6 +1789,9 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert res.payload["key"] == session.session_key
         assert res.payload["compacted"] is True
+        assert res.payload["applied"] is True
+        assert res.payload["durability"] == "durable"
+        assert res.payload["user_visible"] is True
         assert res.payload["mode"] == "summary"
         assert res.payload["summary_len"] == len(ctx_with_sessions.session_manager.compact_summary)
         assert res.payload["context_window_tokens"] == 1234
@@ -1957,7 +1960,14 @@ class TestSessionsContextCompact:
 
         assert res.ok is True
         assert res.payload["compacted"] is False
+        assert res.payload["applied"] is False
+        assert res.payload["durability"] == "none"
+        assert res.payload["skip_reason"] == "empty_summary"
+        assert res.payload["user_visible"] is True
         assert [payload["status"] for _, payload in events] == ["started", "skipped"]
+        assert events[-1][1]["applied"] is False
+        assert events[-1][1]["durability"] == "none"
+        assert events[-1][1]["skip_reason"] == "empty_summary"
         assert [payload["status"] for _, _, payload in emitted] == [
             "started",
             "skipped",

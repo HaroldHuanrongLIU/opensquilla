@@ -1095,7 +1095,7 @@ class SessionManager:
                 session_key=session_key,
                 removed_count=result.removed_count,
             )
-            return result
+            return replace(result, skip_reason=result.skip_reason or "empty_summary")
 
         async with _session_mutation_context(mutation_context):
             current_node = await self._storage.get_session(session_key)

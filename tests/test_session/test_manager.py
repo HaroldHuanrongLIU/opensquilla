@@ -960,6 +960,7 @@ async def test_compact_with_result_strict_coverage_blocks_destructive_rewrite(ma
     )
 
     assert result.removed_count == 0
+    assert result.skip_reason == "coverage_blocked"
     assert result.coverage_status == "fail_blocked"
     assert any(late_critical_path in item for item in result.missing_obligations or [])
     assert await manager.get_transcript("agent:main:main") == original_transcript

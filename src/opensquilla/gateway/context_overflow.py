@@ -43,6 +43,7 @@ from opensquilla.session.compaction_lifecycle import (
     COMPACTION_SUMMARY_VERIFIED_EVENT,
     COMPACTION_TRIGGERED_EVENT,
     CompactionLifecycleResult,
+    compaction_effect_payload,
     compaction_lifecycle_payload,
     compaction_memory_status,
     compaction_result_payload,
@@ -573,6 +574,7 @@ async def apply_context_overflow_policy(
                 status="started",
                 tokens_before=estimated,
                 context_window_tokens=budget,
+                **compaction_effect_payload(status="started"),
                 **compaction_lifecycle_payload(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
@@ -654,6 +656,7 @@ async def apply_context_overflow_policy(
                     flush_receipt_status=flush_status,
                     memory_safety_status=memory_status.safety_status,
                     semantic_memory_status=memory_status.semantic_status,
+                    **compaction_effect_payload(status="failed", reason=outcome.reason),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -709,6 +712,7 @@ async def apply_context_overflow_policy(
                         status="observed",
                         context_window_tokens=budget,
                         flush_receipt_status=flush_status,
+                        **compaction_effect_payload(status="observed"),
                         **observed_payload,
                     )
             compacted_transcript = await session_manager.get_transcript(session_key)
@@ -726,8 +730,13 @@ async def apply_context_overflow_policy(
             if post_estimate > budget or post_estimate >= estimated:
                 outcome.reason = "compaction_insufficient"
                 outcome.refusal = _build_refusal_envelope(post_estimate, budget, outcome.reason)
+                durable_applied = (
+                    compaction_result is not None
+                    and int(getattr(compaction_result, "removed_count", 0) or 0) > 0
+                    and bool(getattr(compaction_result, "summary", "") or "")
+                )
                 outcome.lifecycle = CompactionLifecycleResult(
-                    compacted=False,
+                    compacted=durable_applied,
                     refused=True,
                     reason=outcome.reason,
                     tokens_before=estimated,
@@ -769,8 +778,15 @@ async def apply_context_overflow_policy(
                     phase="gateway_auto_summarize",
                     status="failed",
                     reason=outcome.reason,
+                    request_status="refused",
                     context_window_tokens=budget,
                     flush_receipt_status=flush_status,
+                    **compaction_effect_payload(
+                        status="failed",
+                        reason=outcome.reason,
+                        applied=durable_applied,
+                        durability="durable" if durable_applied else None,
+                    ),
                     **failed_payload,
                     **compaction_lifecycle_payload(
                         compaction_id,
@@ -827,6 +843,7 @@ async def apply_context_overflow_policy(
                 status="completed",
                 context_window_tokens=budget,
                 flush_receipt_status=flush_status,
+                **compaction_effect_payload(status="completed"),
                 **completed_payload,
                 **compaction_lifecycle_payload(compaction_id, COMPACTION_REPLAYED_EVENT),
             )
@@ -863,11 +880,16 @@ async def apply_context_overflow_policy(
                 error=str(exc),
                 emergency_ephemeral=outcome.reason == "emergency_ephemeral",
             )
+            terminal_status = (
+                "emergency_ephemeral"
+                if outcome.reason == "emergency_ephemeral"
+                else "failed"
+            )
             notify_compaction(
                 session_key,
                 source="automatic",
                 phase="gateway_auto_summarize",
-                status="failed",
+                status=terminal_status,
                 message=str(exc),
                 reason=outcome.reason,
                 tokens_before=estimated,
@@ -875,6 +897,7 @@ async def apply_context_overflow_policy(
                 remaining_budget_tokens=outcome.remaining_budget_tokens,
                 context_window_tokens=budget,
                 flush_receipt_status=flush_status,
+                **compaction_effect_payload(status=terminal_status, reason=outcome.reason),
             )
     else:
         # No session manager wired in — degrade to drop-oldest proxy so

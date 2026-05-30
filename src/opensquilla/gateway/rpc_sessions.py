@@ -34,6 +34,7 @@ from opensquilla.session.compaction_lifecycle import (
     COMPACTION_PERSISTED_EVENT,
     COMPACTION_SUMMARY_VERIFIED_EVENT,
     COMPACTION_TRIGGERED_EVENT,
+    compaction_effect_payload,
     compaction_lifecycle_payload,
     compaction_memory_status,
     compaction_result_payload,
@@ -1718,10 +1719,18 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
     lock = get_session_lock(turn_runner, key)
 
     async def _publish_manual_compaction_event(**payload: Any) -> None:
+        status = str(payload.get("status") or "")
+        reason = payload.get("reason") or payload.get("skip_reason")
         event_payload = {
             "source": "manual",
             "phase": "manual",
             "context_window_tokens": context_window_tokens,
+            **compaction_effect_payload(
+                status=status,
+                source="manual",
+                reason=str(reason) if reason is not None else None,
+                user_visible=True,
+            ),
             **payload,
         }
         notify_compaction(key, notify_listeners=False, **event_payload)
@@ -1762,6 +1771,10 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                         "compacted": False,
                         "status": "skipped",
                         "reason": "empty_ephemeral_webchat_session",
+                        "skip_reason": "empty_ephemeral_webchat_session",
+                        "applied": False,
+                        "durability": "none",
+                        "user_visible": True,
                         "mode": "summary",
                         "summary_len": 0,
                         "summary_source": "none",
@@ -1909,6 +1922,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             missing_obligation_count = 0
             critical_carry_forward_count = 0
             state_kind = "text"
+            skip_reason = ""
             compact_with_result = getattr(ctx.session_manager, "compact_with_result", None)
             if callable(compact_with_result):
                 compact_kwargs: dict[str, Any] = {
@@ -1936,6 +1950,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 )
                 chunk_count = int(getattr(result, "chunks_processed", 0) or 0)
                 coverage_status = str(getattr(result, "coverage_status", "unknown") or "unknown")
+                skip_reason = str(getattr(result, "skip_reason", "") or "")
                 missing_obligation_count = len(getattr(result, "missing_obligations", None) or [])
                 critical_carry_forward_count = len(
                     getattr(result, "critical_carry_forward", None) or []
@@ -1962,6 +1977,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 )
                 removed_count = 1 if summary else 0
                 summary_source = "unknown"
+                skip_reason = "" if summary else "empty_summary"
                 kept_count = 0
                 tokens_before = 0
                 tokens_after = 0
@@ -1983,6 +1999,9 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         payload = {
             "key": key,
             "compacted": removed_count > 0,
+            "applied": removed_count > 0,
+            "durability": "durable" if removed_count > 0 else "none",
+            "user_visible": True,
             "mode": "summary",
             "summary_len": len(summary),
             "summary_source": summary_source,
@@ -1998,6 +2017,9 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             "critical_carry_forward_count": critical_carry_forward_count,
             "state_kind": state_kind,
         }
+        if not removed_count:
+            payload["skip_reason"] = skip_reason or "empty_summary"
+            payload["reason"] = payload["skip_reason"]
         if receipt is not None:
             payload["flush_receipt"] = flush_receipt_to_dict(receipt)
         if flush_receipt_status is not None:
@@ -2009,8 +2031,13 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         )
         final_lifecycle_payload = compaction_lifecycle_payload(compaction_id, final_event)
         final_lifecycle_payload.pop("coverage_status", None)
+        final_status = "completed" if removed_count > 0 else "skipped"
+        final_payload: dict[str, Any] = {}
+        if removed_count <= 0:
+            final_payload["reason"] = skip_reason or "empty_summary"
         await _publish_manual_compaction_event(
-            status="completed" if removed_count > 0 else "skipped",
+            status=final_status,
+            **final_payload,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             remaining_budget_tokens=remaining_budget_tokens,

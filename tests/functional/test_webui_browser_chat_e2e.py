@@ -454,7 +454,12 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               await page.evaluate(() => {
                 const rpc = App.getRpc();
                 const originalCall = rpc.call.bind(rpc);
-                window.__compactUx = { chatCalls: [] };
+                const originalToast = UI.toast.bind(UI);
+                window.__compactUx = { chatCalls: [], toastCalls: [] };
+                UI.toast = (message, type = "info", duration = 3000) => {
+                  window.__compactUx.toastCalls.push({ message, type, duration });
+                  return originalToast(message, type, duration);
+                };
                 rpc.call = (method, params = {}) => {
                   if (method === "chat.send") {
                     window.__compactUx.chatCalls.push({ method, params });
@@ -565,11 +570,47 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 source: "automatic",
                 phase: "preflight",
               });
+              await page.waitForSelector(".chat-compact-status:not(.hidden)", { timeout: 5000 });
+              await emitCompaction(page, {
+                status: "skipped",
+                source: "automatic",
+                phase: "preflight",
+                reason: "structured_content_noop",
+                user_visible: false,
+              });
+              await page.waitForTimeout(250);
+              const automaticNoopStatusHidden = await page
+                .locator("#chat-compact-status.hidden")
+                .count();
+              const automaticNoopBodyText = await page.locator("body").innerText();
+
+              await emitCompaction(page, {
+                status: "started",
+                source: "automatic",
+                phase: "preflight",
+              });
+              await emitCompaction(page, {
+                status: "skipped",
+                source: "automatic",
+                phase: "preflight",
+                reason: "empty_summary",
+                user_visible: true,
+              });
+              await page.waitForTimeout(250);
+              const automaticNonBenignSkipStatus = await page
+                .locator("#chat-compact-status")
+                .innerText();
+
+              await emitCompaction(page, {
+                status: "started",
+                source: "automatic",
+                phase: "preflight",
+              });
               await emitCompaction(page, {
                 status: "emergency_ephemeral",
                 source: "automatic",
                 phase: "preflight",
-                reason: "compact_failed",
+                reason: "empty_summary",
                 tokens_before: 5000,
                 tokens_after: 2400,
               });
@@ -591,13 +632,22 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               const failedStatusVisible = await page.locator("#chat-compact-status").innerText();
 
               const bodyText = await page.locator("body").innerText();
+              const toastMessages = await page.evaluate(
+                () => window.__compactUx.toastCalls.map(t => t.message)
+              );
               const result = {
-                hasStartedToast: bodyText.includes("Compacting context..."),
-                hasSkippedToast: bodyText.includes(
+                hasStartedToast: toastMessages.includes("Compacting context..."),
+                hasSkippedToast: toastMessages.includes(
                   "Already within context budget; no compact was applied."
                 ),
-                hasCompletedToast: bodyText.includes("Context compacted"),
-                hasReplayedFailureToast: bodyText.includes("old replay"),
+                hasCompletedToast: toastMessages.some(m => m.includes("Context compacted")),
+                hasEmergencyToast: toastMessages.includes(
+                  "Continuing with temporary context compaction for this turn"
+                ),
+                hasFailedToast: toastMessages.some(
+                  m => m.includes("Compact failed: still over budget")
+                ),
+                hasReplayedFailureToast: toastMessages.some(m => m.includes("old replay")),
                 startedStatusVisible: startedStatusVisible.includes("Compacting context..."),
                 skippedStatusVisible: skippedStatusVisible.includes(
                   "Already within context budget; no compact was applied."
@@ -625,7 +675,19 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 ),
                 emergencyStatusVisible: emergencyStatusVisible.includes(
                   "Continuing with temporary context compaction"
-                ),
+                ) && emergencyStatusVisible.includes(
+                  "Request-scoped; session history was not rewritten"
+                ) && !emergencyStatusVisible.includes("empty summary"),
+                automaticNoopStatusHidden: automaticNoopStatusHidden === 1,
+                automaticNoopSkippedHidden:
+                  !automaticNoopBodyText.includes("Context compaction skipped") &&
+                  !automaticNoopBodyText.includes("structured content noop"),
+                automaticNonBenignSkipVisible:
+                  automaticNonBenignSkipStatus.includes(
+                    "Context compaction could not be applied"
+                  ) &&
+                  automaticNonBenignSkipStatus.includes("No usable summary was produced") &&
+                  !automaticNonBenignSkipStatus.includes("empty summary"),
                 blockingFailureKeptPending:
                   (await page.locator("#chat-pending").innerText())
                     .includes("queued after blocking compact"),
@@ -679,9 +741,11 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
         _stop_process(server)
 
     assert payload == {
-        "hasStartedToast": True,
-        "hasSkippedToast": True,
-        "hasCompletedToast": True,
+        "hasStartedToast": False,
+        "hasSkippedToast": False,
+        "hasCompletedToast": False,
+        "hasEmergencyToast": True,
+        "hasFailedToast": True,
         "hasReplayedFailureToast": False,
         "startedStatusVisible": True,
         "skippedStatusVisible": True,
@@ -694,6 +758,9 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
         "automaticDidNotDrainBeforeDone": True,
         "automaticDrainedAfterDone": True,
         "emergencyStatusVisible": True,
+        "automaticNoopStatusHidden": True,
+        "automaticNoopSkippedHidden": True,
+        "automaticNonBenignSkipVisible": True,
         "blockingFailureKeptPending": True,
         "blockingFailureDidNotDrain": True,
         "blockingFailureDidNotRecoverComposer": True,

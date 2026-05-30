@@ -92,6 +92,7 @@ from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
     COMPACTION_SUMMARY_VERIFIED_EVENT,
     COMPACTION_TRIGGERED_EVENT,
+    compaction_effect_payload,
     compaction_lifecycle_payload,
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
@@ -4069,6 +4070,10 @@ class Agent:
                             reason=reason,
                             tokens_before=total_tokens,
                             context_window_tokens=window_tokens,
+                            **compaction_effect_payload(
+                                status="skipped",
+                                reason=reason,
+                            ),
                             **compaction_lifecycle_payload(
                                 compaction_id,
                                 COMPACTION_TRIGGERED_EVENT,
@@ -4102,6 +4107,7 @@ class Agent:
                 status="started",
                 tokens_before=total_tokens,
                 context_window_tokens=window_tokens,
+                **compaction_effect_payload(status="started"),
                 **compaction_lifecycle_payload(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
@@ -4122,6 +4128,7 @@ class Agent:
                     reason=self._last_compaction_refusal_reason,
                     tokens_before=total_tokens,
                     context_window_tokens=window_tokens,
+                    **compaction_effect_payload(status="failed"),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4147,6 +4154,7 @@ class Agent:
                     phase="agent_inline_overflow",
                     status="observed",
                     context_window_tokens=window_tokens,
+                    **compaction_effect_payload(status="observed"),
                     **observed_payload,
                 )
 
@@ -4171,6 +4179,7 @@ class Agent:
                     context_window_tokens=window_tokens,
                     removed_count=result.removed_count,
                     kept_count=len(result.kept_entries),
+                    **compaction_effect_payload(status="failed"),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
@@ -4182,15 +4191,23 @@ class Agent:
         if result.removed_count == 0 and not result.summary and has_structured_content:
             await _await_flush_task()
             self._flush_done_this_cycle = False
+            skip_reason = result.skip_reason or "structured_content_noop"
             if self._session_key:
                 notify_compaction(
                     self._session_key,
                     source="automatic",
                     phase="agent_inline_overflow",
                     status="skipped",
-                    reason="structured_content_noop",
+                    reason=skip_reason,
                     tokens_before=total_tokens,
+                    tokens_after=result.tokens_after,
+                    remaining_budget_tokens=result.remaining_budget_tokens,
                     context_window_tokens=window_tokens,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason=skip_reason,
+                        user_visible=False,
+                    ),
                     **compaction_lifecycle_payload(
                         compaction_id,
                         COMPACTION_TRIGGERED_EVENT,
