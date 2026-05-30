@@ -3086,6 +3086,17 @@ select.clarify-form-input {
 /* Once settled, the chase hammer is gone — the .win cell is the marker. */
 .router-fx[data-state="settled"] .router-fx-selector { opacity: 0 !important; }
 
+/* History/reopened strips are records, not live routing moments. Keep the
+   selected look, but suppress every motion affordance that would read like
+   the model is being chosen again after refresh or session reopen. */
+.router-fx[data-render-mode="history"],
+.router-fx[data-render-mode="history"] *,
+.router-fx[data-render-mode="history"] *::before,
+.router-fx[data-render-mode="history"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* Focal reticle: two corner ticks that close on the winner as it locks. */
 .router-fx[data-variant="cloud"] .router-fx-reticle {
   position: absolute;

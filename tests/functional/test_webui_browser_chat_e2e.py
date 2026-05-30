@@ -768,6 +768,460 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
     }
 
 
+def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_router_fx_server.py"
+    browser_script = tmp_path / "webui_router_fx_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            async function emit(page, event, payload, meta = {}) {
+              await page.evaluate(
+                ({ event, payload, meta }) => {
+                  const rpc = App.getRpc();
+                  const named = rpc._listeners.get(event);
+                  if (named) named.forEach(h => h(payload, meta));
+                  const wild = rpc._listeners.get("*");
+                  if (wild) wild.forEach(h => h(event, payload, meta));
+                },
+                { event, payload, meta }
+              );
+            }
+
+            async function snapshot(page) {
+              return await page.evaluate(() => {
+                const strips = Array.from(document.querySelectorAll(".router-fx"));
+                const strip = strips[0] || null;
+                const cells = Array.from(document.querySelectorAll(".router-fx-cell .nm"));
+                const animations = strips.flatMap(el =>
+                  el.getAnimations({ subtree: true })
+                    .filter(anim => anim.playState !== "finished" && anim.playState !== "idle")
+                    .map(anim => anim.animationName || "")
+                );
+                const overflows = cells.filter(el => el.scrollWidth > el.clientWidth + 1)
+                  .map(el => el.textContent);
+                const grid = document.querySelector(".router-fx-grid");
+                const gridRect = grid ? grid.getBoundingClientRect() : null;
+                return {
+                  count: strips.length,
+                  state: strip?.dataset.state || "",
+                  renderMode: strip?.dataset.renderMode || "",
+                  liveCount: document.querySelectorAll(".router-fx[data-live='true']").length,
+                  scanningCount: document.querySelectorAll(".router-fx[data-scanning='true']").length,
+                  selectorVisible: document.querySelectorAll(".router-fx-selector.visible").length,
+                  bursts: document.querySelectorAll(".router-fx-burst").length,
+                  pinging: document.querySelectorAll(".router-fx-cell.pinging").length,
+                  animations,
+                  aria: strip?.getAttribute("aria-label") || "",
+                  winner: document.querySelector(".router-fx-cell.win .nm")?.textContent || "",
+                  winners: strips.map(el => el.querySelector(".router-fx-cell.win .nm")?.textContent || ""),
+                  hasLongLabel: cells.some(el => el.textContent === "gemini-3.1-flash-lite"),
+                  overflows,
+                  gridWithinViewport: gridRect
+                    ? gridRect.left >= -1 && gridRect.right <= window.innerWidth + 1
+                    : false,
+                };
+              });
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await waitRpc(page);
+
+              await page.evaluate(() => {
+                localStorage.setItem(
+                  "opensquilla-router-fx",
+                  JSON.stringify({ enabled: true, variant: "default" })
+                );
+                window.__routerFxTest = {
+                  sessionKey: "agent:main:webchat:router-fx-panel",
+                  historyMessages: [],
+                  chatCalls: [],
+                };
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: {
+                        enabled: true,
+                        rollout_phase: "full",
+                        tiers: {
+                          t1: { model: "openrouter/deepseek-v4-flash" },
+                          t2: { model: "openrouter/gemini-3.1-flash-lite" },
+                          t3: { model: "openrouter/qwen3.6-max" },
+                        },
+                      },
+                    });
+                  }
+                  if (method === "chat.history") {
+                    if (window.__routerFxTest.deferHistory) {
+                      return new Promise(resolve => {
+                        window.__routerFxTest.resolveHistory = () => {
+                          window.__routerFxTest.deferHistory = false;
+                          resolve({
+                            messages: window.__routerFxTest.historyMessages,
+                            history_scope: "complete",
+                            has_more: false,
+                          });
+                        };
+                      });
+                    }
+                    return Promise.resolve({
+                      messages: window.__routerFxTest.historyMessages,
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 100,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  if (method === "chat.send") {
+                    window.__routerFxTest.chatCalls.push({ method, params });
+                    return Promise.resolve({ task_id: "router-fx-task" });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() => Router.navigate("/chat?session=agent:main:webchat:router-fx-panel"));
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForFunction(
+                () => document.querySelector("#toggle-router")?.checked === true,
+                { timeout: 15000 }
+              );
+
+              await page.fill("#chat-textarea", "route this with a long label");
+              await page.click("#chat-btn-send");
+              await page.waitForSelector(".router-fx[data-live='true'][data-scanning='true']", {
+                timeout: 5000,
+              });
+              const sessionKey = await page.locator("#chat-session-chip-key").innerText();
+              await emit(page, "session.event.router_decision", {
+                session_key: sessionKey,
+                stream_seq: 101,
+                tier: "t1",
+                model: "openrouter/deepseek-v4-flash",
+                routing_source: "squilla_router",
+                routing_applied: true,
+              });
+              await page.waitForSelector(".router-fx[data-state='settled'] .router-fx-cell.win", {
+                timeout: 5000,
+              });
+              const liveSettled = await snapshot(page);
+
+              await page.evaluate(() => {
+                window.__routerFxTest.historyMessages = [
+                  {
+                    role: "user",
+                    text: "route this with a long label",
+                    message_id: "router-fx-u1",
+                    timestamp: "2026-05-30T00:00:00Z",
+                  },
+                  {
+                    role: "assistant",
+                    text: "done",
+                    message_id: "router-fx-a1",
+                    timestamp: "2026-05-30T00:00:01Z",
+                    model: "openrouter/deepseek-v4-flash",
+                    usage: {
+                      model: "openrouter/deepseek-v4-flash",
+                      routed_model: "openrouter/deepseek-v4-flash",
+                      routed_tier: "t1",
+                      routing_source: "squilla_router",
+                      routing_applied: true,
+                      input_tokens: 11,
+                      output_tokens: 2,
+                    },
+                  },
+                ];
+                Router.navigate("/overview");
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
+              });
+              await page.waitForSelector(".router-fx[data-render-mode='history'][data-state='settled']", {
+                timeout: 15000,
+              });
+              const reopened = await snapshot(page);
+
+              await emit(page, "session.event.router_decision", {
+                session_key: sessionKey,
+                stream_seq: 102,
+                tier: "t1",
+                model: "openrouter/deepseek-v4-flash",
+                routing_source: "squilla_router",
+                routing_applied: true,
+              }, { replayed: true });
+              await page.waitForTimeout(700);
+              const afterReplay = await snapshot(page);
+
+              await page.setViewportSize({ width: 520, height: 720 });
+              await page.waitForTimeout(300);
+              const narrow = await snapshot(page);
+
+              await page.setViewportSize({ width: 1280, height: 720 });
+              await page.evaluate(() => {
+                window.__routerFxTest.historyMessages = [
+                  {
+                    role: "user",
+                    text: "first routed turn",
+                    message_id: "router-fx-u-race-1",
+                    timestamp: "2026-05-30T00:00:00Z",
+                  },
+                  {
+                    role: "assistant",
+                    text: "first done",
+                    message_id: "router-fx-a-race-1",
+                    timestamp: "2026-05-30T00:00:01Z",
+                    model: "openrouter/deepseek-v4-flash",
+                    usage: {
+                      model: "openrouter/deepseek-v4-flash",
+                      routed_model: "openrouter/deepseek-v4-flash",
+                      routed_tier: "t1",
+                      routing_source: "squilla_router",
+                      routing_applied: true,
+                      input_tokens: 11,
+                      output_tokens: 2,
+                    },
+                  },
+                ];
+                Router.navigate("/overview");
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
+              });
+              await page.waitForFunction(
+                () =>
+                  document.querySelectorAll(".router-fx").length === 1 &&
+                  document.querySelector(".router-fx-cell.win .nm")?.textContent === "deepseek-v4-flash",
+                { timeout: 15000 }
+              );
+              await page.evaluate(() => {
+                window.__routerFxTest.historyMessages = [
+                  {
+                    role: "user",
+                    text: "first routed turn",
+                    message_id: "router-fx-u-race-1",
+                    timestamp: "2026-05-30T00:00:00Z",
+                  },
+                  {
+                    role: "assistant",
+                    text: "first done",
+                    message_id: "router-fx-a-race-1",
+                    timestamp: "2026-05-30T00:00:01Z",
+                    model: "openrouter/deepseek-v4-flash",
+                    usage: {
+                      model: "openrouter/deepseek-v4-flash",
+                      routed_model: "openrouter/deepseek-v4-flash",
+                      routed_tier: "t1",
+                      routing_source: "squilla_router",
+                      routing_applied: true,
+                      input_tokens: 11,
+                      output_tokens: 2,
+                    },
+                  },
+                  {
+                    role: "user",
+                    text: "second routed turn",
+                    message_id: "router-fx-u-race-2",
+                    timestamp: "2026-05-30T00:00:02Z",
+                  },
+                  {
+                    role: "assistant",
+                    text: "second done",
+                    message_id: "router-fx-a-race-2",
+                    timestamp: "2026-05-30T00:00:03Z",
+                    model: "openrouter/gemini-3.1-flash-lite",
+                    usage: {
+                      model: "openrouter/gemini-3.1-flash-lite",
+                      routed_model: "openrouter/gemini-3.1-flash-lite",
+                      routed_tier: "t2",
+                      routing_source: "squilla_router",
+                      routing_applied: true,
+                      input_tokens: 13,
+                      output_tokens: 3,
+                    },
+                  },
+                ];
+                window.__routerFxTest.deferHistory = true;
+                const stateHandlers = App.getRpc()._listeners.get("_state");
+                if (stateHandlers) stateHandlers.forEach(h => h("connected"));
+              });
+              await emit(page, "session.event.router_decision", {
+                session_key: sessionKey,
+                stream_seq: 103,
+                tier: "t2",
+                model: "openrouter/gemini-3.1-flash-lite",
+                routing_source: "squilla_router",
+                routing_applied: true,
+              }, { replayed: true });
+              await page.waitForTimeout(250);
+              const duringHistoryHydrationReplay = await snapshot(page);
+              await page.evaluate(() => window.__routerFxTest.resolveHistory());
+              await page.waitForFunction(
+                () => {
+                  const winners = Array.from(document.querySelectorAll(".router-fx"))
+                    .map(el => el.querySelector(".router-fx-cell.win .nm")?.textContent || "");
+                  return winners.length === 2 &&
+                    winners.includes("deepseek-v4-flash") &&
+                    winners.includes("gemini-3.1-flash-lite");
+                },
+                { timeout: 15000 }
+              );
+              await page.waitForTimeout(300);
+              const afterHistoryHydrationReplay = await snapshot(page);
+
+              const result = {
+                liveSettled,
+                reopened,
+                afterReplay,
+                narrow,
+                duringHistoryHydrationReplay,
+                afterHistoryHydrationReplay,
+                pageErrors: errors,
+              };
+              await browser.close();
+              console.log(JSON.stringify(result));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == [], payload["pageErrors"]
+    assert payload["liveSettled"]["state"] == "settled"
+    assert payload["liveSettled"]["renderMode"] == "live"
+    assert payload["liveSettled"]["liveCount"] == 0
+    assert payload["liveSettled"]["scanningCount"] == 0
+    assert payload["liveSettled"]["selectorVisible"] == 0
+    assert payload["liveSettled"]["winner"] == "deepseek-v4-flash"
+    assert "Router selected deepseek-v4-flash" in payload["liveSettled"]["aria"]
+
+    for key in ("reopened", "afterReplay", "narrow"):
+        snap = payload[key]
+        assert snap["count"] == 1, snap
+        assert snap["state"] == "settled", snap
+        assert snap["renderMode"] == "history", snap
+        assert snap["liveCount"] == 0, snap
+        assert snap["scanningCount"] == 0, snap
+        assert snap["selectorVisible"] == 0, snap
+        assert snap["bursts"] == 0, snap
+        assert snap["pinging"] == 0, snap
+        assert snap["animations"] == [], snap
+        assert snap["winner"] == "deepseek-v4-flash", snap
+        assert snap["hasLongLabel"] is True, snap
+        assert snap["overflows"] == [], snap
+        assert snap["gridWithinViewport"] is True, snap
+
+    during = payload["duringHistoryHydrationReplay"]
+    assert during["count"] == 1, during
+    assert during["winners"] == ["deepseek-v4-flash"], during
+    assert during["liveCount"] == 0, during
+    assert during["scanningCount"] == 0, during
+    assert during["selectorVisible"] == 0, during
+    assert during["animations"] == [], during
+
+    after_hydration = payload["afterHistoryHydrationReplay"]
+    assert after_hydration["count"] == 2, after_hydration
+    assert after_hydration["renderMode"] == "history", after_hydration
+    assert after_hydration["liveCount"] == 0, after_hydration
+    assert after_hydration["scanningCount"] == 0, after_hydration
+    assert after_hydration["selectorVisible"] == 0, after_hydration
+    assert after_hydration["bursts"] == 0, after_hydration
+    assert after_hydration["pinging"] == 0, after_hydration
+    assert after_hydration["animations"] == [], after_hydration
+    assert after_hydration["overflows"] == [], after_hydration
+    assert set(after_hydration["winners"]) == {
+        "deepseek-v4-flash",
+        "gemini-3.1-flash-lite",
+    }, after_hydration
+
+
 def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")

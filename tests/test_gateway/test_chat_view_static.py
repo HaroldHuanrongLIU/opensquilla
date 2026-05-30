@@ -1120,7 +1120,7 @@ def test_router_fx_header_names_ai_model_router() -> None:
     assert '<span class="title">model router</span>' not in source
 
 
-def test_router_fx_live_routes_keep_random_chase_animation() -> None:
+def test_router_fx_replay_without_live_strip_renders_settled_history() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     handler_start = source.index("async function _handleRouterDecision(payload) {")
     handler_end = source.index("  // History-load entry point", handler_start)
@@ -1135,11 +1135,15 @@ def test_router_fx_live_routes_keep_random_chase_animation() -> None:
     assert "shouldAnimate" not in handler_body
     assert "_rpc.on('session.event.router_decision'" in subscription_body
     assert "_handleRouterDecision(payload);" in subscription_body
-    assert "if (observeMode)" in handler_body
-    assert "_animateRouterFx(wrap, winnerIdx)" in handler_body
-    assert handler_body.index("if (observeMode)") < handler_body.index(
-        "_animateRouterFx(wrap, winnerIdx)"
-    )
+    assert "const liveStrip = _thread.querySelector('.router-fx[data-live=\"true\"]');" in handler_body
+    assert "liveStrip._fxDecision = payload;" in handler_body
+    assert "_routerFxLock(liveStrip, payload);" in handler_body
+    assert "preSettled: true," in handler_body
+    assert "renderMode: 'history'," in handler_body
+    assert "_routerFxNormalizeSettledStrip(wrap, 'history', payload);" in handler_body
+    assert "_animateRouterFx(wrap, winnerIdx)" not in handler_body
+    assert "_animateRouterFxCloud(wrap)" not in handler_body
+    assert "router_decision.inserted_settled_strip" in handler_body
 
 
 def test_chat_diag_captures_stream_router_and_history_state() -> None:
@@ -1267,7 +1271,7 @@ def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None
     assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
     assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
     assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
-    assert "if (existingStrip) existingStrip.remove();" in source
+    assert "if (existingStrip) _routerFxRemoveStrip(existingStrip);" in source
     assert "existingStrip.dataset.live" not in history_body
     assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
 
@@ -1290,10 +1294,10 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
     )
     assert "el.dataset.turnIndex === String(_histUserIdx)" in history_body
     assert "el.dataset.routerIdentity === routerIdentity" in history_body
-    # Drop duplicates, re-anchor the survivor, promote it out of live state.
-    assert "ownStrips.forEach((el) => { if (el !== keep) el.remove(); });" in history_body
+    # Drop duplicates, re-anchor the survivor, normalize it into history state.
+    assert "ownStrips.forEach((el) => { if (el !== keep) _routerFxRemoveStrip(el); });" in history_body
     assert "_thread.insertBefore(keep, userMsg.nextSibling);" in history_body
-    assert "delete keep.dataset.live;" in history_body
+    assert "_routerFxNormalizeSettledStrip(keep, 'history', savedUsage);" in history_body
     # The consolidation must precede the existingStrip probe so the relocated
     # strip is what the reuse check sees.
     assert history_body.index("const ownStrips =") < history_body.index(
@@ -1304,7 +1308,7 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
     # a stranded grid can never linger at the top.
     assert "if (!_isStreaming) {" in history_body
     assert "const prev = el.previousElementSibling;" in history_body
-    assert "if (!anchored) el.remove();" in history_body
+    assert "if (!anchored) _routerFxRemoveStrip(el);" in history_body
 
 
 def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
@@ -1318,7 +1322,7 @@ def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
 
     assert "const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11" in source
     assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
-    assert "const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);" in live_body
+    assert "const replaySeed = _routerFxResolveLayoutSeed(_sessionKey);" in live_body
     assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
     assert "const orderedRealEntries = realEntries.slice().sort" in builder_body
     assert "const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];" in builder_body
@@ -1422,10 +1426,8 @@ def test_router_fx_cloud_shows_pool_plus_winner_not_roster() -> None:
 
 
 def test_router_fx_cloud_rack_focus_dispatch_is_motion_opt_in() -> None:
-    # Live + history dispatch branch on wrap._fxCloud; the rack-focus is a
-    # defocus(playing) -> snap(settled) phase flip. The animation is an
-    # explicit opt-in (the toggle), so it does NOT gate on OS reduce-motion;
-    # it only settles directly when there is no winner to focus.
+    # Cloud strips still have a live scan/lock path, but replay/history
+    # decisions must render settled instead of re-running rack-focus motion.
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "function _animateRouterFxCloud(wrap) {" in source
@@ -1438,10 +1440,20 @@ def test_router_fx_cloud_rack_focus_dispatch_is_motion_opt_in() -> None:
     assert "wrap.dataset.state = 'playing';" in anim
     assert "wrap.dataset.state = 'settled';" in anim
     assert anim.index("'playing'") < anim.index("'settled'")
-    # Live path dispatches to the cloud animator when the strip is a cloud.
+    # Live strips lock through the cloud-specific settle path.
     assert "wrap._fxCloud" in source
-    assert "? _animateRouterFxCloud(wrap)" in source
-    assert "? _settleRouterFxCloud(wrap)" in source
+    assert "if (wrap._fxCloud) _routerFxLockCloud(wrap, decision);" in source
+    lock_start = source.index("function _routerFxLockCloud(wrap, decision) {")
+    lock_end = source.index("function _routerFxLockGrid(wrap, decision) {", lock_start)
+    lock_cloud = source[lock_start:lock_end]
+    assert "_settleRouterFxCloud(wrap)" in lock_cloud
+
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("// History-load entry point", handler_start)
+    handler = source[handler_start:handler_end]
+    assert "_animateRouterFxCloud(wrap)" not in handler
+    assert "preSettled: true" in handler
+    assert "renderMode: 'history'" in handler
 
 
 def test_router_fx_cloud_css_rack_focus_states() -> None:
@@ -1502,12 +1514,18 @@ def test_router_fx_grid_labels_shrink_to_fit() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "function _routerFxFitLabels(wrap) {" in source
-    fit_start = source.index("function _routerFxFitLabels(wrap) {")
+    measure_start = source.index("function _routerFxMeasureLabels(wrap) {")
+    measure_end = source.index("function _routerFxScheduleLabelFit(", measure_start)
+    measure = source[measure_start:measure_end]
+    assert "wrap.querySelectorAll('.router-fx-cell')" in measure
+    assert "const w = nm.scrollWidth;" in measure
+    assert "nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';" in measure
+    fit_start = source.index("function _routerFxInstallLabelFit(wrap) {")
     fit_end = source.index("function _routerFxInsertAnchored(", fit_start)
     fit = source[fit_start:fit_end]
-    assert "wrap.querySelectorAll('.router-fx-cell')" in fit
-    assert "const w = nm.scrollWidth;" in fit
-    assert "nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';" in fit
+    assert "new ResizeObserver(() => _routerFxScheduleLabelFit(wrap))" in fit
+    assert "document.fonts.ready" in fit
+    assert "_routerFxScheduleLabelFit(wrap);" in fit
     # Invoked from the shared insert path so both live and history strips fit.
     insert_start = source.index("function _routerFxInsertAnchored(")
     insert_end = source.index("}", source.index("_thread.appendChild(wrap);", insert_start))
@@ -1602,18 +1620,22 @@ def test_router_fx_strip_survives_multistep_turn() -> None:
         "const keep = ownStrips.find((el) => "
         "el.dataset.routerIdentity === routerIdentity)"
     ) in history_body
-    assert "delete keep.dataset.live;" in history_body
+    assert "_routerFxNormalizeSettledStrip(keep, 'history', savedUsage);" in history_body
 
 
 def test_router_decision_without_anchor_is_cached_for_history_replay() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     assert "const _pendingRouterDecisions = new Map();" in source
+    assert "let _historyHydrating = false;" in source
+    assert "let _historyHasRendered = false;" in source
     assert "function _cachePendingRouterDecision(payload)" in source
     assert "function _flushPendingRouterDecisions()" in source
 
     handler_start = source.index("async function _handleRouterDecision(payload)")
-    handler_end = source.index("    // Resolve a seed that's deterministic", handler_start)
+    handler_end = source.index("    // No matching live scan means this decision", handler_start)
     handler_body = source[handler_start:handler_end]
+    assert "if (!_historyHasRendered || _historyHydrating) {" in handler_body
+    assert "_chatDiag('router_decision.cached_during_history_hydration'" in handler_body
     assert "_cachePendingRouterDecision(payload);" in handler_body
     assert "_chatDiag('router_decision.cached_pending_anchor'" in source
     assert "_chatDiag('router_decision.skip.no_anchor_user'" not in handler_body
@@ -1621,7 +1643,72 @@ def test_router_decision_without_anchor_is_cached_for_history_replay() -> None:
     history_start = source.index("async function _loadHistory() {")
     history_end = source.index("function _appendHistoryDaySeparator", history_start)
     history_body = source[history_start:history_end]
+    assert "_historyHydrating = true;" in history_body
+    assert "_historyHydrating = false;" in history_body
+    assert "_historyHasRendered = true;" in history_body
+    assert history_body.index("_historyHasRendered = true;") < history_body.index("_flushPendingRouterDecisions();")
     assert "_flushPendingRouterDecisions();" in history_body
+
+
+def test_router_fx_settled_cleanup_clears_live_animation_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _routerFxNormalizeSettledStrip(wrap, renderMode, decision) {" in source
+    start = source.index("function _routerFxNormalizeSettledStrip(wrap, renderMode, decision) {")
+    end = source.index("function _routerFxDisconnectLabelFit(wrap) {", start)
+    body = source[start:end]
+
+    assert "_routerFxStopScan(wrap);" in body
+    assert "_routerFxClearAnimationTimers(wrap);" in body
+    assert "_routerFxClearVisualResidue(wrap);" in body
+    assert "wrap.dataset.state = 'settled';" in body
+    assert "delete wrap.dataset.live;" in body
+    assert "delete wrap.dataset.scanning;" in body
+    assert "_routerFxApplySettledSemantics(wrap, decision, wrap.dataset.renderMode);" in body
+    assert "_routerFxFitLabels(wrap);" in body
+
+    clear_start = source.index("function _routerFxClearVisualResidue(wrap) {")
+    clear_end = source.index("function _routerFxNormalizeSettledStrip", clear_start)
+    clear = source[clear_start:clear_end]
+    assert "selector.classList.remove('visible', 'lock', 'lock-impact')" in clear
+    assert ".router-fx-cell.pinging" in clear
+    assert ".router-fx-mote.is-scan" in clear
+    assert ".router-fx-burst" in clear
+
+    settle_start = source.index("function _settleRouterFxImmediate(wrap, winnerIdx, opts) {")
+    settle_end = source.index("function _routerFxFireBurst(grid, cell) {", settle_start)
+    settle = source[settle_start:settle_end]
+    assert "delete wrap.dataset.live;" in settle
+    assert "delete wrap.dataset.scanning;" in settle
+
+    cloud_start = source.index("function _settleRouterFxCloud(wrap) {")
+    cloud_end = source.index("// Live rack-focus", cloud_start)
+    cloud = source[cloud_start:cloud_end]
+    assert "delete wrap.dataset.live;" in cloud
+    assert "delete wrap.dataset.scanning;" in cloud
+
+
+def test_router_fx_config_refresh_prunes_stale_model_cache() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadFeatureToggles() {")
+    end = source.index("  /* ── Session Chip", start)
+    body = source[start:end]
+
+    assert "Object.keys(_routerFxModels).forEach((tier) => {" in body
+    assert "if (!configTierSet.has(tier)) delete _routerFxModels[tier];" in body
+    assert "_routerFxConfigTiers = configTierSet;" in body
+
+
+def test_router_fx_settled_semantics_expose_render_mode_and_result() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "wrap.dataset.renderMode = opts.renderMode || (opts.preSettled ? 'history' : 'live');" in source
+    start = source.index("function _routerFxApplySettledSemantics(wrap, decision, renderMode) {")
+    end = source.index("function _routerFxClearVisualResidue(wrap) {", start)
+    body = source[start:end]
+
+    assert "wrap.dataset.renderMode = mode;" in body
+    assert "wrap.setAttribute('role', mode === 'live' ? 'status' : 'group');" in body
+    assert "wrap.setAttribute('aria-live', mode === 'live' ? 'polite' : 'off');" in body
+    assert "winnerName ? `Router selected ${winnerName}` : 'Router settled'" in body
 
 
 def test_done_stream_bubble_survives_until_history_persists_assistant() -> None:
@@ -1702,6 +1789,22 @@ def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -
     esb = esb[:esb.index("function _newTextSegment")]
     assert "_routerFxSettleForOutput();" in esb
     assert '.router-fx[data-frozen="true"]' not in css
+
+
+def test_router_fx_history_mode_has_no_motion_effects() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "function _routerFxStaticizeCompletedStrips(sessionKey) {" in source
+    end_start = source.index("function _endStreaming(opts) {")
+    end_body = source[end_start:source.index("function _hasViewLocalStreamState()", end_start)]
+    assert "_routerFxStaticizeCompletedStrips(_streamSessionKey || _sessionKey || '');" in end_body
+
+    assert '.router-fx[data-render-mode="history"]' in css
+    history_motion_start = css.index('.router-fx[data-render-mode="history"],')
+    history_motion = css[history_motion_start:css.index("}", history_motion_start)]
+    assert "animation: none !important;" in history_motion
+    assert "transition: none !important;" in history_motion
 
 
 def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
@@ -1832,7 +1935,7 @@ def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
     # path that competes with history reorder repair.
     source = CHAT_JS.read_text(encoding="utf-8")
 
-    assert "_thread.querySelectorAll('.router-fx').forEach((n) => n.remove());" in source
+    assert "_thread.querySelectorAll('.router-fx').forEach((n) => _routerFxRemoveStrip(n));" in source
     assert ".router-fx:not([data-live=\"true\"])" not in source
     history_start = source.index("async function _loadHistory() {")
     history_end = source.index("  /* ── Send Message", history_start)
@@ -1840,7 +1943,7 @@ def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
     assert "if (!_routerFx.enabled) {" in history_body
     sweep = history_body[history_body.index("if (!_routerFx.enabled) {"):]
     sweep = sweep[: sweep.index("_lastSavingsPopupIdentity")]
-    assert "_thread.querySelectorAll('.router-fx').forEach((el) => el.remove());" in sweep
+    assert "_thread.querySelectorAll('.router-fx').forEach((el) => _routerFxRemoveStrip(el));" in sweep
     assert "dataset.live" not in sweep
 
 

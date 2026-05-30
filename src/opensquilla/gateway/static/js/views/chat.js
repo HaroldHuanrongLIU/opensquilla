@@ -330,6 +330,8 @@ const ChatView = (() => {
   let _historyHasMore = false;
   let _historyScope = 'complete';
   let _historyLoadingEarlier = false;
+  let _historyHydrating = false;
+  let _historyHasRendered = false;
   let _historyRequestSeq = 0;
   let _historyError = '';
   let _historyCompactionSummaries = [];
@@ -1361,7 +1363,7 @@ const ChatView = (() => {
         } else if (_thread) {
           // Hide now. This is a user-visible preference, so remove the visual
           // immediately instead of preserving a separate live-strip path.
-          _thread.querySelectorAll('.router-fx').forEach((n) => n.remove());
+          _thread.querySelectorAll('.router-fx').forEach((n) => _routerFxRemoveStrip(n));
         }
         UI.toast('Router animation: ' + (_routerFx.enabled ? 'ON' : 'OFF'), 'info');
       });
@@ -1376,7 +1378,7 @@ const ChatView = (() => {
         _routerFxSavePref();
         // Re-render strips in the chosen variant through the normal rebuild path.
         if (_thread) {
-          _thread.querySelectorAll('.router-fx').forEach((n) => n.remove());
+          _thread.querySelectorAll('.router-fx').forEach((n) => _routerFxRemoveStrip(n));
         }
         _scheduleHistorySync();
         UI.toast('Router view: ' + (_routerFx.variant === 'cloud' ? 'cloud' : 'grid'), 'info');
@@ -1462,9 +1464,12 @@ const ChatView = (() => {
           }
         });
       }
+      Object.keys(_routerFxModels).forEach((tier) => {
+        if (!configTierSet.has(tier)) delete _routerFxModels[tier];
+      });
+      _routerFxConfigTiers = configTierSet;
       if (configTierKeys.length > 0) {
         _routerFxSlotList = _routerFxSortTiers(configTierKeys);
-        _routerFxConfigTiers = configTierSet;
       }
       // Mark config ready as soon as the tier cache is populated.
       // Anything waiting on _routerFxAwaitConfig() (history rebuild)
@@ -1500,7 +1505,7 @@ const ChatView = (() => {
     if (previousKey && previousKey !== key && _thread) {
       _thread.querySelectorAll('.router-fx').forEach((el) => {
         if (el.dataset.sessionKey === key) return;
-        el.remove();
+        _routerFxRemoveStrip(el);
       });
     }
   }
@@ -3423,6 +3428,7 @@ const ChatView = (() => {
     const wrap = document.createElement('div');
     wrap.className = 'router-fx';
     wrap.setAttribute('data-history-role', 'router');
+    wrap.dataset.renderMode = opts.renderMode || (opts.preSettled ? 'history' : 'live');
     wrap.dataset.state = 'idle';
     wrap.dataset.tier = decision.tier || '';
     wrap.dataset.source = decision.source || 'none';
@@ -3461,7 +3467,10 @@ const ChatView = (() => {
     // is the default look.
     if (variant === 'cloud') {
       _routerFxBuildCloud(wrap, decision, seedKey);
-      if (opts.preSettled) _settleRouterFxCloud(wrap);
+      if (opts.preSettled) {
+        _settleRouterFxCloud(wrap);
+        _routerFxNormalizeSettledStrip(wrap, opts.renderMode || 'history', decision);
+      }
       return wrap;
     }
 
@@ -3493,7 +3502,10 @@ const ChatView = (() => {
 
     if (opts.preSettled) {
       const winnerIdx = _routerFxWinnerCellIndex(wrap, decision.tier);
-      if (winnerIdx >= 0) _settleRouterFxImmediate(wrap, winnerIdx, { burst: false });
+      if (winnerIdx >= 0) {
+        _settleRouterFxImmediate(wrap, winnerIdx, { burst: false, decision });
+        _routerFxNormalizeSettledStrip(wrap, opts.renderMode || 'history', decision);
+      }
     }
     return wrap;
   }
@@ -3514,8 +3526,10 @@ const ChatView = (() => {
     if (!selector || !cell) return;
     opts = opts || {};
     const grid = cell.parentElement;
+    if (!grid || !grid.isConnected) return;
     const cellRect = cell.getBoundingClientRect();
     const gridRect = grid.getBoundingClientRect();
+    if (!cellRect.width || !cellRect.height || !gridRect.width || !gridRect.height) return;
     const padLeft = parseFloat(getComputedStyle(grid).paddingLeft) || 0;
     const padTop = parseFloat(getComputedStyle(grid).paddingTop) || 0;
     const x = cellRect.left - gridRect.left - padLeft;
@@ -3535,6 +3549,92 @@ const ChatView = (() => {
     setTimeout(() => cell.classList.remove('pinging'), 220);
   }
 
+  function _routerFxClearAnimationTimers(wrap) {
+    if (!wrap) return;
+    if (wrap._fxAnimFrame) {
+      cancelAnimationFrame(wrap._fxAnimFrame);
+      wrap._fxAnimFrame = null;
+    }
+    if (Array.isArray(wrap._fxAnimTimers)) {
+      wrap._fxAnimTimers.forEach((timer) => clearTimeout(timer));
+    }
+    wrap._fxAnimTimers = [];
+  }
+
+  function _routerFxApplySettledSemantics(wrap, decision, renderMode) {
+    if (!wrap) return;
+    const mode = renderMode || wrap.dataset.renderMode || 'history';
+    const effectiveDecision = decision || {
+      tier: wrap.dataset.tier || '',
+      model: '',
+      source: wrap.dataset.source || 'none',
+    };
+    wrap.dataset.renderMode = mode;
+    const winnerName = _routerFxWinnerName(effectiveDecision);
+    wrap.setAttribute('role', mode === 'live' ? 'status' : 'group');
+    wrap.setAttribute('aria-live', mode === 'live' ? 'polite' : 'off');
+    wrap.setAttribute(
+      'aria-label',
+      winnerName ? `Router selected ${winnerName}` : 'Router settled'
+    );
+  }
+
+  function _routerFxClearVisualResidue(wrap) {
+    if (!wrap) return;
+    const selector = wrap.querySelector('.router-fx-selector');
+    if (selector) selector.classList.remove('visible', 'lock', 'lock-impact');
+    wrap.querySelectorAll('.router-fx-cell.pinging').forEach((cell) => {
+      cell.classList.remove('pinging');
+    });
+    wrap.querySelectorAll('.router-fx-mote.is-scan').forEach((mote) => {
+      mote.classList.remove('is-scan');
+    });
+    wrap.querySelectorAll('.router-fx-burst').forEach((burst) => burst.remove());
+  }
+
+  function _routerFxNormalizeSettledStrip(wrap, renderMode, decision) {
+    if (!wrap) return;
+    _routerFxStopScan(wrap);
+    _routerFxClearAnimationTimers(wrap);
+    _routerFxClearVisualResidue(wrap);
+    wrap.dataset.state = 'settled';
+    wrap.dataset.renderMode = renderMode || 'history';
+    delete wrap.dataset.live;
+    delete wrap.dataset.scanning;
+    wrap._fxFinished = true;
+    _routerFxApplySettledSemantics(wrap, decision, wrap.dataset.renderMode);
+    _routerFxFitLabels(wrap);
+  }
+
+  function _routerFxDisconnectLabelFit(wrap) {
+    if (!wrap) return;
+    if (wrap._fxFitFrame) {
+      cancelAnimationFrame(wrap._fxFitFrame);
+      wrap._fxFitFrame = null;
+    }
+    if (wrap._fxLabelResizeObserver) {
+      wrap._fxLabelResizeObserver.disconnect();
+      wrap._fxLabelResizeObserver = null;
+    }
+  }
+
+  function _routerFxRemoveStrip(wrap) {
+    if (!wrap) return;
+    _routerFxNormalizeSettledStrip(wrap, wrap.dataset.renderMode || 'history');
+    _routerFxDisconnectLabelFit(wrap);
+    wrap.remove();
+  }
+
+  function _routerFxStaticizeCompletedStrips(sessionKey) {
+    if (!_thread) return;
+    const key = sessionKey || _sessionKey || '';
+    _thread.querySelectorAll('.router-fx').forEach((wrap) => {
+      if (key && wrap.dataset.sessionKey && wrap.dataset.sessionKey !== key) return;
+      if (wrap.dataset.state !== 'settled') return;
+      _routerFxNormalizeSettledStrip(wrap, 'history', wrap._fxDecision || null);
+    });
+  }
+
   function _settleRouterFxImmediate(wrap, winnerIdx, opts) {
     opts = opts || {};
     const grid = wrap.querySelector('.router-fx-grid');
@@ -3544,13 +3644,18 @@ const ChatView = (() => {
     if (!cells[winnerIdx]) return;
 
     wrap.dataset.state = 'settled';
+    delete wrap.dataset.live;
+    delete wrap.dataset.scanning;
+    wrap._fxFinished = true;
     cells.forEach((c, i) => c.classList.toggle('win', i === winnerIdx));
+    _routerFxApplySettledSemantics(wrap, opts.decision || wrap._fxDecision || null, wrap.dataset.renderMode);
 
     // Hide the chase hammer once settled — the .win cell IS the winner marker.
     // Leaving the selector visible risks it stranding mid-hop (e.g. straddling
     // two cells, the observed visual failure), since its position is measured
     // and can race a layout change.
     if (selector) selector.classList.remove('visible', 'lock', 'lock-impact');
+    _routerFxFitLabels(wrap);
     if (opts.burst) {
       requestAnimationFrame(() => _routerFxFireBurst(grid, cells[winnerIdx]));
     }
@@ -3577,6 +3682,7 @@ const ChatView = (() => {
     if (!grid || !selector || winnerIdx < 0) return;
     const cells = grid.querySelectorAll('.router-fx-cell');
     if (!cells.length || !cells[winnerIdx]) return;
+    _routerFxClearAnimationTimers(wrap);
 
     // The router panel is an explicitly toggled decorative effect — the in-app
     // "Router animation" switch IS the motion opt-in — so it plays regardless
@@ -3618,18 +3724,24 @@ const ChatView = (() => {
     sequence.forEach((idx, hopIdx) => {
       if (hopIdx === 0) return;
       scheduled += dwellTimes[hopIdx - 1] || 200;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        if (!wrap.isConnected || wrap.dataset.renderMode !== 'live') return;
         if (hopIdx < sequence.length - 1) {
           _routerFxPositionSelector(selector, cells[idx], { hopIdx });
           _routerFxPing(cells[idx]);
         } else {
-          _settleRouterFxImmediate(wrap, idx, { burst: true });
+          _settleRouterFxImmediate(wrap, idx, { burst: true, decision: wrap._fxDecision });
           _routerFxPing(cells[idx]);
         }
       }, scheduled);
+      wrap._fxAnimTimers.push(timer);
     });
 
-    requestAnimationFrame(placeFirst);
+    wrap._fxAnimFrame = requestAnimationFrame(() => {
+      wrap._fxAnimFrame = null;
+      if (!wrap.isConnected || wrap.dataset.renderMode !== 'live') return;
+      placeFirst();
+    });
   }
 
   // ── Cloud variant ("model nebula" / rack-focus) ─────────────────────
@@ -3718,6 +3830,11 @@ const ChatView = (() => {
   function _settleRouterFxCloud(wrap) {
     if (!wrap) return;
     wrap.dataset.state = 'settled';
+    delete wrap.dataset.live;
+    delete wrap.dataset.scanning;
+    wrap._fxFinished = true;
+    _routerFxClearVisualResidue(wrap);
+    _routerFxApplySettledSemantics(wrap, wrap._fxDecision || null, wrap.dataset.renderMode);
   }
 
   // Live rack-focus: brief beat on the full field, defocus the whole field
@@ -3729,9 +3846,14 @@ const ChatView = (() => {
     // Opt-in via the toggle, independent of OS reduce-motion (see
     // _animateRouterFx). Settle directly only if there is no winner to focus.
     if (!wrap._fxWinnerEl) { _settleRouterFxCloud(wrap); return; }
+    _routerFxClearAnimationTimers(wrap);
     // Hold the in-focus field a beat so the defocus reads as intentional.
-    setTimeout(() => { if (wrap.isConnected) wrap.dataset.state = 'playing'; }, 260);
-    setTimeout(() => { if (wrap.isConnected) wrap.dataset.state = 'settled'; }, 680);
+    wrap._fxAnimTimers.push(setTimeout(() => {
+      if (wrap.isConnected && wrap.dataset.renderMode === 'live') wrap.dataset.state = 'playing';
+    }, 260));
+    wrap._fxAnimTimers.push(setTimeout(() => {
+      if (wrap.isConnected && wrap.dataset.renderMode === 'live') _settleRouterFxCloud(wrap);
+    }, 680));
   }
 
   // ── Scan → lock ─────────────────────────────────────────────────────────
@@ -3752,10 +3874,9 @@ const ChatView = (() => {
       return false;
     }
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
-      _routerFxStopScan(el);
-      el.remove();
+      _routerFxRemoveStrip(el);
     });
-    const wrap = _buildRouterFxElement({ source: 'none' }, { seedKey });
+    const wrap = _buildRouterFxElement({ source: 'none' }, { seedKey, renderMode: 'live' });
     wrap.dataset.live = 'true';
     wrap.dataset.scanning = 'true';
     wrap.dataset.state = 'scanning';
@@ -3798,7 +3919,9 @@ const ChatView = (() => {
       _routerFxLock(wrap, wrap._fxDecision);
     } else {
       _routerFxStopScan(wrap);
+      _routerFxClearVisualResidue(wrap);
       wrap.dataset.state = 'settled';
+      _routerFxApplySettledSemantics(wrap, null, 'live');
       _chatDiag('router_scan.finish.no_decision', {
         strip: _chatDiagDescribeElement(wrap),
       });
@@ -3893,6 +4016,8 @@ const ChatView = (() => {
     _routerFxStopScan(wrap);
     wrap.dataset.tier = decision.tier || '';
     wrap.dataset.source = decision.source || 'none';
+    wrap.dataset.renderMode = wrap.dataset.renderMode || 'live';
+    wrap._fxDecision = decision;
     const identity = _routerFxDecisionIdentity(decision);
     if (identity) wrap.dataset.routerIdentity = identity;
     if (decision.routing_applied === false) {
@@ -3922,7 +4047,7 @@ const ChatView = (() => {
       }
     }
     if (winnerEl) { winnerEl.classList.add('router-fx-mote--winner'); wrap._fxWinnerEl = winnerEl; }
-    requestAnimationFrame(() => { if (wrap.isConnected) wrap.dataset.state = 'settled'; });
+    requestAnimationFrame(() => { if (wrap.isConnected) _settleRouterFxCloud(wrap); });
   }
 
   function _routerFxLockGrid(wrap, decision) {
@@ -3933,9 +4058,15 @@ const ChatView = (() => {
     }
     const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
     if (winnerIdx >= 0) {
-      requestAnimationFrame(() => { if (wrap.isConnected) _settleRouterFxImmediate(wrap, winnerIdx, { burst: true }); });
+      requestAnimationFrame(() => {
+        if (wrap.isConnected) _settleRouterFxImmediate(wrap, winnerIdx, { burst: true, decision });
+      });
     } else {
       wrap.dataset.state = 'settled';
+      delete wrap.dataset.live;
+      delete wrap.dataset.scanning;
+      wrap._fxFinished = true;
+      _routerFxApplySettledSemantics(wrap, decision, wrap.dataset.renderMode);
     }
   }
 
@@ -3975,23 +4106,52 @@ const ChatView = (() => {
 
   // Shrink any grid cell label that overflows its cell so long model names
   // (e.g. "gemini-3.1-flash-lite") show in full instead of clipping at the
-  // edges. Measured after insertion (rAF) because it needs the rendered cell
-  // width. No-op for the cloud variant (no .router-fx-cell). Idempotent.
+  // edges. Re-runs after insertion, font load, resize, and winner lock because
+  // all of those can change the measured width.
+  function _routerFxMeasureLabels(wrap) {
+    if (!wrap || !wrap.isConnected) return;
+    wrap.querySelectorAll('.router-fx-cell').forEach((cell) => {
+      const nm = cell.querySelector('.nm');
+      if (!nm) return;
+      nm.style.fontSize = '';
+      const avail = cell.clientWidth - 12;
+      if (avail <= 0) return;
+      const w = nm.scrollWidth;
+      if (w > avail) {
+        const base = parseFloat(getComputedStyle(nm).fontSize) || 10.5;
+        nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';
+      }
+    });
+  }
+
+  function _routerFxScheduleLabelFit(wrap) {
+    if (!wrap) return;
+    if (wrap._fxFitFrame) cancelAnimationFrame(wrap._fxFitFrame);
+    wrap._fxFitFrame = requestAnimationFrame(() => {
+      wrap._fxFitFrame = null;
+      _routerFxMeasureLabels(wrap);
+    });
+  }
+
+  function _routerFxInstallLabelFit(wrap) {
+    if (!wrap || wrap._fxFitInstalled) return;
+    wrap._fxFitInstalled = true;
+    const grid = wrap.querySelector('.router-fx-grid');
+    if (grid && typeof ResizeObserver === 'function') {
+      wrap._fxLabelResizeObserver = new ResizeObserver(() => _routerFxScheduleLabelFit(wrap));
+      wrap._fxLabelResizeObserver.observe(grid);
+    }
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready
+        .then(() => _routerFxScheduleLabelFit(wrap))
+        .catch(() => {});
+    }
+  }
+
   function _routerFxFitLabels(wrap) {
     if (!wrap) return;
-    requestAnimationFrame(() => {
-      wrap.querySelectorAll('.router-fx-cell').forEach((cell) => {
-        const nm = cell.querySelector('.nm');
-        if (!nm) return;
-        nm.style.fontSize = '';
-        const avail = cell.clientWidth - 12;
-        const w = nm.scrollWidth;
-        if (avail > 0 && w > avail) {
-          const base = parseFloat(getComputedStyle(nm).fontSize) || 10.5;
-          nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';
-        }
-      });
-    });
+    _routerFxInstallLabelFit(wrap);
+    _routerFxScheduleLabelFit(wrap);
   }
 
   function _routerFxInsertAnchored(wrap, referenceAssistant) {
@@ -4094,6 +4254,15 @@ const ChatView = (() => {
       _chatDiag('router_decision.skip.disabled_post_config', _chatDiagSummarizePayload(payload));
       return;
     }
+    if (!_historyHasRendered || _historyHydrating) {
+      _cachePendingRouterDecision(payload);
+      _chatDiag('router_decision.cached_during_history_hydration', {
+        payload: _chatDiagSummarizePayload(payload),
+        historyHasRendered: !!_historyHasRendered,
+        historyHydrating: !!_historyHydrating,
+      });
+      return;
+    }
     // The router strip MUST anchor below a user message. If a WS replay
     // arrives before history has rendered the user turn, cache the decision
     // and replay it after _loadHistory() has an anchor.
@@ -4102,11 +4271,17 @@ const ChatView = (() => {
       _cachePendingRouterDecision(payload);
       return;
     }
-    // Resolve a seed that's deterministic for this session: the first routed
-    // turn establishes the dial layout and later turns reuse it.
+    // No matching live scan means this decision is arriving via replay/history
+    // or after the user-visible turn already settled. Preserve the panel shape
+    // but render it as a settled historical result; never replay the choice
+    // animation for an already-finished turn.
     const turnIndex = _routerFxCountUserMessages();
-    const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);
-    const wrap = _buildRouterFxElement(payload, { seedKey: liveSeed });
+    const replaySeed = _routerFxResolveLayoutSeed(_sessionKey);
+    const wrap = _buildRouterFxElement(payload, {
+      preSettled: true,
+      renderMode: 'history',
+      seedKey: replaySeed,
+    });
     // Cloud flags its winner mote at build time; the grid resolves a winning
     // cell index. Either way, bail if there is no winner to focus.
     const winnerIdx = wrap._fxCloud ? -1 : _routerFxWinnerCellIndex(wrap, tier);
@@ -4118,21 +4293,9 @@ const ChatView = (() => {
       });
       return;
     }
-    wrap.dataset.live = 'true';
     wrap.dataset.sessionKey = _sessionKey || '';
     wrap.dataset.turnIndex = String(turnIndex);
-    // Observe-mode signalling: when the router classified a tier but
-    // routing_applied is false, the routed model was NOT actually
-    // used for this turn. Mark the strip so CSS can dim it and the
-    // animation skips straight to settled — animating a hop sequence
-    // would imply the router picked a model that drove the response.
     const observeMode = payload && payload.routing_applied === false;
-    if (observeMode) {
-      wrap.dataset.observe = 'true';
-      wrap.dataset.rolloutPhase = typeof payload.rollout_phase === 'string'
-        ? payload.rollout_phase
-        : 'observe';
-    }
     // Drop any earlier strip anchored to this user msg, regardless of
     // its lifecycle flag. A WS replay arriving after F5 will have
     // built a tier-id strip before config loaded; we replace it with
@@ -4142,31 +4305,21 @@ const ChatView = (() => {
         && userMsg.nextSibling.classList
         && userMsg.nextSibling.classList.contains('router-fx')
         && userMsg.nextSibling !== wrap) {
-      userMsg.nextSibling.remove();
+      _routerFxRemoveStrip(userMsg.nextSibling);
     }
     // Drop any earlier live strip from a different turn that hasn't
     // been promoted yet — protects against rapid back-to-back sends.
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
-      if (el !== wrap) el.remove();
+      if (el !== wrap) _routerFxRemoveStrip(el);
     });
     _routerFxInsertAnchored(wrap, null);
-    _chatDiag('router_decision.inserted_strip', {
+    _routerFxNormalizeSettledStrip(wrap, 'history', payload);
+    _chatDiag('router_decision.inserted_settled_strip', {
       payload: _chatDiagSummarizePayload(payload),
       strip: _chatDiagDescribeElement(wrap),
       observeMode,
       winnerIdx,
     });
-    if (observeMode) {
-      // Observe-mode only: settle immediately because the routed model did not
-      // drive the response. Live applied routes keep the random chase animation.
-      requestAnimationFrame(() => wrap._fxCloud
-        ? _settleRouterFxCloud(wrap)
-        : _settleRouterFxImmediate(wrap, winnerIdx, { burst: false }));
-    } else {
-      requestAnimationFrame(() => wrap._fxCloud
-        ? _animateRouterFxCloud(wrap)
-        : _animateRouterFx(wrap, winnerIdx));
-    }
     _scrollToBottom();
   }
 
@@ -4813,6 +4966,8 @@ const ChatView = (() => {
     _historyHasMore = false;
     _historyScope = 'complete';
     _historyLoadingEarlier = false;
+    _historyHydrating = false;
+    _historyHasRendered = false;
     _historyError = '';
     _historyCompactionSummaries = [];
     _historyRequestSeq++;
@@ -4934,6 +5089,7 @@ const ChatView = (() => {
     if (!_sessionKey || !_thread) return;
     const requestSessionKey = _sessionKey;
     const requestSeq = ++_historyRequestSeq;
+    _historyHydrating = true;
     _historyError = '';
     _chatDiag('history.start', {
       sessionKey: requestSessionKey,
@@ -4967,8 +5123,12 @@ const ChatView = (() => {
         hasMore: _historyHasMore,
         historyScope: _historyScope,
       });
+      _historyHydrating = false;
       _renderHistoryMessages(messages);
     } catch (err) {
+      if (requestSessionKey === _sessionKey && requestSeq === _historyRequestSeq) {
+        _historyHydrating = false;
+      }
       _historyError = 'Could not load chat history.';
       _chatDiag('history.error', {
         message: err && err.message ? err.message : String(err),
@@ -5073,6 +5233,7 @@ const ChatView = (() => {
       if (window.SavingsFX) window.SavingsFX.resetStreak();
       _lastSavingsPopupIdentity = '';
       _thread.innerHTML = _emptyStateHTML();
+      _historyHasRendered = true;
       _chatDiag('history.empty.rendered_empty_state', {});
       return;
     }
@@ -5091,7 +5252,7 @@ const ChatView = (() => {
     // session/turn. Reorder repair below keeps attached strips in place.
     _thread.querySelectorAll('.router-fx').forEach((el) => {
       if (el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex) return;
-      el.remove();
+      _routerFxRemoveStrip(el);
     });
     _messages = [];
     _lastHeaderRole = '';
@@ -5210,7 +5371,7 @@ const ChatView = (() => {
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
-                ownStrips.forEach((el) => { if (el !== keep) el.remove(); });
+                ownStrips.forEach((el) => { if (el !== keep) _routerFxRemoveStrip(el); });
                 if (keep) {
                   if (userMsg.nextSibling !== keep) {
                     _thread.insertBefore(keep, userMsg.nextSibling);
@@ -5220,7 +5381,7 @@ const ChatView = (() => {
                       routerIdentity,
                     });
                   }
-                  delete keep.dataset.live;
+                  _routerFxNormalizeSettledStrip(keep, 'history', savedUsage);
                 }
               }
               const placed = userMsg && userMsg.nextSibling;
@@ -5229,7 +5390,7 @@ const ChatView = (() => {
               const alreadyInPlace = existingStrip
                 && existingStrip.dataset.routerIdentity === routerIdentity;
               if (!alreadyInPlace) {
-                if (existingStrip) existingStrip.remove();
+                if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
                 const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);
                 const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed);
@@ -5248,6 +5409,7 @@ const ChatView = (() => {
           }
         }
       });
+      _historyHasRendered = true;
       _flushPendingRouterDecisions();
       const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
       _thread.querySelectorAll('.msg').forEach((el) => {
@@ -5259,7 +5421,7 @@ const ChatView = (() => {
       _thread.querySelectorAll('.router-fx').forEach((el) => {
         const turnIndex = el.dataset.turnIndex || '';
         if (el.dataset.sessionKey === (_sessionKey || '') && turnIndex) return;
-        el.remove();
+        _routerFxRemoveStrip(el);
       });
       // Orphan backstop: outside an active stream every kept strip must sit
       // immediately beneath its user message; drop any that do not so a stranded
@@ -5270,14 +5432,14 @@ const ChatView = (() => {
           const anchored = !!prev && !!prev.classList && prev.classList.contains('msg')
             && (prev.classList.contains('user')
               || prev.getAttribute('data-history-role') === 'user');
-          if (!anchored) el.remove();
+          if (!anchored) _routerFxRemoveStrip(el);
         });
       }
       // User-pref disabled-sweep: the viewer has hidden the router-fx
       // visualisation. New strips are already gated off above; this drops any
       // strip left from before the toggle flipped.
       if (!_routerFx.enabled) {
-        _thread.querySelectorAll('.router-fx').forEach((el) => el.remove());
+        _thread.querySelectorAll('.router-fx').forEach((el) => _routerFxRemoveStrip(el));
       }
       if (_pendingFinalizedAssistantBubble
           && (consumedHistoryElements.has(_pendingFinalizedAssistantBubble)
@@ -6252,6 +6414,7 @@ const ChatView = (() => {
       _attachHoverActions(_streamBubble, 'assistant');
     }
     _isStreaming = false;
+    _routerFxStaticizeCompletedStrips(_streamSessionKey || _sessionKey || '');
     if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
     _streamBubble = null;
     _streamSessionKey = '';
