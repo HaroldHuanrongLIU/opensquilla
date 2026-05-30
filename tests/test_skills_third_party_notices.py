@@ -21,7 +21,6 @@ ORIGINALS = {
     "meta-account-watch",
     "meta-daily-operator-brief",
     "meta-document-to-decision",
-    "meta-family-day-coordinator",
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
