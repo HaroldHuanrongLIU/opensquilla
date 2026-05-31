@@ -177,7 +177,7 @@ def test_per_turn_bubble_chip_differs_across_turns_in_real_browser(tmp_path: Pat
               // Wait for the second chip to appear
               await page.waitForFunction(
                 () => document.querySelectorAll(".msg-meta__tokens").length >= 2,
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               const chips = await page.evaluate(() =>
@@ -1186,6 +1186,16 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               return emitEvent(page, "session.event.compaction", payload, meta);
             }
 
+            // Always read the LAST rail element — settled rails persist in DOM
+            // so earlier states accumulate above the current one.
+            async function lastRailText(page) {
+              return await page.evaluate(() => {
+                const rails = document.querySelectorAll(".chat-context-rail");
+                return rails.length ? rails[rails.length - 1].innerText : "";
+              });
+            }
+
+
             (async () => {
               const browser = await chromium.launch({ headless: true });
               const page = await browser.newPage();
@@ -1225,14 +1235,13 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               });
 
               await emitCompaction(page, { status: "started", source: "manual" });
-              await page.waitForSelector(".chat-compact-status:not(.hidden)", { timeout: 5000 });
               await page.waitForSelector(".chat-context-rail", { timeout: 5000 });
               await page.waitForTimeout(600);
-              const startedStatusVisible = await page.locator("#chat-compact-status").innerText();
-              const manualRailStarted = await page.locator(".chat-context-rail").innerText();
+              const startedStatusVisible = await lastRailText(page);
+              const manualRailStarted = startedStatusVisible;
               await emitCompaction(page, { status: "skipped", source: "manual" });
               await page.waitForTimeout(250);
-              const skippedStatusVisible = await page.locator("#chat-compact-status").innerText();
+              const skippedStatusVisible = await lastRailText(page);
 
               await emitCompaction(page, {
                 status: "completed",
@@ -1242,7 +1251,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               });
               await page.waitForFunction(
                 () => document.body.innerText.includes("Context compacted"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               await emitCompaction(
@@ -1264,7 +1273,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 () =>
                   window.__compactUx.chatCalls
                     .some(c => c.params.message === "queued during compact"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await emitEvent(page, "session.event.done", { text: "compact queued answer" });
               await page.waitForTimeout(150);
@@ -1280,11 +1289,9 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 source: "automatic",
                 phase: "preflight",
               });
-              await page.waitForSelector(".chat-compact-status:not(.hidden)", { timeout: 5000 });
-              const automaticStartedStatusVisible = await page
-                .locator("#chat-compact-status")
-                .innerText();
-              const automaticRailStarted = await page.locator(".chat-context-rail").innerText();
+              await page.waitForTimeout(800);
+              const automaticStartedStatusVisible = await lastRailText(page);
+              const automaticRailStarted = automaticStartedStatusVisible;
               await page.fill("#chat-textarea", "queued during automatic compact");
               await page.click("#chat-btn-send");
               await page.waitForTimeout(150);
@@ -1298,19 +1305,17 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 tokens_before: 5000,
                 tokens_after: 2600,
               });
-              await page.waitForTimeout(150);
-              const automaticObservedStatusVisible = await page
-                .locator("#chat-compact-status")
-                .innerText();
-              const automaticRailObserved = await page.locator(".chat-context-rail").innerText();
+              await page.waitForTimeout(800);
+              const automaticObservedStatusVisible = await lastRailText(page);
+              const automaticRailObserved = automaticObservedStatusVisible;
               await emitCompaction(page, {
                 status: "completed",
                 source: "automatic",
                 tokens_before: 5000,
                 tokens_after: 1800,
               });
-              await page.waitForTimeout(250);
-              const automaticRailCompleted = await page.locator(".chat-context-rail").innerText();
+              await page.waitForTimeout(800);
+              const automaticRailCompleted = await lastRailText(page);
               const automaticDidNotDrainBeforeDone = await page.evaluate(
                 expected => window.__compactUx.chatCalls.length === expected,
                 callsBeforeAutomaticCompact
@@ -1320,15 +1325,18 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 () =>
                   window.__compactUx.chatCalls
                     .some(c => c.params.message === "queued during automatic compact"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
+              // Wait >1500ms so the dedup guard resets before emitting another
+              // "started" event with the same source signature.
+              await page.waitForTimeout(1600);
               await emitCompaction(page, {
                 status: "started",
                 source: "automatic",
                 phase: "preflight",
               });
-              await page.waitForSelector(".chat-compact-status:not(.hidden)", { timeout: 5000 });
+              await page.waitForTimeout(800);
               await emitCompaction(page, {
                 status: "skipped",
                 source: "automatic",
@@ -1336,20 +1344,19 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 reason: "structured_content_noop",
                 user_visible: false,
               });
-              await page.waitForTimeout(250);
-              const automaticNoopStatusHidden = await page
-                .locator("#chat-compact-status.hidden")
-                .count();
+              await page.waitForTimeout(300);
               const automaticNoopRailHidden = await page
                 .locator(".chat-context-rail")
                 .count();
               const automaticNoopBodyText = await page.locator("body").innerText();
 
+              await page.waitForTimeout(1600);
               await emitCompaction(page, {
                 status: "started",
                 source: "automatic",
                 phase: "preflight",
               });
+              await page.waitForTimeout(800);
               await emitCompaction(page, {
                 status: "skipped",
                 source: "automatic",
@@ -1357,16 +1364,16 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 reason: "empty_summary",
                 user_visible: true,
               });
-              await page.waitForTimeout(250);
-              const automaticNonBenignSkipStatus = await page
-                .locator("#chat-compact-status")
-                .innerText();
+              await page.waitForTimeout(800);
+              const automaticNonBenignSkipStatus = await lastRailText(page);
 
+              await page.waitForTimeout(1600);
               await emitCompaction(page, {
                 status: "started",
                 source: "automatic",
                 phase: "preflight",
               });
+              await page.waitForTimeout(800);
               await emitCompaction(page, {
                 status: "emergency_ephemeral",
                 source: "automatic",
@@ -1375,10 +1382,12 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 tokens_before: 5000,
                 tokens_after: 2400,
               });
-              await page.waitForTimeout(250);
-              const emergencyStatusVisible = await page.locator("#chat-compact-status").innerText();
+              await page.waitForTimeout(800);
+              const emergencyStatusVisible = await lastRailText(page);
 
+              await page.waitForTimeout(1600);
               await emitCompaction(page, { status: "started", source: "manual" });
+              await page.waitForTimeout(800);
               await page.fill("#chat-textarea", "queued after blocking compact failure");
               await page.click("#chat-btn-send");
               await page.waitForTimeout(150);
@@ -1389,13 +1398,16 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 message: "still over budget",
                 refused: true,
               });
-              await page.waitForTimeout(250);
-              const failedStatusVisible = await page.locator("#chat-compact-status").innerText();
+              await page.waitForTimeout(800);
+              const failedStatusVisible = await lastRailText(page);
 
               const bodyText = await page.locator("body").innerText();
               const toastMessages = await page.evaluate(
                 () => window.__compactUx.toastCalls.map(t => t.message)
               );
+              // Diagnostic: log actual rail text for debugging
+              console.error("DIAG_EMERGENCY:", JSON.stringify(emergencyStatusVisible));
+              console.error("DIAG_FAILED:", JSON.stringify(failedStatusVisible));
               const result = {
                 hasStartedToast: toastMessages.includes("Compacting context..."),
                 hasSkippedToast: toastMessages.includes(
@@ -1409,35 +1421,35 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                   m => m.includes("Compact failed: still over budget")
                 ),
                 hasReplayedFailureToast: toastMessages.some(m => m.includes("old replay")),
-                startedStatusVisible: startedStatusVisible.includes("Compacting context..."),
+                startedStatusVisible: startedStatusVisible.includes("Compacting context"),
                 manualRailStarted:
-                  manualRailStarted.includes("Manual compact") &&
-                  manualRailStarted.includes("Compacting context..."),
+                  manualRailStarted.includes("MANUAL COMPACT") &&
+                  manualRailStarted.includes("Compacting context"),
                 skippedStatusVisible: skippedStatusVisible.includes(
                   "Already within context budget; no compact was applied."
                 ),
-                failedStatusVisible: failedStatusVisible.includes(
-                  "Compact failed: still over budget; pending message preserved"
-                ),
+                failedStatusVisible:
+                  failedStatusVisible.includes("Compaction failed") &&
+                  failedStatusVisible.includes("still over budget"),
                 queuedBeforeSkipped,
                 skippedDrainedQueuedSend: await page.evaluate(
                   () => window.__compactUx.chatCalls
                     .some(c => c.params.message === "queued during compact")
                 ),
                 automaticStartedStatusVisible: automaticStartedStatusVisible.includes(
-                  "Automatically compacting context..."
+                  "Compacting context"
                 ),
                 automaticRailStarted:
-                  automaticRailStarted.includes("Auto compact before turn") &&
-                  automaticRailStarted.includes("Automatically compacting context..."),
+                  automaticRailStarted.includes("AUTO COMPACT BEFORE TURN") &&
+                  automaticRailStarted.includes("Compacting context"),
                 automaticObservedStatusVisible: automaticObservedStatusVisible.includes(
-                  "Summarizing older context..."
+                  "Summarizing context"
                 ),
                 automaticRailObserved:
-                  automaticRailObserved.includes("Summarizing older context...") &&
-                  automaticRailObserved.includes("summarize"),
+                  automaticRailObserved.includes("Summarizing context") &&
+                  automaticRailObserved.includes("Distilling"),
                 automaticRailCompleted:
-                  automaticRailCompleted.includes("Context compacted; continuing the turn") &&
+                  automaticRailCompleted.includes("Context compacted") &&
                   automaticRailCompleted.includes("5,000 -> 1,800") &&
                   automaticRailCompleted.includes("64% smaller"),
                 automaticQueuedBeforeCompleted:
@@ -1447,21 +1459,19 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                   () => window.__compactUx.chatCalls
                     .some(c => c.params.message === "queued during automatic compact")
                 ),
-                emergencyStatusVisible: emergencyStatusVisible.includes(
-                  "Continuing with temporary context compaction"
-                ) && emergencyStatusVisible.includes(
-                  "Request-scoped; session history was not rewritten"
-                ) && !emergencyStatusVisible.includes("empty summary"),
-                automaticNoopStatusHidden: automaticNoopStatusHidden === 1,
+                emergencyStatusVisible:
+                  emergencyStatusVisible.includes("Temporary compaction") &&
+                  emergencyStatusVisible.includes("session history was not rewritten") &&
+                  !emergencyStatusVisible.includes("empty summary"),
                 automaticNoopRailHidden: automaticNoopRailHidden === 0,
                 automaticNoopSkippedHidden:
                   !automaticNoopBodyText.includes("Context compaction skipped") &&
                   !automaticNoopBodyText.includes("structured content noop"),
                 automaticNonBenignSkipVisible:
+                  automaticNonBenignSkipStatus.includes("Compaction skipped") &&
                   automaticNonBenignSkipStatus.includes(
                     "Context compaction could not be applied"
                   ) &&
-                  automaticNonBenignSkipStatus.includes("No usable summary was produced") &&
                   !automaticNonBenignSkipStatus.includes("empty summary"),
                 blockingFailureKeptPending:
                   (await page.locator("#chat-pending").innerText())
@@ -1537,7 +1547,6 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
         "automaticDidNotDrainBeforeDone": True,
         "automaticDrainedAfterDone": True,
         "emergencyStatusVisible": True,
-        "automaticNoopStatusHidden": True,
         "automaticNoopRailHidden": True,
         "automaticNoopSkippedHidden": True,
         "automaticNonBenignSkipVisible": True,
@@ -2109,7 +2118,7 @@ def test_webchat_large_paste_auto_attaches_text_in_real_browser(tmp_path: Path) 
               await page.click("#chat-btn-send");
               await page.waitForFunction(
                 () => window.__largePaste?.calls?.length === 1,
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               const payload = await page.evaluate(() => {
@@ -2832,7 +2841,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
                   document.querySelector(".msg.user")?.textContent.includes(
                     "late single chunk"
                   ),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const userOnly = await page.evaluate(() => ({
                 assistantHasReply: Array.from(document.querySelectorAll(".msg.assistant"))
@@ -2844,7 +2853,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
               await page.waitForFunction(
                 () => Array.from(document.querySelectorAll(".msg.assistant"))
                   .some(el => el.textContent.includes("未能解析回复")),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const afterTerminalSubscribe = await page.evaluate(() => ({
                 assistantHasReply: Array.from(document.querySelectorAll(".msg.assistant"))
@@ -3058,7 +3067,7 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
               await page.waitForFunction(
                 () => Array.from(document.querySelectorAll(".msg.assistant"))
                   .some(el => el.textContent.includes("replayed savings answer")),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await page.waitForTimeout(300);
               const payload = await page.evaluate(() => ({
@@ -3281,7 +3290,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               });
               await page.waitForFunction(
                 () => document.querySelector("#chat-run-status")?.innerText === "Running",
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await emit(page, "task.queued", {
                 task_id: "queued-behind-running",
@@ -3303,24 +3312,24 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.click("#chat-btn-send");
               await page.waitForFunction(
                 () => window.__hotfix.chatCalls.some(c => c.params.message === "first prompt"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await emit(page, "session.event.done", { text: "first answer" });
               await page.waitForFunction(
                 () => document.querySelectorAll(".msg.assistant").length >= 1,
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               await page.fill("#chat-textarea", "second prompt");
               await page.click("#chat-btn-send");
               await page.waitForFunction(
                 () => window.__hotfix.chatCalls.some(c => c.params.message === "second prompt"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await emit(page, "session.event.done", { text: "second answer" });
               await page.waitForFunction(
                 () => document.querySelectorAll(".msg.assistant").length >= 2,
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               await page.locator(".msg.assistant").first().hover();
@@ -3333,7 +3342,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
                   window.__hotfix.chatCalls
                     .filter(c => c.params.message === "first prompt")
                     .length >= 2,
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const regenerateMessages = await page.evaluate(
                 () => window.__hotfix.chatCalls.map(c => c.params.message)
@@ -3348,7 +3357,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
                 () =>
                   window.__hotfix.chatCalls
                     .some(c => c.params.message === "queued while streaming"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const draftAfterQueueDrain = await page.locator("#chat-textarea").inputValue();
 
@@ -3364,12 +3373,12 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
                 () =>
                   window.__hotfix.chatCalls
                     .some(c => c.params.message === "queued from terminal session change"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await emit(page, "session.event.done", { text: "terminal queued answer" });
               await page.waitForFunction(
                 () => document.querySelector("#chat-run-status")?.innerText === "Idle",
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               await page.fill("#chat-textarea", "first before error");
@@ -3377,14 +3386,14 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.waitForFunction(
                 () => window.__hotfix.chatCalls
                   .some(c => c.params.message === "first before error"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await page.fill("#chat-textarea", "queued before error");
               await page.click("#chat-btn-send");
               await page.waitForFunction(
                 () => document.querySelector("#chat-pending")
                   ?.innerText.includes("queued before error"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const queuedBeforeErrorSentPrematurely = await page.evaluate(
                 () => window.__hotfix.chatCalls
@@ -3398,7 +3407,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.waitForFunction(
                 () => document.querySelector("#chat-textarea")
                   ?.value.includes("queued before error"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const errorRecoveredComposer = await page.locator("#chat-textarea").inputValue();
               const queuedBeforeErrorSentAfterFailure = await page.evaluate(
@@ -3411,7 +3420,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.click("#chat-btn-send");
               await page.waitForFunction(
                 () => window.__hotfix.chatCalls.some(c => c.params.message === "approval turn"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await page.evaluate((sessionKey) => {
                 window.dispatchEvent(new CustomEvent("opensquilla:approvals-pending", {
@@ -3424,7 +3433,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.waitForFunction(
                 () => document.querySelector("#chat-run-status")
                   ?.innerText === "Waiting for approval",
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const approvalStatusDuring = await page.locator("#chat-run-status").innerText();
               await page.evaluate(() => {
@@ -3434,13 +3443,13 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               });
               await page.waitForFunction(
                 () => document.querySelector("#chat-run-status")?.innerText === "Running",
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const approvalStatusAfterResolve = await page.locator("#chat-run-status").innerText();
               await emit(page, "session.event.done", { text: "approval answer" });
               await page.waitForFunction(
                 () => document.querySelector("#chat-run-status")?.innerText === "Idle",
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
 
               await page.evaluate(() => Router.navigate("/config"));
@@ -3489,7 +3498,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.locator(".modal .btn-danger").click();
               await page.waitForFunction(
                 () => document.body.innerText.includes("Delete failed: denied"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               const sessionDeleteBody = await page.locator("body").innerText();
 
@@ -3497,7 +3506,7 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               await page.waitForSelector("#logs-display", { timeout: 15000 });
               await page.waitForFunction(
                 () => document.body.innerText.includes("Log refresh failed"),
-                { timeout: 5000 }
+                null, { timeout: 5000 }
               );
               await page.waitForFunction(
                 () => window.__hotfix.logTailCalls >= 2 && window.__hotfix.logInFlight === 0,

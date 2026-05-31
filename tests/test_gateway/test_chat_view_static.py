@@ -1020,9 +1020,8 @@ def test_chat_surfaces_compaction_lifecycle_status_and_exception_toasts() -> Non
     assert "function _showCompactionToast(payload, meta = {})" in source
     assert "_setCompactInFlight(true, compactKey);" in compact_block
     assert "_syncCompactionRail(" in compact_block
-    assert "Compacting context..." in source
-    assert "Automatically compacting context..." in source
-    assert "_compactionStatusMessage(payload || {}, source, status)" in body
+    assert "Compacting context" in source
+    assert "_compactionStatusMessage(payload || {}, source, status)" in source
     assert "Already within context budget; no compact was applied." in source
     assert "Context compaction could not be applied" in source
     assert "No compactable chat history yet." in source
@@ -1040,77 +1039,102 @@ def test_chat_surfaces_compaction_lifecycle_status_and_exception_toasts() -> Non
     assert "Auto compact before send" in source
     assert "Auto compact during provider retry" in source
     assert "function _compactionUserVisible(payload, source, status)" in source
-    assert "if (!_compactionUserVisible(payload || {}, source, status))" in body
+    assert "!_compactionUserVisible(payload || {}, source, status)" in source
     assert "structured content noop" not in source.lower()
 
 
-def test_chat_surfaces_persistent_compaction_status_row() -> None:
+def test_chat_compaction_uses_single_in_thread_rail_surface() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
     start = source.index("function _showCompactionToast(payload, meta = {})")
     end = source.index("  /* ── RPC Event Subscriptions", start)
     body = source[start:end]
 
-    assert 'id="chat-compact-status"' in source
-    assert "let _compactStatusEl = null;" in source
-    assert "let _compactStatusTimer = null;" in source
+    # The composer pill (#chat-compact-status) is gone; the in-thread context
+    # rail is the single compaction surface for every lifecycle state.
+    assert 'id="chat-compact-status"' not in source
+    assert "_compactStatusEl" not in source
+    assert "function _setCompactStatus(" not in source
+    assert "function _hideCompactStatus(" not in source
+
+    # Rail state + renderer remain; the renderer takes an optional copy override
+    # used for the failure-recovery and semantic-memory notices.
     assert "let _compactionRailEl = null;" in source
     assert "let _compactionRailTimer = null;" in source
-    assert "function _setCompactStatus(status, message, options = {})" in source
-    assert "function _syncCompactionRail(payload, status, source)" in source
+    assert "function _syncCompactionRail(payload, status, source, overrides = {})" in source
     assert "function _compactionLifecycleSteps(payload, status)" in source
-    assert "function _hideCompactStatus()" in source
     assert "function _hideCompactionRail()" in source
-    assert "_compactStatusEl = _el.querySelector('#chat-compact-status');" in source
-    assert (
-        "_setCompactStatus('started', _compactionStatusMessage(payload || {}, source, status)"
-        in body
-    )
-    assert (
-        "return source === 'manual' ? 'Compacting context...' : "
-        "'Automatically compacting context...';"
-        in source
-    )
+
+    # Every lifecycle event renders through the one rail call; the branches below
+    # only drive non-UI side effects + the corner toasts.
+    assert "_syncCompactionRail(payload || {}, status, source);" in body
     assert "function _compactionSkipMessage(payload, source)" in source
     assert "if (_INTERNAL_COMPACTION_SKIP_REASONS.has(reason)) return '';" in source
     assert "Request-scoped; session history was not rewritten" in source
     assert "No usable summary was produced" in source
-    assert "_setCompactStatus('skipped', skippedMessage" in body
-    assert "_hideCompactStatus();" in body
-    assert "_setCompactStatus('completed', 'Context compacted' + details" in body
-    assert "_setCompactStatus('failed', 'Compact failed' + msg + pendingSuffix" in body
-    assert "_setCompactStatus('cancelled', 'Compact cancelled'" in body
     assert "status === 'emergency_ephemeral'" in body
     assert "status === 'observed'" in body
-    assert "_hideCompactStatus();" in source[source.index("function destroy()") :]
+
+    # destroy() tears down the rail (the only surface) — no pill teardown remains.
     assert "_hideCompactionRail();" in source[source.index("function destroy()") :]
-    assert ".chat-compact-status" in css
-    assert ".chat-compact-status__spinner" in css
+    assert "_hideCompactStatus(" not in source
+
+    # Pill CSS removed; rail CSS (lifecycle steps + the settle record) remains.
+    assert ".chat-compact-status" not in css
     assert ".chat-context-rail" in css
     assert ".chat-context-rail__steps" in css
+    assert ".chat-context-rail.is-settled" in css
     assert "contextRailEnter" in css
+
+
+def test_chat_compaction_terminal_rail_stays_anchored_after_history_sync() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    place_start = source.index("function _placeCompactionRail()")
+    place_end = source.index("function _ensureCompactionRail()", place_start)
+    place_body = source[place_start:place_end]
+    sync_start = source.index("function _syncCompactionRail(payload, status, source, overrides = {})")
+    sync_end = source.index("function _compactFailureBlocksPending", sync_start)
+    sync_body = source[sync_start:sync_end]
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("_chatDiag('history.done'", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _compactionRailTerminalStatus(status)" in source
+    assert "rail.dataset.terminal = _compactionRailTerminalStatus(status) ? 'true' : 'false';" in sync_body
+    assert "_compactionRailEl.dataset.terminal === 'true'" in place_body
+    assert "_compactionRailEl.parentNode === _thread" in place_body
+    assert "_placeCompactionRail();" in history_body
 
 
 def test_chat_compaction_token_details_are_success_only() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
+    # Token figures now surface only through the rail's metric chips, which are
+    # gated on real before/after counts — so skips (no tokens) show none. The dead
+    # pill helper (_compactionTokenStats) is gone.
+    assert "function _compactionTokenStats(" not in source
+    metrics_start = source.index("function _compactionMetricItems(payload, status)")
+    metrics_end = source.index("function _compactionLifecycleSteps(", metrics_start)
+    metrics_body = source[metrics_start:metrics_end]
+    assert "payload.tokens_before" in metrics_body
+    assert "payload.tokens_after" in metrics_body
+    assert "label: 'window'" in metrics_body
+    assert "label: 'saved'" in metrics_body
+    # A skip rewrote nothing: it must not surface compaction-implying token
+    # metrics (window/saved/remaining) — at most a neutral current-size count.
+    assert "const skipped = status === 'skipped'" in metrics_body
+    assert "if (skipped) {" in metrics_body
+    assert "if (!skipped && Number.isFinite(remaining)" in metrics_body
+
     start = source.index("function _showCompactionToast(payload, meta = {})")
     end = source.index("  /* ── RPC Event Subscriptions", start)
     body = source[start:end]
-    stats_start = source.index("function _compactionTokenStats(payload)")
-    stats_end = source.index("function _showCompactionToast(payload, meta = {})", stats_start)
-    stats_body = source[stats_start:stats_end]
     skipped_start = body.index("if (status === 'skipped')")
-    skipped_end = body.index("if (status === 'failed'", skipped_start)
+    skipped_end = body.index("const semanticNotice", skipped_start)
     skipped_block = body[skipped_start:skipped_end]
-
-    assert "const skippedMessage = _compactionSkipMessage(payload || {}, source);" in skipped_block
-    assert "if (!_compactionUserVisible(payload || {}, source, status))" in skipped_block
-    assert "UI.toast(skippedMessage" not in skipped_block
+    # Skips settle silently — no token figures, no skip-message toast spam.
     assert "_compactionTokenStats" not in skipped_block
-    assert "payload && payload.tokens_after || 0" not in stats_body
-    assert body.index("_compactionTokenStats(payload || {})") > body.index(
-        "if (status === 'cancelled')"
-    )
+    assert "tokens_after" not in skipped_block
+    assert "UI.toast(" not in skipped_block
 
 
 def test_chat_semantic_memory_degraded_is_non_blocking_and_path_safe() -> None:
@@ -1122,14 +1146,15 @@ def test_chat_semantic_memory_degraded_is_non_blocking_and_path_safe() -> None:
     assert "function _compactSemanticMemoryNotice(payload)" in source
     assert "payload.semanticMemory || payload.semantic_memory" in source
     assert "Memory saved; organizing" in source
-    assert "_setCompactStatus('completed', semanticNotice" in body
+    assert "_syncCompactionRail(payload || {}, 'completed', source, {" in body
+    assert "detail: semanticNotice + '.'," in body
     assert "UI.toast(semanticNotice" not in body
     assert body.index("const semanticNotice = _compactSemanticMemoryNotice") < body.index(
         "if (status === 'failed' || status === 'error')"
     )
     assert "function _compactSafeMessageDetail(payload)" in source
     assert "[memory checkpoint]" in source
-    assert "const detail = _compactSafeMessageDetail(payload || {});" in body
+    assert "const safe = _compactSafeMessageDetail(payload || {});" in body
     assert "payload.message ? ': ' + payload.message" not in body
 
 

@@ -1664,8 +1664,10 @@
   background: currentColor;
 }
 
+/* Terminal compaction markers persist in the transcript as a calmer record. */
 .chat-context-rail.is-settled {
-  opacity: 0.88;
+  opacity: 0.58;
+  filter: saturate(0.72);
 }
 
 @keyframes contextRailEnter {
@@ -1698,66 +1700,6 @@
   .chat-context-rail__steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
-
-.chat-compact-status {
-  margin: 0 var(--sp-4) var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 36px;
-  background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface));
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-  border-radius: var(--radius-md);
-  color: var(--text);
-  font-size: var(--fs-sm);
-}
-.chat-compact-status.hidden { display: none; }
-
-.chat-compact-status--ok {
-  background: color-mix(in srgb, var(--ok) 8%, var(--bg-surface));
-  border-color: color-mix(in srgb, var(--ok) 28%, var(--border));
-}
-.chat-compact-status--warn {
-  background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface));
-  border-color: color-mix(in srgb, var(--warn) 28%, var(--border));
-}
-.chat-compact-status--err {
-  background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
-}
-
-.chat-compact-status__spinner,
-.chat-compact-status__dot {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  border-radius: 999px;
-}
-.chat-compact-status__spinner {
-  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-top-color: var(--accent);
-  animation: chat-compact-spin 900ms linear infinite;
-}
-.chat-compact-status__dot {
-  background: currentColor;
-  opacity: 0.72;
-}
-.chat-compact-status--ok .chat-compact-status__dot { color: var(--ok); }
-.chat-compact-status--warn .chat-compact-status__dot { color: var(--warn); }
-.chat-compact-status--err .chat-compact-status__dot { color: var(--danger); }
-
-.chat-compact-status__text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-compact-status__detail {
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
 }
 
 .chat-history-scope {
@@ -1829,20 +1771,12 @@
   }
 }
 
-@keyframes chat-compact-spin {
-  to { transform: rotate(360deg); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .chat-context-rail,
   .chat-context-rail__pulse,
   .chat-context-rail__rule span {
     animation: none;
     transition: none;
-  }
-
-  .chat-compact-status__spinner {
-    animation: none;
   }
 }
 

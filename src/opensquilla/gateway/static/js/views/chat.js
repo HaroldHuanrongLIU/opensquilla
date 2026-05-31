@@ -334,8 +334,6 @@ const ChatView = (() => {
   let _compactSuppressedRouterTurnIndex = '';
   let _lastCompactionToastSig = '';
   let _lastCompactionToastAt = 0;
-  let _compactStatusEl = null;
-  let _compactStatusTimer = null;
   let _compactionRailEl = null;
   let _compactionRailTimer = null;
   let _stopRequestedByUser = false;
@@ -1200,7 +1198,6 @@ const ChatView = (() => {
           </div>
         </div>
         <div class="chat-pending hidden" id="chat-pending"></div>
-        <div class="chat-compact-status hidden" id="chat-compact-status" role="status" aria-live="polite"></div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
@@ -1263,7 +1260,6 @@ const ChatView = (() => {
     _sessionChip  = document.getElementById('chat-session-chip');
     _attachPreview = _el.querySelector('#chat-attach-preview');
     _pendingArea  = _el.querySelector('#chat-pending');
-    _compactStatusEl = _el.querySelector('#chat-compact-status');
     _stopBtn      = _el.querySelector('#chat-btn-stop');
     _slashEl      = _el.querySelector('#chat-slash');
     _ctxWarn      = document.getElementById('chat-ctx-warn');
@@ -1750,7 +1746,6 @@ const ChatView = (() => {
     _pendingSessionIntent = null;
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
-    _hideCompactStatus();
     _hideCompactionRail();
     _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
     _applySessionRunState({ run_status: 'idle' });
@@ -2288,7 +2283,6 @@ const ChatView = (() => {
       _persistSession(key);
       _clearPendingDrainAfterTerminalTimer();
       _setCompactInFlight(false);
-      _hideCompactStatus();
       _hideCompactionRail();
       _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
       _messages = [];
@@ -2617,7 +2611,6 @@ const ChatView = (() => {
         _persistSession(key);
         _clearPendingDrainAfterTerminalTimer();
         _setCompactInFlight(false);
-        _hideCompactStatus();
         _hideCompactionRail();
         _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
         _messages = [];
@@ -2645,7 +2638,6 @@ const ChatView = (() => {
             _messages = [];
             _clearPendingDrainAfterTerminalTimer();
             _setCompactInFlight(false);
-            _hideCompactStatus();
             _hideCompactionRail();
             _pendingQueue = [];
             if (_pendingArea) _renderPendingQueue();
@@ -2661,9 +2653,6 @@ const ChatView = (() => {
       case '/compact': {
         const compactKey = _sessionKey;
         _setCompactInFlight(true, compactKey);
-        _setCompactStatus('started', 'Compacting context...', {
-          tone: 'info',
-        });
         _syncCompactionRail(
           { key: compactKey, source: 'manual', status: 'started', phase: 'manual' },
           'started',
@@ -2775,32 +2764,6 @@ const ChatView = (() => {
     } catch { /* ignore */ }
   }
 
-  function _compactionTokenStats(payload) {
-    const beforeRaw = payload ? payload.tokens_before : undefined;
-    const afterRaw = payload ? payload.tokens_after : undefined;
-    const before = Number(beforeRaw);
-    const after = Number(afterRaw);
-    const remaining = Number(payload && payload.remaining_budget_tokens || 0);
-    const source = payload && payload.summary_source || '';
-    const summaryLen = Number(payload && payload.summary_len || 0);
-    if (
-      beforeRaw !== undefined &&
-      beforeRaw !== null &&
-      beforeRaw !== '' &&
-      afterRaw !== undefined &&
-      afterRaw !== null &&
-      afterRaw !== '' &&
-      Number.isFinite(before) &&
-      Number.isFinite(after)
-    ) {
-      const remain = remaining ? ', ' + remaining + ' remaining' : '';
-      const by = source ? ', ' + source : '';
-      return ' (' + before + ' -> ' + after + ' tokens' + remain + by + ')';
-    }
-    if (summaryLen) return ' (summary ' + summaryLen + ' chars)';
-    return '';
-  }
-
   function _suppressDuplicateCompactionToast(payload, status, source) {
     const key = String(payload && payload.key || _sessionKey || '');
     const event = String(payload && payload.event || '');
@@ -2813,38 +2776,6 @@ const ChatView = (() => {
     _lastCompactionToastSig = sig;
     _lastCompactionToastAt = now;
     return false;
-  }
-
-  function _clearCompactStatusTimer() {
-    if (_compactStatusTimer) {
-      clearTimeout(_compactStatusTimer);
-      _compactStatusTimer = null;
-    }
-  }
-
-  function _hideCompactStatus() {
-    _clearCompactStatusTimer();
-    if (!_compactStatusEl) return;
-    _compactStatusEl.className = 'chat-compact-status hidden';
-    _compactStatusEl.innerHTML = '';
-  }
-
-  function _setCompactStatus(status, message, options = {}) {
-    if (!_compactStatusEl) return;
-    _clearCompactStatusTimer();
-    const tone = options && options.tone || 'info';
-    const detail = options && options.detail ? String(options.detail) : '';
-    const dismissMs = Number(options && options.dismissMs || 0);
-    const isBusy = status === 'started';
-    const glyphClass = isBusy ? 'chat-compact-status__spinner' : 'chat-compact-status__dot';
-    _compactStatusEl.className = `chat-compact-status chat-compact-status--${tone}`;
-    _compactStatusEl.innerHTML = ''
-      + `<span class="${glyphClass}" aria-hidden="true"></span>`
-      + `<span class="chat-compact-status__text">${_esc(message)}</span>`
-      + (detail ? `<span class="chat-compact-status__detail">${_esc(detail)}</span>` : '');
-    if (dismissMs > 0) {
-      _compactStatusTimer = setTimeout(_hideCompactStatus, dismissMs);
-    }
   }
 
   function _clearCompactionRailTimer() {
@@ -2862,8 +2793,17 @@ const ChatView = (() => {
     _compactionRailEl = null;
   }
 
+  function _compactionRailTerminalStatus(status) {
+    return ['completed', 'skipped', 'failed', 'error', 'cancelled', 'emergency_ephemeral']
+      .includes(String(status || '').toLowerCase());
+  }
+
   function _placeCompactionRail() {
     if (!_thread || !_compactionRailEl) return;
+    if (_compactionRailEl.dataset.terminal === 'true'
+        && _compactionRailEl.parentNode === _thread) {
+      return;
+    }
     const empty = _thread.querySelector('.chat-empty');
     if (empty) empty.remove();
     if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble)) {
@@ -2913,48 +2853,58 @@ const ChatView = (() => {
     return 'Automatic compact';
   }
 
+  // Rail title: a short status label (<=~20 chars so it never ellipsizes). The
+  // descriptive sentence + recovery info lives in _compactionRailDetail; the phase
+  // (manual/auto + when) lives in the kicker (_compactionPhaseLabel).
   function _compactionStatusMessage(payload, source, status) {
-    if (status === 'started') {
-      return source === 'manual' ? 'Compacting context...' : 'Automatically compacting context...';
-    }
+    if (status === 'started') return 'Compacting context';
     if (status === 'observed') return _compactionProgressMessage(payload || {});
-    if (status === 'emergency_ephemeral') return 'Continuing with temporary context compaction';
-    if (status === 'skipped') return _compactionSkipMessage(payload || {}, source);
-    if (status === 'failed' || status === 'error') return 'Compact failed';
-    if (status === 'cancelled') return 'Compact cancelled';
-    if (status === 'completed') {
-      return source === 'manual' ? 'Context compacted' : 'Context compacted; continuing the turn';
+    if (status === 'emergency_ephemeral') return 'Temporary compaction';
+    if (status === 'skipped') {
+      const reason = _compactionReason(payload);
+      return (!reason || _INTERNAL_COMPACTION_SKIP_REASONS.has(reason))
+        ? 'No compaction needed'
+        : 'Compaction skipped';
     }
-    return source === 'manual' ? 'Compacting context' : 'Automatic context maintenance';
+    if (status === 'failed' || status === 'error') return 'Compaction failed';
+    if (status === 'cancelled') return 'Compaction cancelled';
+    if (status === 'completed') return 'Context compacted';
+    return 'Context maintenance';
   }
 
+  // Rail detail: the descriptive sentence + recovery info (was sr-only; now the
+  // single surface's second line). Skipped detail keeps the existing skip-message
+  // copy; the failed branch's detail is overridden with the live recovery outcome
+  // in _showCompactionToast.
   function _compactionRailDetail(payload, source, status) {
     const event = String(payload && payload.event || '').toLowerCase();
-    const reasonDetail = _compactionStatusDetail(payload || {}, source, status);
     if (status === 'started') {
       return source === 'manual'
-        ? 'Manual request is rewriting older turns after safety checks.'
-        : 'OpenSquilla is preserving the current task while older turns are summarized.';
+        ? 'Rewriting older turns after safety checks.'
+        : 'Preserving the current task while older turns are summarized.';
     }
     if (status === 'observed') {
-      if (event === 'compaction.summary_verified') {
-        return 'Carry-forward details were checked before the context window is rewritten.';
-      }
-      return 'Older context is being distilled into a compact carry-forward summary.';
+      return event === 'compaction.summary_verified'
+        ? 'Carry-forward details checked before the window is rewritten.'
+        : 'Distilling older turns into a compact carry-forward summary.';
     }
     if (status === 'completed') {
-      if (event === 'compaction.replayed') return 'Compacted context was replayed into the request window.';
-      return 'Compacted context was persisted for this session.';
+      if (event === 'compaction.replayed') return 'Replayed into the request window — continuing the turn.';
+      return source === 'manual'
+        ? 'Older turns summarized and persisted.'
+        : 'Persisted for this session — continuing the turn.';
     }
     if (status === 'emergency_ephemeral') {
-      return 'Request-scoped fallback; durable session history was not rewritten.';
+      return 'Request-scoped fallback; session history was not rewritten.';
     }
-    if (status === 'skipped') return reasonDetail || 'No context rewrite was needed.';
+    if (status === 'skipped') return _compactionSkipMessage(payload || {}, source);
     if (status === 'failed' || status === 'error') {
-      return _compactSafeMessageDetail(payload || {}) || reasonDetail || 'Pending input is protected while compaction recovers.';
+      return _compactSafeMessageDetail(payload || {})
+        || _compactionStatusDetail(payload || {}, source, status)
+        || 'Pending input is protected while compaction recovers.';
     }
-    if (status === 'cancelled') return 'Pending input was recovered so the next turn can continue safely.';
-    return reasonDetail;
+    if (status === 'cancelled') return 'Pending input recovered so the next turn can continue safely.';
+    return _compactionStatusDetail(payload || {}, source, status);
   }
 
   function _compactionRailTone(status, payload = {}) {
@@ -2970,17 +2920,24 @@ const ChatView = (() => {
     const before = Number(payload && payload.tokens_before);
     const after = Number(payload && payload.tokens_after);
     const remaining = Number(payload && payload.remaining_budget_tokens);
+    const skipped = status === 'skipped';
     const shrink = _compactRatioPercent(before, after);
     if (Number.isFinite(before) && before > 0 && Number.isFinite(after) && after >= 0) {
-      items.push({
-        label: 'window',
-        value: `${_compactNumber(before)} -> ${_compactNumber(after)}`,
-      });
-      if (shrink) items.push({ label: 'saved', value: shrink });
-    } else if (Number(payload && payload.summary_len) > 0) {
+      if (skipped) {
+        // Nothing was rewritten on a skip — show the current size, never a
+        // compaction "window"/"saved"/"remaining" that implies a reduction.
+        items.push({ label: 'tokens', value: `${_compactNumber(before)} tokens` });
+      } else {
+        items.push({
+          label: 'window',
+          value: `${_compactNumber(before)} -> ${_compactNumber(after)}`,
+        });
+        if (shrink) items.push({ label: 'saved', value: shrink });
+      }
+    } else if (!skipped && Number(payload && payload.summary_len) > 0) {
       items.push({ label: 'summary', value: `${_compactNumber(payload.summary_len)} chars` });
     }
-    if (Number.isFinite(remaining) && remaining > 0) {
+    if (!skipped && Number.isFinite(remaining) && remaining > 0) {
       items.push({ label: 'remaining', value: _compactNumber(remaining) });
     }
     const flush = String(payload && payload.flush_receipt_status || '');
@@ -3030,7 +2987,7 @@ const ChatView = (() => {
     return 24;
   }
 
-  function _syncCompactionRail(payload, status, source) {
+  function _syncCompactionRail(payload, status, source, overrides = {}) {
     if (payload && Object.prototype.hasOwnProperty.call(payload, 'user_visible')
         && payload.user_visible === false) {
       _hideCompactionRail();
@@ -3043,9 +3000,13 @@ const ChatView = (() => {
     const rail = _ensureCompactionRail();
     if (!rail) return;
     _clearCompactionRailTimer();
-    const tone = _compactionRailTone(status, payload || {});
-    const title = _compactionStatusMessage(payload || {}, source, status);
-    const detail = _compactionRailDetail(payload || {}, source, status);
+    const tone = overrides.tone || _compactionRailTone(status, payload || {});
+    const title = overrides.title != null
+      ? overrides.title
+      : _compactionStatusMessage(payload || {}, source, status);
+    const detail = overrides.detail != null
+      ? overrides.detail
+      : _compactionRailDetail(payload || {}, source, status);
     const phase = _compactionPhaseLabel(payload || {}, source);
     const metrics = _compactionMetricItems(payload || {}, status);
     const steps = _compactionLifecycleSteps(payload || {}, status);
@@ -3054,6 +3015,7 @@ const ChatView = (() => {
     rail.style.setProperty('--compact-progress', `${progress}%`);
     rail.dataset.status = status || '';
     rail.dataset.source = source || '';
+    rail.dataset.terminal = _compactionRailTerminalStatus(status) ? 'true' : 'false';
     rail.innerHTML = ''
       + '<div class="chat-context-rail__rule" aria-hidden="true"><span></span></div>'
       + '<div class="chat-context-rail__panel">'
@@ -3128,10 +3090,9 @@ const ChatView = (() => {
 
   function _compactionProgressMessage(payload) {
     const event = String(payload && payload.event || '').toLowerCase();
-    if (event === 'compaction.chunk_summarized') return 'Summarizing older context...';
-    if (event === 'compaction.summary_verified') return 'Verifying compacted context...';
-    const source = String(payload && payload.source || '').toLowerCase();
-    return source === 'manual' ? 'Compacting context...' : 'Automatically compacting context...';
+    if (event === 'compaction.chunk_summarized') return 'Summarizing context';
+    if (event === 'compaction.summary_verified') return 'Verifying summary';
+    return 'Compacting context';
   }
 
   const _INTERNAL_COMPACTION_SKIP_REASONS = new Set([
@@ -3226,58 +3187,36 @@ const ChatView = (() => {
     }
     const source = String(payload && payload.source || '').toLowerCase();
     if (_suppressDuplicateCompactionToast(payload || {}, status, source)) return;
+    // Single surface: the in-thread context rail renders every lifecycle state
+    // (and hides itself for not-user-visible skips). The branches below only drive
+    // non-UI side effects — in-flight tracking, router-fx suppression, pending
+    // recovery — plus the corner toast for states that warrant a transient notice.
     _syncCompactionRail(payload || {}, status, source);
     if (status === 'started') {
       _setCompactInFlight(true, payload && payload.key || _sessionKey);
       _suppressRouterFxForCompaction(payload || {});
-      _setCompactStatus('started', _compactionStatusMessage(payload || {}, source, status), {
-        tone: 'info',
-        detail: _compactionStatusDetail(payload || {}, source, status),
-      });
       return;
     }
     if (status === 'observed') {
       _suppressRouterFxForCompaction(payload || {});
-      if (_isCompactInFlightForCurrentSession()) {
-        _setCompactStatus('started', _compactionProgressMessage(payload || {}), {
-          tone: 'info',
-          detail: _compactionStatusDetail(payload || {}, source, status),
-        });
-      }
       return;
     }
     if (status === 'emergency_ephemeral') {
       _settleCompactInFlight(payload || {});
-      const detail = _compactionStatusDetail(payload || {}, source, status) || 'Request-scoped; session history was not rewritten';
-      _setCompactStatus('completed', 'Continuing with temporary context compaction', {
-        tone: 'warn',
-        detail,
-        dismissMs: 8000,
-      });
       UI.toast('Continuing with temporary context compaction for this turn', 'info', 4500);
       return;
     }
     if (status === 'skipped') {
       _settleCompactInFlight(payload || {});
-      if (!_compactionUserVisible(payload || {}, source, status)) {
-        _hideCompactStatus();
-        _hideCompactionRail();
-        return;
-      }
-      const skippedMessage = _compactionSkipMessage(payload || {}, source);
-      _setCompactStatus('skipped', skippedMessage, {
-        tone: 'info',
-        detail: _compactionStatusDetail(payload || {}, source, status),
-        dismissMs: 5000,
-      });
       return;
     }
     const semanticNotice = _compactSemanticMemoryNotice(payload || {});
     if (semanticNotice) {
       _settleCompactInFlight(payload || {});
-      _setCompactStatus('completed', semanticNotice, {
+      _syncCompactionRail(payload || {}, 'completed', source, {
         tone: 'ok',
-        dismissMs: 5000,
+        title: 'Context compacted',
+        detail: semanticNotice + '.',
       });
       return;
     }
@@ -3288,29 +3227,25 @@ const ChatView = (() => {
         recoverPending: !keepPendingQueued,
         preservePending: keepPendingQueued,
       });
-      const detail = _compactSafeMessageDetail(payload || {});
-      const msg = detail ? ': ' + detail : '';
+      const safe = _compactSafeMessageDetail(payload || {});
+      const msg = safe ? ': ' + safe : '';
       const pendingSuffix = keepPendingQueued
         ? '; pending message preserved'
         : (recovered ? '; pending message recovered to input' : '');
-      _setCompactStatus('failed', 'Compact failed' + msg + pendingSuffix, {
-        tone: 'err',
-        detail: _compactionStatusDetail(payload || {}, source, status),
-        dismissMs: 10000,
-      });
-      UI.toast(
-        'Compact failed' + msg + pendingSuffix,
-        'err',
-        5000,
-      );
+      // Backend failure messages may already end in a period; strip trailing
+      // sentence punctuation so the suffix doesn't produce a doubled period.
+      const railBase = (safe
+        || _compactionStatusDetail(payload || {}, source, status)
+        || 'Compaction could not be applied').replace(/[.!?]\s*$/, '');
+      const railSuffix = keepPendingQueued
+        ? ' — pending message preserved.'
+        : (recovered ? ' — pending message recovered to input.' : '.');
+      _syncCompactionRail(payload || {}, status, source, { detail: railBase + railSuffix });
+      UI.toast('Compact failed' + msg + pendingSuffix, 'err', 5000);
       return;
     }
     if (status === 'cancelled') {
       const recovered = _settleCompactInFlight(payload || {}, { recoverPending: true });
-      _setCompactStatus('cancelled', 'Compact cancelled' + (recovered ? '; pending message recovered to input' : ''), {
-        tone: 'warn',
-        dismissMs: 8000,
-      });
       UI.toast(
         'Compact cancelled' + (recovered ? '; pending message recovered to input' : ''),
         'info',
@@ -3320,18 +3255,6 @@ const ChatView = (() => {
     }
     if (status !== 'completed') return;
     _settleCompactInFlight(payload || {});
-    const details = _compactionTokenStats(payload || {});
-    if (source === 'manual') {
-      _setCompactStatus('completed', 'Context compacted' + details, {
-        tone: 'ok',
-        dismissMs: 5000,
-      });
-      return;
-    }
-    _setCompactStatus('completed', 'Context compacted' + details, {
-      tone: 'ok',
-      dismissMs: 5000,
-    });
   }
 
   /* ── Router slider — arcade-brutalist whac-a-mole grid ─────────────
@@ -8731,7 +8654,6 @@ const ChatView = (() => {
     _closeSlashMenu();
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
-    _hideCompactStatus();
     _hideCompactionRail();
     _pendingAttachments = [];
     _pendingQueue = [];
