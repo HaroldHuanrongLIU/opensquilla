@@ -723,6 +723,8 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         if _is_skill_marketplace_intent(semantic_text):
             _sticky_drop(session_id)
             return ctx
+        if pasted_context:
+            return ctx
 
         # No current trigger — try the sticky cache for this session.
         # The contract: a recent prior turn matched a meta-skill but the

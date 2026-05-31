@@ -114,6 +114,7 @@ def _schema_language(schema: Any, intro: str = "") -> str:
     text = "\n".join(
         [intro or getattr(schema, "intro", "")]
         + [getattr(field, "prompt", "") for field in getattr(schema, "fields", ())]
+        + list(getattr(schema, "cancel_keywords", ()) or ())
     )
     return "zh" if any("\u4e00" <= ch <= "\u9fff" for ch in text) else "en"
 

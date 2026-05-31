@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 
 from opensquilla.skills.loader import SkillLoader
-from opensquilla.skills.meta.trigger_accuracy import TriggerCase, evaluate_trigger_cases
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.templating import evaluate_when
+from opensquilla.skills.meta.trigger_accuracy import TriggerCase, evaluate_trigger_cases
 from scripts.compare_meta_skill_openclaw import EndpointResult, JudgeResult, OpenSquillaRunner
 from scripts.compare_meta_skill_openclaw_lifestyle import (
     ENGLISH_LIFESTYLE_PROMPTS,
@@ -74,7 +74,7 @@ def test_lifestyle_prompts_are_conversational_and_realistic() -> None:
     assert all("benchmark:" not in prompt.lower() for prompt in prompts)
     assert all("OpenSquilla" not in prompt and "OpenClaw" not in prompt for prompt in prompts)
     assert any("爸妈" in prompt for prompt in prompts)
-    assert any("幼儿园" in prompt for prompt in prompts)
+    assert any("科学课" in prompt for prompt in prompts)
     assert any("报价" in prompt or "供应商" in prompt for prompt in prompts)
     assert any("今天" in prompt for prompt in prompts)
     assert any("小红书" in prompt for prompt in prompts)
@@ -749,7 +749,10 @@ def test_kid_project_planner_compact_default_and_visual_generation_contract(
     assert project_illustration.with_args["filename"] == "kid_project_illustration.png"
     assert set(project_illustration.with_args) == {"prompt", "filename"}
     assert "outputs.get('visual_brief'" in project_illustration.with_args["prompt"]
-    assert "Generate the child-safe school-project cover illustration" in project_illustration.with_args["prompt"]
+    assert (
+        "Generate the child-safe school-project cover illustration"
+        in project_illustration.with_args["prompt"]
+    )
     assert fallback.kind == "llm_chat"
     assert "IMAGE_PROMPT_TO_REUSE" in json.dumps(fallback.with_args, ensure_ascii=False)
 

@@ -10,6 +10,7 @@ triggers:
   - "child school project"
   - "kid school project"
   - "science project for my child"
+  - "child needs to submit a small science project"
   - "child science project"
   - "kid science project"
   - "science fair"
