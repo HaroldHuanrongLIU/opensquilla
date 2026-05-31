@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import weakref
+from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
@@ -12,6 +13,11 @@ from opensquilla.skills.eligibility import (
     EligibilityContext,
     EligibilityReport,
     diagnose_eligibility,
+)
+from opensquilla.skills.hub.defaults import (
+    build_default_skill_installer,
+    get_default_skill_router,
+    installed_skill_names,
 )
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.loader import SkillLoader
@@ -36,6 +42,11 @@ def _deps_lock_for(name: str, install_id: str) -> asyncio.Lock:
 
 def _get_loader(ctx: RpcContext) -> SkillLoader | None:
     return getattr(ctx, "skill_loader", None)
+
+
+def _loader_managed_dir(ctx: RpcContext) -> Path | None:
+    loader = _get_loader(ctx)
+    return getattr(loader, "managed_dir", None) if loader is not None else None
 
 
 def _status_from_report(report: EligibilityReport) -> str:
@@ -245,10 +256,7 @@ def _installed_names() -> set[str]:
     as installed-from-ClawHub. Missing/corrupt lockfile returns an empty
     set (treat everything as not-yet-installed).
     """
-    from opensquilla.paths import default_opensquilla_home
-    from opensquilla.skills.hub.lockfile import Lockfile
-
-    return set(Lockfile.load(default_opensquilla_home() / "skills-lock.json").installed.keys())
+    return installed_skill_names()
 
 
 @_d.method("skills.search", scope="operator.read")
@@ -313,10 +321,11 @@ async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[s
     """Install a skill from a Community source."""
     if not isinstance(params, dict) or "identifier" not in params:
         raise ValueError("params.identifier is required")
-    if _get_loader(ctx) is None:
+    loader = _get_loader(ctx)
+    if loader is None:
         return {"success": False, "message": "No skill loader configured"}
 
-    installer = _get_default_installer()
+    installer = _get_default_installer(managed_dir=loader.managed_dir)
     if installer is None:
         return {"success": False, "message": "No skill installer configured"}
 
@@ -331,6 +340,8 @@ async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[s
         "name": result.name,
         "message": result.message,
     }
+    if result.path:
+        resp["path"] = result.path
     if result.scan:
         resp["scan_verdict"] = result.scan.verdict
         resp["scan_findings"] = [finding.__dict__ for finding in result.scan.findings]
@@ -340,13 +351,14 @@ async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[s
 @_d.method("skills.update", scope="operator.admin")
 async def _handle_skills_update(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Update installed skills from lockfile."""
-    if _get_loader(ctx) is None:
+    loader = _get_loader(ctx)
+    if loader is None:
         return {
             "results": [],
             "success": False,
             "message": "No skill loader configured",
         }
-    installer = _get_default_installer()
+    installer = _get_default_installer(managed_dir=loader.managed_dir)
     if installer is None:
         return {"success": False, "message": "No skill installer configured"}
 
@@ -372,7 +384,7 @@ async def _handle_skills_uninstall(params: dict | None, ctx: RpcContext) -> dict
     if not isinstance(params, dict) or "name" not in params:
         raise ValueError("params.name is required")
 
-    installer = _get_default_installer()
+    installer = _get_default_installer(managed_dir=_loader_managed_dir(ctx))
     if installer is None:
         return {"success": False, "message": "No skill installer configured"}
 
@@ -441,33 +453,9 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
 # Default router/installer (lazy init)
 # ---------------------------------------------------------------------------
 
-_default_router = None
-_default_installer = None
-
-
 def _get_default_router():
-    global _default_router
-    if _default_router is None:
-        import os
-
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-        _default_router = SourceRouter(sources)
-    return _default_router
+    return get_default_skill_router()
 
 
-def _get_default_installer():
-    global _default_installer
-    if _default_installer is None:
-        router = _get_default_router()
-        if router:
-            from opensquilla.skills.hub.installer import SkillInstaller
-
-            _default_installer = SkillInstaller(router=router)
-    return _default_installer
+def _get_default_installer(*, managed_dir=None):
+    return build_default_skill_installer(managed_dir=managed_dir)

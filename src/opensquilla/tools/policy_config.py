@@ -89,6 +89,7 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
     "group:trusted_host": frozenset(
         {
             "install_skill_deps",
+            "skill_install_community",
             "skill_create",
             "skill_edit",
             "skill_delete",

@@ -218,6 +218,11 @@ class SkillLoader:
         """Public accessor for workspace skill directory."""
         return self._workspace_dir
 
+    @property
+    def managed_dir(self) -> Path | None:
+        """Public accessor for managed Community-installed skills."""
+        return self._managed_dir
+
     def invalidate_cache(self) -> None:
         """Clear cached skills so next load_all() re-scans from disk."""
         self._cached = None

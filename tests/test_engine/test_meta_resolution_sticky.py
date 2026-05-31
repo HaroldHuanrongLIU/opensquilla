@@ -202,3 +202,57 @@ async def test_no_sticky_when_skill_was_removed():
     ))
     assert "meta_match" not in out.metadata
     assert mr._sticky_get("S-H") is None
+
+
+@pytest.mark.asyncio
+async def test_skill_marketplace_intent_skips_semantic_meta_fallback(monkeypatch):
+    skills = [_meta_spec(name="meta-skill-creator", triggers=("create a meta-skill",))]
+    semantic_called = False
+
+    def fake_semantic_candidate(ctx, candidates):
+        nonlocal semantic_called
+        semantic_called = True
+        priority, name, plan, _spec = candidates[0]
+        return (priority, name, plan, "semantic")
+
+    monkeypatch.setattr(mr, "_semantic_meta_candidate", fake_semantic_candidate)
+
+    out = await meta_resolution(_ctx(
+        message="I want to install skills",
+        session_id="S-I",
+        skills=skills,
+    ))
+
+    assert semantic_called is False
+    assert "meta_match" not in out.metadata
+
+
+@pytest.mark.asyncio
+async def test_skill_marketplace_intent_clears_sticky_replay():
+    skills = [_meta_spec(name="meta-paper-write", triggers=("帮我写篇论文",))]
+    await meta_resolution(_ctx(
+        message="帮我写篇论文", session_id="S-J", skills=skills,
+    ))
+    assert mr._sticky_get("S-J") is not None
+
+    out = await meta_resolution(_ctx(
+        message="帮我搜索并安装 plot skill",
+        session_id="S-J",
+        skills=skills,
+    ))
+
+    assert "meta_match" not in out.metadata
+    assert mr._sticky_get("S-J") is None
+
+
+@pytest.mark.asyncio
+async def test_skill_marketplace_guard_does_not_block_explicit_meta_trigger():
+    skills = [_meta_spec(name="meta-skill-creator", triggers=("create a meta-skill",))]
+
+    out = await meta_resolution(_ctx(
+        message="create a meta-skill that orchestrates skill search",
+        session_id="S-K",
+        skills=skills,
+    ))
+
+    assert out.metadata.get("meta_match").plan.name == "meta-skill-creator"

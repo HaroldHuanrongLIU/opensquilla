@@ -283,6 +283,7 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset(
         "sessions_history",
         "sessions_list",
         "skill_list",
+        "skill_search_community",
         "skill_view",
         "tts",
         "web_fetch",

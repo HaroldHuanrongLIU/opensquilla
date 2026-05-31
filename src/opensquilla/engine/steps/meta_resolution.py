@@ -299,6 +299,41 @@ def _has_semantic_workflow_cue(query: str) -> bool:
     return any(cue in text for cue in _SEMANTIC_WORKFLOW_CUES)
 
 
+_SKILL_MARKETPLACE_SUBJECT_CUES = (
+    "skill",
+    "skills",
+    "clawhub",
+    "marketplace",
+    "community",
+    "技能",
+    "技能市场",
+    "社区",
+)
+
+_SKILL_MARKETPLACE_ACTION_CUES = (
+    "install",
+    "search",
+    "find",
+    "browse",
+    "hub",
+    "安装",
+    "搜索",
+    "查找",
+    "找",
+)
+
+
+def _is_skill_marketplace_intent(query: str) -> bool:
+    """Detect install/search marketplace turns that should use skill tools."""
+
+    text = query.lower().strip()
+    if not text:
+        return False
+    has_subject = any(cue in text for cue in _SKILL_MARKETPLACE_SUBJECT_CUES)
+    has_action = any(cue in text for cue in _SKILL_MARKETPLACE_ACTION_CUES)
+    return has_subject and has_action
+
+
 def _semantic_meta_candidate(
     ctx: TurnContext,
     candidates: list[tuple[int, str, object, SkillSpec]],
@@ -593,6 +628,10 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
 
     sticky_replay = False
     if not matched:
+        if _is_skill_marketplace_intent(ctx.message or ""):
+            _sticky_drop(session_id)
+            return ctx
+
         # No current trigger — try the sticky cache for this session.
         # The contract: a recent prior turn matched a meta-skill but the
         # LLM never managed to actually fire ``meta_invoke`` (e.g. it
