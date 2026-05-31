@@ -1146,23 +1146,23 @@ const ChatView = (() => {
     _sessionKey = _canonicalSessionKey(urlSession || (urlAgent ? _webchatSessionKey(urlAgent) : storedSession));
     _persistSession(_sessionKey);
 
+    const topbarCenter = App.getTopbarCenter && App.getTopbarCenter();
+    if (topbarCenter) {
+      topbarCenter.innerHTML = `
+        <label class="chat-label">Chat session</label>
+        <button type="button" class="chat-session-chip" id="chat-session-chip"
+                aria-label="Switch chat session" aria-haspopup="dialog" aria-expanded="false">
+          <span class="chat-session-chip-key" id="chat-session-chip-key" title="${_esc(_sessionKey)}">${_esc(_sessionKey)}</span>
+          <span class="chat-session-chip-caret" aria-hidden="true">${_iconChevronDown()}</span>
+        </button>
+        <button class="chat-session-copy-btn" id="chat-session-copy" title="Copy session key" aria-label="Copy session key">${icons.copy()}</button>
+        <span class="chip" id="chat-run-status" title="Idle">Idle</span>
+        <span class="chat-ctx-warn hidden" id="chat-ctx-warn">Request ctx</span>`;
+      topbarCenter.classList.remove('hidden');
+    }
+
     _el.innerHTML = `
       <div class="chat">
-        <div class="chat-header">
-          <div class="chat-header-left">
-            <label class="chat-label">Chat session</label>
-            <button type="button" class="chat-session-chip" id="chat-session-chip"
-                    aria-label="Switch chat session" aria-haspopup="dialog" aria-expanded="false">
-              <span class="chat-session-chip-key" id="chat-session-chip-key" title="${_esc(_sessionKey)}">${_esc(_sessionKey)}</span>
-              <span class="chat-session-chip-caret" aria-hidden="true">${_iconChevronDown()}</span>
-            </button>
-            <button class="chat-session-copy-btn" id="chat-session-copy" title="Copy session key" aria-label="Copy session key">${icons.copy()}</button>
-          </div>
-          <div class="chat-header-right">
-            <span class="chip" id="chat-run-status" title="Idle">Idle</span>
-            <span class="chat-ctx-warn hidden" id="chat-ctx-warn">Context &gt; 85%</span>
-          </div>
-        </div>
         <div class="chat-body">
           <div class="chat-thread" id="chat-thread"
                role="region"
@@ -1241,14 +1241,14 @@ const ChatView = (() => {
     _textarea     = _el.querySelector('#chat-textarea');
     _sendBtn      = _el.querySelector('#chat-btn-send');
     _sessionInput = null;  // replaced by chip; session key lives in _sessionKey
-    _sessionChip  = _el.querySelector('#chat-session-chip');
+    _sessionChip  = document.getElementById('chat-session-chip');
     _attachPreview = _el.querySelector('#chat-attach-preview');
     _pendingArea  = _el.querySelector('#chat-pending');
     _compactStatusEl = _el.querySelector('#chat-compact-status');
     _stopBtn      = _el.querySelector('#chat-btn-stop');
     _slashEl      = _el.querySelector('#chat-slash');
-    _ctxWarn      = _el.querySelector('#chat-ctx-warn');
-    _runStatusEl  = _el.querySelector('#chat-run-status');
+    _ctxWarn      = document.getElementById('chat-ctx-warn');
+    _runStatusEl  = document.getElementById('chat-run-status');
     _fileInput    = _el.querySelector('#chat-file-input');
     _toolbar      = _el.querySelector('#chat-toolbar');
     _elevatedPill = _el.querySelector('#pill-elevated');
@@ -1491,8 +1491,8 @@ const ChatView = (() => {
   function _updateSessionChip(key) {
     const previousKey = _sessionKey;
     _sessionKey = key;
-    const chipKey = _el && _el.querySelector('#chat-session-chip-key');
-    const copyBtn = _el && _el.querySelector('#chat-session-copy');
+    const chipKey = document.getElementById('chat-session-chip-key');
+    const copyBtn = document.getElementById('chat-session-copy');
     if (chipKey) {
       chipKey.textContent = key;
       chipKey.title = key;
@@ -1688,7 +1688,7 @@ const ChatView = (() => {
   function _applySessionRunState(source) {
     const state = _sessionRunStatus(source);
     _currentRunStatus = state.status;
-    const el = _runStatusEl || (_el && _el.querySelector('#chat-run-status'));
+    const el = _runStatusEl || document.getElementById('chat-run-status');
     if (!el) return;
     _runStatusEl = el;
     el.className = `chip ${_runStatusChipClass(state.status)}`.trim();
@@ -1756,8 +1756,8 @@ const ChatView = (() => {
   function _bindSessionChip() {
     // The chip itself now acts as the dropdown trigger (one-control session
     // chip per the design review). The copy button stays as a sibling.
-    const switchBtn = _el && _el.querySelector('#chat-session-chip');
-    const copyBtn = _el && _el.querySelector('#chat-session-copy');
+    const switchBtn = document.getElementById('chat-session-chip');
+    const copyBtn = document.getElementById('chat-session-copy');
     if (!switchBtn && !copyBtn) return;
 
     if (copyBtn) {
@@ -1882,7 +1882,7 @@ const ChatView = (() => {
       // Toggle off if already open.
       if (_popover) { _dismiss(); return; }
 
-      const chip = _el.querySelector('#chat-session-chip');
+      const chip = document.getElementById('chat-session-chip');
       if (!chip) return;
 
       // Build popover skeleton.
@@ -8190,6 +8190,7 @@ const ChatView = (() => {
   /* ── Destroy ────────────────────────────────────────────────────────── */
 
   function destroy() {
+    if (App.clearTopbarCenter) App.clearTopbarCenter();
     _viz.destroy();
     _clearActiveTaskGroups();
     _unsubscribeSession();

@@ -379,6 +379,272 @@ def test_chat_view_loads_and_reaches_gateway_http_status_in_real_browser(tmp_pat
     }
 
 
+def test_chat_topbar_one_row_layout_in_real_browser(tmp_path: Path) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_chat_topbar_server.py"
+    browser_script = tmp_path / "webui_chat_topbar_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function emit(page, event, payload, meta = {}) {
+              await page.evaluate(
+                ({ event, payload, meta }) => {
+                  const rpc = App.getRpc();
+                  const handlers = rpc._listeners.get(event);
+                  if (handlers) handlers.forEach(h => h(payload, meta));
+                  const wild = rpc._listeners.get("*");
+                  if (wild) wild.forEach(h => h(event, payload, meta));
+                },
+                { event, payload, meta }
+              );
+            }
+
+            async function measure(page, viewport) {
+              await page.setViewportSize({ width: viewport.width, height: viewport.height });
+              const session =
+                "agent:main:webchat:very-long-session-key-with-extra-segments-1234567890";
+              await page.goto(process.env.TARGET_URL + "?session=" + encodeURIComponent(session), {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForSelector("#topbar-center:not(.hidden)", { timeout: 5000 });
+
+              await emit(page, "session.event.done", {
+                text: "",
+                contextStatus: {
+                  contextTokens: 90000,
+                  contextWindowTokens: 100000,
+                  pressure: 0.9,
+                },
+              });
+              await emit(page, "task.running", { task_id: "topbar-task", session_key: session });
+              await page.waitForFunction(() => {
+                const el = document.querySelector("#chat-run-status");
+                return el && el.textContent.trim() === "Running";
+              });
+              if (viewport.showApproval) {
+                await page.evaluate(() => {
+                  const inline = document.querySelector("#approval-inline");
+                  inline.textContent = "Approval required";
+                  inline.setAttribute("aria-label", "Approval required");
+                  inline.title = "Approval required";
+                  inline.classList.remove("hidden");
+                });
+              }
+              await page.waitForTimeout(80);
+
+              const snapshot = await page.evaluate(() => {
+                const box = (selector) => {
+                  const el = document.querySelector(selector);
+                  if (!el) return null;
+                  const r = el.getBoundingClientRect();
+                  return {
+                    left: r.left,
+                    right: r.right,
+                    top: r.top,
+                    bottom: r.bottom,
+                    width: r.width,
+                    height: r.height,
+                    visible:
+                      r.width > 0 &&
+                      r.height > 0 &&
+                      getComputedStyle(el).display !== "none" &&
+                      getComputedStyle(el).visibility !== "hidden",
+                  };
+                };
+                const center = document.querySelector("#topbar-center");
+                const label = document.querySelector(".topbar-center .chat-label");
+                const warning = document.querySelector("#chat-ctx-warn");
+                const chipKey = document.querySelector("#chat-session-chip-key");
+                const centerBox = box("#topbar-center");
+                const topbarBox = box(".topbar");
+                const topbarRightBox = box(".topbar-right");
+                const childBoxes = Array.from(center ? center.children : []).map((el) => {
+                  const r = el.getBoundingClientRect();
+                  return {
+                    id: el.id || el.className || el.tagName,
+                    left: r.left,
+                    right: r.right,
+                    width: r.width,
+                    display: getComputedStyle(el).display,
+                  };
+                });
+                return {
+                  width: window.innerWidth,
+                  scrollWidth: document.documentElement.scrollWidth,
+                  topbarCount: document.querySelectorAll(".topbar").length,
+                  chatHeaderCount: document.querySelectorAll(".chat-header").length,
+                  centerHidden: center ? center.classList.contains("hidden") : true,
+                  centerBox,
+                  topbarBox,
+                  topbarRightBox,
+                  chip: box("#chat-session-chip"),
+                  chipKeyText: chipKey ? chipKey.textContent : "",
+                  copy: box("#chat-session-copy"),
+                  runStatus: box("#chat-run-status"),
+                  runStatusText: document.querySelector("#chat-run-status")?.textContent || "",
+                  warning: box("#chat-ctx-warn"),
+                  warningText: warning ? warning.textContent : "",
+                  labelDisplay: label ? getComputedStyle(label).display : "",
+                  theme: box("#theme-toggle"),
+                  approval: box("#approval-inline"),
+                  approvalText: document.querySelector("#approval-inline")?.textContent || "",
+                  approvalLabel:
+                    document.querySelector("#approval-inline")?.getAttribute("aria-label") || "",
+                  approvalCount: document.querySelectorAll("#approval-inline").length,
+                  topbarChildren: childBoxes,
+                };
+              });
+
+              await page.locator("#theme-toggle").click();
+              const themeAfterClick = await page.evaluate(
+                () => document.documentElement.getAttribute("data-theme")
+              );
+              return { name: viewport.name, snapshot, themeAfterClick };
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              const viewports = [
+                { name: "desktop", width: 1365, height: 768 },
+                { name: "wide", width: 1600, height: 900 },
+                { name: "tablet", width: 768, height: 900 },
+                { name: "mobile", width: 390, height: 844, showApproval: true },
+              ];
+              const layouts = [];
+              for (const viewport of viewports) layouts.push(await measure(page, viewport));
+
+              await page.setViewportSize({ width: 1365, height: 768 });
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.evaluate(() => Router.navigate("/overview"));
+              await page.waitForSelector(".ov-stage__title", { timeout: 5000 });
+              const cleanup = await page.evaluate(() => ({
+                centerHidden:
+                  document.querySelector("#topbar-center")?.classList.contains("hidden"),
+                centerText: document.querySelector("#topbar-center")?.textContent.trim(),
+                chatIds:
+                  document.querySelectorAll(
+                    "#chat-session-chip, #chat-session-chip-key, " +
+                    "#chat-session-copy, #chat-run-status, #chat-ctx-warn"
+                  ).length,
+              }));
+
+              await browser.close();
+              console.log(JSON.stringify({ layouts, cleanup, pageErrors: errors }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == []
+    assert payload["cleanup"] == {"centerHidden": True, "centerText": "", "chatIds": 0}
+
+    layouts = {item["name"]: item["snapshot"] for item in payload["layouts"]}
+    for name, snap in layouts.items():
+        assert snap["scrollWidth"] <= snap["width"], (name, snap)
+        assert snap["topbarCount"] == 1, (name, snap)
+        assert snap["chatHeaderCount"] == 0, (name, snap)
+        assert snap["centerHidden"] is False, (name, snap)
+        assert snap["chip"]["visible"], (name, snap)
+        assert snap["copy"]["visible"], (name, snap)
+        assert snap["runStatus"]["visible"], (name, snap)
+        assert snap["runStatusText"] == "Running", (name, snap)
+        assert snap["theme"]["visible"], (name, snap)
+        assert snap["approvalCount"] == 1, (name, snap)
+        assert snap["chipKeyText"].startswith("agent:main:webchat:very-long-session-key")
+        assert snap["centerBox"]["right"] <= snap["topbarRightBox"]["left"] + 1, (name, snap)
+        center = snap["centerBox"]
+        for child in snap["topbarChildren"]:
+            if child["display"] == "none":
+                continue
+            assert child["left"] >= center["left"] - 1, (name, child, center)
+            assert child["right"] <= center["right"] + 1, (name, child, center)
+
+    for name in ("desktop", "wide"):
+        snap = layouts[name]
+        assert snap["labelDisplay"] != "none"
+        assert snap["warning"]["visible"], (name, snap)
+        assert snap["warningText"].startswith("Request ctx 90%"), (name, snap)
+
+    assert layouts["tablet"]["labelDisplay"] == "none"
+    assert layouts["mobile"]["labelDisplay"] == "none"
+    assert layouts["mobile"]["approval"]["visible"], layouts["mobile"]
+    assert layouts["mobile"]["approval"]["width"] <= 40, layouts["mobile"]
+    assert layouts["mobile"]["approvalText"] == "Approval required"
+    assert layouts["mobile"]["approvalLabel"] == "Approval required"
+    assert layouts["mobile"]["warning"]["visible"] is False
+    assert all(item["themeAfterClick"] in {"dark", "light"} for item in payload["layouts"])
+
+
 def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
     tmp_path: Path,
 ) -> None:
@@ -843,14 +1109,18 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                   state: strip?.dataset.state || "",
                   renderMode: strip?.dataset.renderMode || "",
                   liveCount: document.querySelectorAll(".router-fx[data-live='true']").length,
-                  scanningCount: document.querySelectorAll(".router-fx[data-scanning='true']").length,
+                  scanningCount: document.querySelectorAll(
+                    ".router-fx[data-scanning='true']"
+                  ).length,
                   selectorVisible: document.querySelectorAll(".router-fx-selector.visible").length,
                   bursts: document.querySelectorAll(".router-fx-burst").length,
                   pinging: document.querySelectorAll(".router-fx-cell.pinging").length,
                   animations,
                   aria: strip?.getAttribute("aria-label") || "",
                   winner: document.querySelector(".router-fx-cell.win .nm")?.textContent || "",
-                  winners: strips.map(el => el.querySelector(".router-fx-cell.win .nm")?.textContent || ""),
+                  winners: strips.map(
+                    el => el.querySelector(".router-fx-cell.win .nm")?.textContent || ""
+                  ),
                   hasLongLabel: cells.some(el => el.textContent === "gemini-3.1-flash-lite"),
                   overflows,
                   gridWithinViewport: gridRect
@@ -939,7 +1209,9 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                 };
               });
 
-              await page.evaluate(() => Router.navigate("/chat?session=agent:main:webchat:router-fx-panel"));
+              await page.evaluate(() =>
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel")
+              );
               await page.waitForSelector("#chat-textarea", { timeout: 15000 });
               await page.waitForFunction(
                 () => document.querySelector("#toggle-router")?.checked === true,
@@ -993,9 +1265,10 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                 Router.navigate("/overview");
                 Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
               });
-              await page.waitForSelector(".router-fx[data-render-mode='history'][data-state='settled']", {
-                timeout: 15000,
-              });
+              await page.waitForSelector(
+                ".router-fx[data-render-mode='history'][data-state='settled']",
+                { timeout: 15000 }
+              );
               const reopened = await snapshot(page);
 
               await emit(page, "session.event.router_decision", {
@@ -1045,7 +1318,8 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await page.waitForFunction(
                 () =>
                   document.querySelectorAll(".router-fx").length === 1 &&
-                  document.querySelector(".router-fx-cell.win .nm")?.textContent === "deepseek-v4-flash",
+                  document.querySelector(".router-fx-cell.win .nm")?.textContent ===
+                    "deepseek-v4-flash",
                 { timeout: 15000 }
               );
               await page.evaluate(() => {

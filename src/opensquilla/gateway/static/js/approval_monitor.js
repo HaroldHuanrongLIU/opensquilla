@@ -124,7 +124,10 @@ const ApprovalMonitor = (() => {
 
     const inline = document.getElementById('approval-inline');
     if (!inline) return;
-    inline.textContent = count === 1 ? 'Approval required' : `${count} approvals required`;
+    const inlineText = count === 1 ? 'Approval required' : `${count} approvals required`;
+    inline.textContent = inlineText;
+    inline.setAttribute('aria-label', inlineText);
+    inline.title = inlineText;
     inline.classList.toggle('hidden', count <= 0);
     if (!inline.dataset.bound) {
       inline.dataset.bound = '1';

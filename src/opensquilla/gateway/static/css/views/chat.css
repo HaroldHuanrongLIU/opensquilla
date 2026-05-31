@@ -19,34 +19,7 @@
   outline-offset: -4px;
 }
 
-/* ─── Chat Header ──────────────────────────────────────────────────────── */
-
-.chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-2) var(--sp-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-surface);
-  min-height: 48px;
-  gap: var(--sp-3);
-  flex-shrink: 0;
-}
-
-.chat-header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex: 1;
-  min-width: 0;
-}
-
-.chat-header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-shrink: 0;
-}
+/* ─── Chat Topbar Session Controls ─────────────────────────────────────── */
 
 .chat-label {
   font-size: var(--fs-sm);
@@ -71,13 +44,17 @@
   color: var(--text);
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 720px;
+  max-width: clamp(180px, 34vw, 720px);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease;
   user-select: none;
+}
+
+#chat-run-status {
+  flex-shrink: 0;
 }
 
 .chat-session-chip:hover,
@@ -303,6 +280,50 @@
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--radius-md);
   white-space: nowrap;
+  flex-shrink: 0;
+  max-width: min(260px, 24vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1199px) {
+  .chat-session-chip {
+    max-width: clamp(160px, 28vw, 420px);
+  }
+
+  .chat-ctx-warn {
+    max-width: 180px;
+  }
+}
+
+@media (max-width: 768px) {
+  .topbar-center .chat-label {
+    display: none;
+  }
+
+  .topbar-center .chat-session-chip {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .topbar-center .chat-ctx-warn {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar-center {
+    gap: var(--sp-1);
+  }
+
+  .topbar-center .chat-session-chip {
+    padding-inline: var(--sp-2);
+    font-size: var(--fs-xs);
+  }
+
+  .topbar-center #chat-run-status {
+    padding-inline: var(--sp-2);
+  }
 }
 
 /* ─── Chat Body + Thread ───────────────────────────────────────────────── */

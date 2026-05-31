@@ -129,6 +129,62 @@ def test_app_preserves_explicit_mobile_routes_instead_of_forcing_chat() -> None:
     assert "window.matchMedia('(max-width: 768px)').matches ? '/chat' : '/overview'" in router
 
 
+def test_chat_session_controls_mount_in_topbar_center_slot() -> None:
+    app = _read_app_js()
+    chat = _read_chat_js()
+    base_css = _read_base_css()
+    chat_css = _read_chat_css()
+    approval_monitor = _read_approval_monitor_js()
+
+    assert 'id="topbar-center"' in app
+    assert "function getTopbarCenter()" in app
+    assert "function clearTopbarCenter()" in app
+    assert "clearTopbarCenter();" in app
+    export_start = app.index("return {")
+    export_body = app[export_start:]
+    assert "getTopbarCenter" in export_body
+    assert "clearTopbarCenter" in export_body
+
+    assert 'class="chat-header"' not in chat
+    assert "App.getTopbarCenter" in chat
+    assert "App.clearTopbarCenter" in chat
+    assert 'id="chat-session-chip"' in chat
+    assert 'id="chat-session-chip-key"' in chat
+    assert 'id="chat-session-copy"' in chat
+    assert 'id="chat-run-status"' in chat
+    assert 'id="chat-ctx-warn"' in chat
+
+    destroy_start = chat.index("function destroy()")
+    destroy_body = chat[destroy_start:]
+    assert "App.clearTopbarCenter" in destroy_body
+
+    topbar_center_rule = base_css[
+        base_css.index(".topbar-center {") : base_css.index("}", base_css.index(".topbar-center {"))
+    ]
+    assert "min-width: 0" in topbar_center_rule
+    assert "overflow: hidden" in topbar_center_rule
+
+    approval_start = base_css.index(".approval-inline {")
+    approval_rule = base_css[approval_start : base_css.index("}", approval_start)]
+    assert "flex-shrink: 0" in approval_rule
+    assert "@media (max-width: 768px)" in base_css
+    assert "width: 34px" in base_css
+    assert "font-size: 0" in base_css
+    assert "inline.setAttribute('aria-label', inlineText);" in approval_monitor
+
+    session_chip_start = chat_css.index(".chat-session-chip {")
+    session_chip_rule = chat_css[
+        session_chip_start : chat_css.index("}", session_chip_start)
+    ]
+    assert "min-width: 0" in session_chip_rule
+    assert "clamp(180px, 34vw, 720px)" in session_chip_rule
+
+    for selector in ("#chat-run-status", ".chat-session-copy-btn", ".chat-ctx-warn"):
+        start = chat_css.index(selector)
+        rule = chat_css[start : chat_css.index("}", start)]
+        assert "flex-shrink: 0" in rule
+
+
 def test_chat_composer_autofocus_is_desktop_only() -> None:
     source = _read_chat_js()
 

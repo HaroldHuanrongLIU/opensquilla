@@ -28,23 +28,28 @@ const App = (() => {
     _bindSidebarToggle();
     _bindConnectionState();
 
-    Router.register('/overview', (el) => OverviewView.render(el), () => OverviewView.destroy(), { title: 'Overview' });
-    Router.register('/health', (el) => HealthView.render(el), () => HealthView.destroy(), { title: 'Health' });
+    Router.register('/overview', (el) => _renderStandardView(OverviewView, el), () => OverviewView.destroy(), { title: 'Overview' });
+    Router.register('/health', (el) => _renderStandardView(HealthView, el), () => HealthView.destroy(), { title: 'Health' });
     Router.register('/chat', (el) => ChatView.render(el), () => ChatView.destroy(), { title: 'Chat' });
-    Router.register('/sessions', (el) => SessionsView.render(el), () => SessionsView.destroy(), { title: 'Sessions' });
-    Router.register('/agents', (el) => AgentsView.render(el), () => AgentsView.destroy(), { title: 'Agents' });
-    Router.register('/cron', (el) => CronView.render(el), () => CronView.destroy(), { title: 'Cron' });
-    Router.register('/usage', (el) => UsageView.render(el), () => UsageView.destroy(), { title: 'Usage' });
-    Router.register('/config', (el) => ConfigView.render(el), () => ConfigView.destroy(), { title: 'Config' });
-    Router.register('/setup', (el) => SetupView.render(el), () => SetupView.destroy(), { title: 'Setup' });
-    Router.register('/channels', (el) => ChannelsView.render(el), () => ChannelsView.destroy(), { title: 'Channels' });
-    Router.register('/approvals', (el) => ApprovalsView.render(el), () => ApprovalsView.destroy(), { title: 'Approvals' });
-    Router.register('/skills', (el) => SkillsView.render(el), () => SkillsView.destroy(), { title: 'Skills' });
-    Router.register('/logs', (el) => LogsView.render(el), () => LogsView.destroy(), { title: 'Logs' });
+    Router.register('/sessions', (el) => _renderStandardView(SessionsView, el), () => SessionsView.destroy(), { title: 'Sessions' });
+    Router.register('/agents', (el) => _renderStandardView(AgentsView, el), () => AgentsView.destroy(), { title: 'Agents' });
+    Router.register('/cron', (el) => _renderStandardView(CronView, el), () => CronView.destroy(), { title: 'Cron' });
+    Router.register('/usage', (el) => _renderStandardView(UsageView, el), () => UsageView.destroy(), { title: 'Usage' });
+    Router.register('/config', (el) => _renderStandardView(ConfigView, el), () => ConfigView.destroy(), { title: 'Config' });
+    Router.register('/setup', (el) => _renderStandardView(SetupView, el), () => SetupView.destroy(), { title: 'Setup' });
+    Router.register('/channels', (el) => _renderStandardView(ChannelsView, el), () => ChannelsView.destroy(), { title: 'Channels' });
+    Router.register('/approvals', (el) => _renderStandardView(ApprovalsView, el), () => ApprovalsView.destroy(), { title: 'Approvals' });
+    Router.register('/skills', (el) => _renderStandardView(SkillsView, el), () => SkillsView.destroy(), { title: 'Skills' });
+    Router.register('/logs', (el) => _renderStandardView(LogsView, el), () => LogsView.destroy(), { title: 'Logs' });
 
     Router.init(_basePath(), document.getElementById('content'));
 
     _autoConnect();
+  }
+
+  function _renderStandardView(view, el) {
+    clearTopbarCenter();
+    view.render(el);
   }
 
   function _buildLayout() {
@@ -87,6 +92,7 @@ const App = (() => {
             <button class="btn btn--icon btn--ghost sidebar-toggle" id="sidebar-toggle" title="Toggle menu" aria-label="Toggle menu" aria-controls="sidebar-nav" aria-expanded="false">${icons.menu()}</button>
             <span class="conn-pill err" id="conn-pill" title="Disconnected" role="status" aria-live="polite">Disconnected</span>
           </div>
+          <div class="topbar-center hidden" id="topbar-center"></div>
           <div class="topbar-right">
             <button class="approval-inline hidden" id="approval-inline" title="Open approvals">Approval required</button>
             <button class="btn btn--icon btn--ghost" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">${icons.sun()}</button>
@@ -207,9 +213,29 @@ const App = (() => {
     } catch {}
   }
 
+  function getTopbarCenter() {
+    return document.getElementById('topbar-center');
+  }
+
+  function clearTopbarCenter() {
+    const slot = getTopbarCenter();
+    if (!slot) return;
+    slot.innerHTML = '';
+    slot.classList.add('hidden');
+  }
+
   function getRpc() { return rpc; }
 
-  return { init, getRpc, getDefaultRpcUrl, loadConnectionSettings, getAuthToken, saveConnectionSettings };
+  return {
+    init,
+    getRpc,
+    getDefaultRpcUrl,
+    loadConnectionSettings,
+    getAuthToken,
+    saveConnectionSettings,
+    getTopbarCenter,
+    clearTopbarCenter,
+  };
 })();
 
 document.addEventListener('DOMContentLoaded', () => App.init());
