@@ -152,8 +152,12 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
             has_bin_cache={
                 "codex": True,
                 "curl": True,
+                "ffmpeg": True,
+                "ffprobe": True,
                 "xelatex": True,
                 "nano-pdf": True,
+                "python": True,
+                "python3": True,
                 "tmux": True,
             },
         ),
