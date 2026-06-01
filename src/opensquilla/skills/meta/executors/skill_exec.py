@@ -11,6 +11,7 @@ process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import os
 import shlex
@@ -258,25 +259,48 @@ async def run_skill_exec_step(
         stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
     )
 
+    # Use asyncio.create_subprocess_exec so the gateway's event loop stays
+    # responsive while the wrapped CLI runs (some skills poll remote APIs for
+    # minutes — a synchronous subprocess.run would freeze the entire HTTP
+    # surface, including /healthz and /control/, until the call returned).
     try:
-        proc = subprocess.run(  # noqa: S603 - argv is manifest-authored and pre-split.
-            argv,
-            input=stdin_bytes,
-            capture_output=True,
+        proc = await asyncio.create_subprocess_exec(  # noqa: S603 - argv is manifest-authored and pre-split.
+            *argv,
+            stdin=subprocess.PIPE if stdin_bytes is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=workdir,
-            timeout=timeout,
-            check=False,
         )
-    except subprocess.TimeoutExpired as exc:
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"skill {effective_skill!r} command not found: {argv[0]!r}",
+        ) from exc
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(input=stdin_bytes),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        # Kill the still-running child so we don't leak a process.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
         raise RuntimeError(
             f"skill {effective_skill!r} timed out after {timeout}s",
         ) from exc
 
-    stdout_text = (proc.stdout or b"").decode("utf-8", errors="replace")
-    stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace")
-    if proc.returncode != 0:
+    returncode = proc.returncode if proc.returncode is not None else -1
+    stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    if returncode != 0:
         raise RuntimeError(
-            f"skill {effective_skill!r} exited {proc.returncode}: "
+            f"skill {effective_skill!r} exited {returncode}: "
             f"{stderr_text[:500]}",
         )
 
