@@ -85,6 +85,15 @@ def test_setup_view_is_available_and_uses_canonical_cli_fallbacks():
     assert "Connected" in txt
 
 
+def test_setup_view_locks_image_model_image_support():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+
+    assert "const isImageModel = name === 'image_model';" in txt
+    assert "isImageModel ? ' checked disabled' :" in txt
+    assert "tier.supportsImage = true;" in txt
+    assert "tier.image_only = true;" in txt
+
+
 def test_setup_finish_cli_commands_target_active_config_path():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     start = txt.index("function _renderFinishStep()")
@@ -725,8 +734,8 @@ def test_setup_router_controls_use_user_facing_labels():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "SquillaRouter" in txt
     assert "OpenRouter mix" not in txt
-    assert "Balanced default (t1)" in txt
-    assert "Stronger reasoning (t2)" in txt
+    assert "Route c1" in txt
+    assert "Route c2" in txt
 
 
 def test_setup_view_preserves_unsaved_form_values_across_step_navigation():

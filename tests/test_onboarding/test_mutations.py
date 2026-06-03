@@ -234,6 +234,20 @@ def test_slack_socket_channel_does_not_require_signing_secret():
     assert "signing_secret" not in entry or entry["signing_secret"] in (None, "")
 
 
+def test_slack_socket_channel_requires_app_token():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="app_token"):
+        upsert_channel(
+            cfg,
+            entry_payload={
+                "type": "slack",
+                "name": "w",
+                "token": "xoxb-test",
+                "connection_mode": "socket",
+            },
+        )
+
+
 def test_remove_channel():
     cfg = GatewayConfig()
     res1 = upsert_channel(
@@ -331,7 +345,7 @@ def test_upsert_llm_provider_recomputes_openrouter_mix_on_provider_switch():
     assert res.config.llm.provider == "deepseek"
     assert res.config.squilla_router.enabled is True
     assert res.config.squilla_router.tier_profile == "deepseek"
-    assert res.config.squilla_router.tiers["t0"]["provider"] == "deepseek"
+    assert res.config.squilla_router.tiers["c0"]["provider"] == "deepseek"
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
 
 
@@ -344,6 +358,28 @@ def test_upsert_router_recommended_writes_profile_without_expanded_tiers():
     assert res.config.squilla_router.tier_profile == "deepseek"
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
     assert res.public_payload["mode"] == "recommended"
+
+
+def test_upsert_router_forces_image_model_role_invariants():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+
+    res = upsert_router(
+        cfg,
+        mode="openrouter-mix",
+        tiers={
+            "image_model": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-opus-4.7",
+                "supportsImage": False,
+                "image_only": False,
+            }
+        },
+    )
+
+    image_tier = res.config.squilla_router.tiers["image_model"]
+    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["supports_image"] is True
+    assert image_tier["image_only"] is True
 
 
 def test_upsert_router_can_disable():

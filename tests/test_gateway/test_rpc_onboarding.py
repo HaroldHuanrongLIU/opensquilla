@@ -162,9 +162,9 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
         "onboarding.router.configure",
         {
             "mode": "recommended",
-            "defaultTier": "t2",
+            "defaultTier": "c2",
             "tiers": {
-                "t2": {"provider": "openai", "model": "gpt-5.5-custom"},
+                "c2": {"provider": "openai", "model": "gpt-5.5-custom"},
                 "image_model": {
                     "provider": "openai",
                     "model": "gpt-5.4-mini",
@@ -177,11 +177,50 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
 
     assert res.error is None, res.error
     assert ctx.config.llm.model == "gpt-5.5-custom"
-    assert ctx.config.squilla_router.default_tier == "t2"
+    assert ctx.config.squilla_router.default_tier == "c2"
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     assert persisted["llm"]["model"] == "gpt-5.5-custom"
-    assert persisted["squilla_router"]["tiers"]["t2"]["model"] == "gpt-5.5-custom"
+    assert persisted["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
     assert persisted["squilla_router"]["tiers"]["image_model"]["supports_image"] is True
+
+
+@pytest.mark.asyncio
+async def test_router_configure_persists_image_model_as_image_capable(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.router.configure",
+        {
+            "mode": "openrouter-mix",
+            "defaultTier": "t1",
+            "tiers": {
+                "image_model": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.7",
+                    "supportsImage": False,
+                },
+            },
+        },
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    image_tier = persisted["squilla_router"]["tiers"]["image_model"]
+    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["supports_image"] is True
+    assert image_tier["image_only"] is True
+    assert ctx.config.squilla_router.tiers["image_model"]["supports_image"] is True
+    assert ctx.config.squilla_router.tiers["image_model"]["image_only"] is True
 
 
 @pytest.mark.asyncio
@@ -317,6 +356,27 @@ async def test_channel_upsert_rejects_slack_webhook_without_signing_secret(tmp_p
 
     assert res.error is not None
     assert "signing_secret" in res.error.message
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_rejects_slack_socket_without_app_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "connection_mode": "socket",
+            }
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert "app_token" in res.error.message
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
 WORKFLOW_DIR = Path(".github/workflows")
+CLASSIFIER = Path(".github/scripts/classify-ci-changes.sh")
 TEST_PATH_RE = re.compile(r"tests/[A-Za-z0-9_./-]+\.py")
 
 
@@ -28,6 +33,72 @@ def _workflow_texts() -> list[str]:
     return [path.read_text(encoding="utf-8") for path in WORKFLOW_DIR.glob("*.yml")]
 
 
+def _is_windows_wsl_bash(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return normalized.endswith("/windows/system32/bash.exe")
+
+
+def _bash_executable(
+    *,
+    os_name: str = os.name,
+    path_lookup: Callable[[str], str | None] = shutil.which,
+    exists: Callable[[Path], bool] = Path.is_file,
+    program_files: str | None = None,
+) -> str:
+    found = path_lookup("bash")
+    if os_name != "nt":
+        return found or "bash"
+
+    candidates: list[Path] = []
+    if found and not _is_windows_wsl_bash(found):
+        candidates.append(Path(found))
+
+    git_root = Path(program_files or os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git"
+    candidates.extend(
+        [
+            git_root / "bin" / "bash.exe",
+            git_root / "usr" / "bin" / "bash.exe",
+        ]
+    )
+
+    for candidate in candidates:
+        if exists(candidate):
+            return str(candidate)
+
+    raise AssertionError("Git Bash is required to run the CI change classifier on Windows")
+
+
+def _classify_changed_files(
+    tmp_path: Path,
+    paths: list[str],
+    *,
+    line_ending: str = "\n",
+) -> dict[str, str]:
+    changed_file = tmp_path / "changed-files.txt"
+    output_file = tmp_path / "github-output.txt"
+    changed_file.write_text(
+        line_ending.join(paths) + line_ending,
+        encoding="utf-8",
+        newline="",
+    )
+
+    env = os.environ.copy()
+    env["GITHUB_OUTPUT"] = output_file.as_posix()
+    subprocess.run(
+        [_bash_executable(), CLASSIFIER.as_posix(), changed_file.as_posix()],
+        check=True,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    outputs: dict[str, str] = {}
+    for line in output_file.read_text(encoding="utf-8").splitlines():
+        key, value = line.split("=", 1)
+        outputs[key] = value
+    return outputs
+
+
 def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     ci_path = WORKFLOW_DIR / "ci.yml"
     if not ci_path.exists():
@@ -44,6 +115,125 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\\n' in text
     assert "OPENSQUILLA_TURN_CALL_LOG: \"0\"" in text
     assert "actionlint@v1.7.12" in text
+    assert "Classify changed files" in text
+    assert "Ubuntu quality gate" in text
+    assert "Windows compatibility tests" in text
+    assert "Release packaging contracts" in text
+    assert "CI result" in text
+    assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
+    assert "runtime_changed" in text
+    assert "test_changed" in text
+    assert "ci_changed" in text
+    assert "dependency_changed" in text
+    assert "release_changed" in text
+    assert "code_changed" not in text
+    assert "workflow_changed" not in text
+
+
+def test_ci_change_classifier_allows_root_and_docs_markdown_only(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "README.md",
+            "CHANGELOG.md",
+            "docs/features/skills.md",
+            ".github/pull_request_template.md",
+        ],
+    )
+
+    assert outputs == {
+        "docs_only": "true",
+        "runtime_changed": "false",
+        "test_changed": "false",
+        "ci_changed": "false",
+        "dependency_changed": "false",
+        "release_changed": "false",
+    }
+
+
+def test_classifier_helper_prefers_git_bash_over_windows_wsl_bash(tmp_path: Path) -> None:
+    git_bash = tmp_path / "Git" / "bin" / "bash.exe"
+
+    result = _bash_executable(
+        os_name="nt",
+        path_lookup=lambda _name: r"C:\Windows\System32\bash.exe",
+        exists=lambda path: path == git_bash,
+        program_files=str(tmp_path),
+    )
+
+    assert result == str(git_bash)
+
+
+def test_ci_change_classifier_accepts_crlf_changed_files(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["README.md", "docs/features/skills.md"],
+        line_ending="\r\n",
+    )
+
+    assert outputs["docs_only"] == "true"
+    assert outputs["runtime_changed"] == "false"
+
+
+def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["src/opensquilla/identity/templates/bootstrap/AGENTS.md"],
+    )
+
+    assert outputs["docs_only"] == "false"
+    assert outputs["runtime_changed"] == "true"
+    assert outputs["test_changed"] == "false"
+    assert outputs["ci_changed"] == "false"
+    assert outputs["dependency_changed"] == "false"
+    assert outputs["release_changed"] == "false"
+
+
+def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["tests/test_ci/test_workflows.py"],
+    )
+
+    assert outputs["docs_only"] == "false"
+    assert outputs["runtime_changed"] == "false"
+    assert outputs["test_changed"] == "true"
+    assert outputs["ci_changed"] == "false"
+    assert outputs["dependency_changed"] == "false"
+    assert outputs["release_changed"] == "false"
+
+
+def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [".github/workflows/ci.yml", ".github/scripts/classify-ci-changes.sh", "uv.lock"],
+    )
+
+    assert outputs["docs_only"] == "false"
+    assert outputs["runtime_changed"] == "true"
+    assert outputs["test_changed"] == "false"
+    assert outputs["ci_changed"] == "true"
+    assert outputs["dependency_changed"] == "true"
+    assert outputs["release_changed"] == "true"
+
+
+def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            ".github/workflows/wheelhouse-release.yml",
+            "scripts/build_wheelhouse_zip.py",
+            "README.release.md",
+            "tests/test_scripts/test_build_wheelhouse_zip.py",
+        ],
+    )
+
+    assert outputs["docs_only"] == "false"
+    assert outputs["runtime_changed"] == "true"
+    assert outputs["test_changed"] == "true"
+    assert outputs["ci_changed"] == "true"
+    assert outputs["dependency_changed"] == "false"
+    assert outputs["release_changed"] == "true"
 
 
 def test_manual_workflows_reference_existing_test_files() -> None:

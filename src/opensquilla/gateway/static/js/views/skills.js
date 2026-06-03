@@ -774,6 +774,42 @@ const SkillsView = (() => {
     </button>`;
   }
 
+  function _renderRequirements(requirements) {
+    const items = requirements && Array.isArray(requirements.items) ? requirements.items : [];
+    if (!items.length) return '';
+    const rows = items.map(item => {
+      const missing = [];
+      (item.missing_bins || []).forEach(b => missing.push(`<code>${_esc(b)}</code>`));
+      (item.missing_env || []).forEach(e => missing.push(`<code>${_esc(e)}</code>`));
+      const requires = [];
+      (item.requires_bins || []).forEach(b => requires.push(_esc(b)));
+      if ((item.requires_any_bins || []).length) {
+        requires.push(`one of ${(item.requires_any_bins || []).map(_esc).join(' / ')}`);
+      }
+      (item.requires_env || []).forEach(e => requires.push(`${_esc(e)} env`));
+      const status = item.status || 'not_declared';
+      const statusLabel = status === 'ready' ? 'ready'
+        : status === 'needs_setup' ? 'needs setup'
+          : status === 'missing_skill' ? 'missing skill'
+            : 'no deps declared';
+      const statusClass = status === 'ready' ? 'sk-chip--ok'
+        : status === 'needs_setup' || status === 'missing_skill' ? 'sk-chip--warn'
+          : 'sk-chip--unverified';
+      const detail = missing.length
+        ? `Missing ${missing.join(', ')}`
+        : requires.length ? requires.join(', ') : 'No declared dependencies';
+      return `<div class="sk-dialog__req-row">
+        <span class="sk-dialog__req-name">${_esc(item.name || 'unknown')}</span>
+        <span class="sk-chip ${statusClass}">${statusLabel}</span>
+        <span class="sk-dialog__req-detail">${detail}</span>
+      </div>`;
+    }).join('');
+    return `<div class="sk-dialog__section">
+      <div class="sk-dialog__section-title">Requirements</div>
+      <div class="sk-dialog__requirements">${rows}</div>
+    </div>`;
+  }
+
   function _openSkillDialog(skill) {
     const dlg = _el.querySelector('#skill-detail-dialog');
     const body = _el.querySelector('#skill-detail-body');
@@ -803,6 +839,8 @@ const SkillsView = (() => {
         </div>`;
       }
     }
+
+    const requirementsHtml = _renderRequirements(skill.requirements);
 
     let installHtml = '';
     const hasMissingBins = (skill.missing_bins || []).length > 0;
@@ -874,6 +912,7 @@ const SkillsView = (() => {
         <p class="sk-dialog__desc">${_esc(skill.description || '')}</p>
         ${triggersHtml}
         ${compositionHtml}
+        ${requirementsHtml}
         ${missingHtml}
         ${installHtml}
         ${homepage ? `<div class="sk-dialog__section">${homepage}</div>` : ''}
