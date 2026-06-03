@@ -507,6 +507,36 @@
   padding: 4px 0;
   font-size: var(--fs-sm);
 }
+.sk-dialog__requirements {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sk-dialog__req-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(0, 1.4fr);
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+.sk-dialog__req-name {
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sk-dialog__req-detail {
+  min-width: 0;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.sk-dialog__req-detail code {
+  font-family: var(--font-mono);
+  background: var(--bg-elevated);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+}
 .sk-dialog__link { color: var(--accent); font-weight: 500; font-size: var(--fs-sm); }
 .sk-dialog__foot {
   display: flex; align-items: center; justify-content: space-between;

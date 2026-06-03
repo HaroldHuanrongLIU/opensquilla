@@ -82,6 +82,17 @@ def test_chat_day_separator_stays_on_centered_chat_axis() -> None:
     assert "margin: var(--sp-2) auto;" in block
 
 
+def test_chat_user_bubble_short_text_is_vertically_centered() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = css.index(".chat-msg--user .chat-msg-text,")
+    end = css.index("/* Assistant", start)
+    block = css[start:end]
+
+    assert "display: flex;" in block
+    assert "align-items: center;" in block
+    assert "justify-content: center;" in block
+
+
 def test_chat_sent_attachment_images_render_as_separate_thumbnail_attachments() -> None:
     css = CHAT_CSS.read_text(encoding="utf-8")
     body_start = css.index(".msg.user .msg-body.msg-body--has-attachments {")
@@ -239,6 +250,31 @@ def test_chat_artifact_downloads_use_direct_links_to_preserve_user_activation() 
     assert 'download="${_escAttr(name)}"' in render_body
 
 
+def test_chat_message_actions_do_not_stick_after_history_rebuild_or_click() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _clearMessageActionFocus(reason = '') {" in source
+
+    clear_start = source.index("function _clearMessageActionFocus(reason = '') {")
+    clear_end = source.index("function _attachHoverActions", clear_start)
+    clear_body = source[clear_start:clear_end]
+    assert "const active = document.activeElement;" in clear_body
+    assert "active.closest('.msg-actions')" in clear_body
+    assert "active.blur();" in clear_body
+    assert "_chatDiag('message_actions.focus_cleared'" in clear_body
+
+    hover_start = source.index("function _bindHoverActions()")
+    hover_end = source.index("  function _truncate", hover_start)
+    hover_body = source[hover_start:hover_end]
+    assert "btn.blur();" in hover_body
+    assert "const action = btn.dataset.action;" in hover_body
+    assert hover_body.index("btn.blur();") < hover_body.index("const action = btn.dataset.action;")
+
+    history_start = source.index("function _renderHistoryMessages(messages, opts = {})")
+    history_end = source.index("function _historyLiveTailAnchor", history_start)
+    history_body = source[history_start:history_end]
+    assert "_clearMessageActionFocus('history_rebuild');" in history_body
+
+
 def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
@@ -345,16 +381,33 @@ def test_chat_streaming_indicator_uses_delayed_bottom_dock() -> None:
 
     assert ".msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after" in css
     assert "padding-bottom: calc(var(--sp-2) + 24px);" in css
-    assert "left: calc(var(--sp-4) + 16px);" in css
-    assert "bottom: calc(var(--sp-2) + 8px);" in css
+    # Mark is corner-aligned to the content-left edge and centered in the
+    # reserved footer band, so the orbiting ring clears the tool card above
+    # and the bubble's bottom edge — no overlap, no rightward-inset orphan.
+    assert "left: var(--sp-4);" in css
+    assert "bottom: var(--sp-2);" in css
+    assert "left: calc(var(--sp-4) - 4px);" in css
+    assert "bottom: calc(var(--sp-2) - 4px);" in css
+    assert "left: calc(var(--sp-4) + 16px);" not in css
     assert "background-image: url('../../img/opensquilla-mark.png');" in css
     assert "width: 16px;" in css
     assert "height: 16px;" in css
     assert "background-size: 11px 11px;" in css
     assert "border-radius: 50%;" in css
     assert "0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent)" in css
-    assert "0 0 6px color-mix(in srgb, var(--accent-secondary) 18%, transparent)" in css
-    assert "animation: squilla-activity-spin 1.6s linear infinite;" in css
+    # Orbital-sweep design: the figurative squilla mark stays UPRIGHT and
+    # legible (no spin on ::after); the motion lives in an orbiting ring
+    # rendered on ::before. The mark must not tumble.
+    assert "animation: squilla-activity-spin 1.6s linear infinite;" not in css
+    assert ".msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::before" in css
+    assert "background: conic-gradient(from 0deg," in css
+    assert "var(--accent-secondary) 320deg," in css
+    assert (
+        "mask: radial-gradient(farthest-side, transparent calc(100% - 2px), "
+        "#000 calc(100% - 2px));"
+        in css
+    )
+    assert "animation: squilla-activity-spin 1.15s linear infinite;" in css
     assert "@keyframes squilla-activity-spin" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
     assert ".chat-tools-collapse--running > .chat-tools-summary .chat-tools-icon" not in css
@@ -1358,6 +1411,21 @@ def test_chat_compaction_summary_separator_anchors_to_transcript_ids() -> None:
     assert "status === 'skipped'" in sync_body
 
 
+def test_chat_current_compaction_separator_bottom_anchors_and_autoscrolls() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    sync_start = source.index(
+        "function _syncCompactionSeparator(payload, status, source, overrides = {})"
+    )
+    sync_end = source.index("function _clearCompactionSummarySeparators", sync_start)
+    sync_body = source[sync_start:sync_end]
+
+    assert "chat-context-separator--session" in sync_body
+    assert "if (_autoScroll) _scrollToBottom();" in sync_body
+    assert ".chat-context-separator--session" in css
+    assert "margin-top: auto;" in css
+
+
 def test_chat_compaction_separator_does_not_render_token_details() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     # The in-thread separator is intentionally terse; token/debug details stay
@@ -2192,6 +2260,31 @@ def test_chat_history_refresh_preserves_active_thinking_indicator() -> None:
     assert "if (_isStreaming && _isCurrentSessionThinkingIndicator(el)) return;" in render_body
 
 
+def test_chat_history_reorders_before_live_thinking_indicator() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _historyLiveTailAnchor()" in source
+    helper_start = source.index("function _historyLiveTailAnchor()")
+    helper_end = source.index("function _appendHistoryDaySeparator", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "if (!_isStreaming) return null;" in helper_body
+    assert "if (_isCurrentSessionStreamBubble(_streamBubble)) return _streamBubble;" in helper_body
+    assert "if (_isCurrentSessionThinkingIndicator(_thinkingEl)) return _thinkingEl;" in helper_body
+
+    day_start = source.index("function _appendHistoryDaySeparator(timestamp)")
+    day_end = source.index("function _appendHistoryElementInOrder(div)", day_start)
+    day_body = source[day_start:day_end]
+    assert "const liveTail = _historyLiveTailAnchor();" in day_body
+    assert "_thread.insertBefore(sep, liveTail);" in day_body
+
+    append_start = source.index("function _appendHistoryElementInOrder(div)")
+    append_end = source.index("function _historyStableMessageIdentity", append_start)
+    append_body = source[append_start:append_end]
+    assert "const liveTail = _historyLiveTailAnchor();" in append_body
+    assert "if (liveTail && div !== liveTail)" in append_body
+    assert "_thread.insertBefore(div, liveTail);" in append_body
+
+
 def test_router_fx_strip_survives_multistep_turn() -> None:
     # History reorder moves .msg nodes. The router strip is a sibling, so the
     # root fix is to move an attached strip together with its user message
@@ -2608,6 +2701,31 @@ def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
     assert "dataset.live" not in sweep
 
 
+def test_router_toggle_off_immediately_stops_router_visuals() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("const routerToggle = _el.querySelector('#toggle-router');")
+    end = source.index("// Router-fx visualisation toggle", start)
+    body = source[start:end]
+
+    assert "const previousRouterFeatureEnabled = _routerFeatureEnabled;" in body
+    assert "_routerFeatureEnabled = enabled;" in body
+    assert "if (!enabled) _clearRouterFxVisuals('router_disabled');" in body
+    assert "_routerFeatureEnabled = previousRouterFeatureEnabled;" in body
+    assert "_clearRouterFxVisuals('router_patch_reverted');" in body
+    assert "_scheduleHistorySync();" in body
+
+    assert "function _clearRouterFxVisuals(reason = '') {" in source
+    clear_start = source.index("function _clearRouterFxVisuals(reason = '') {")
+    clear_end = source.index("async function _finishPendingRouterFxScan", clear_start)
+    clear_body = source[clear_start:clear_end]
+    assert "_cancelPendingRouterFxScan(reason || 'clear_visuals');" in clear_body
+    assert (
+        "_thread.querySelectorAll('.router-fx').forEach((el) => "
+        "_routerFxRemoveStrip(el));"
+        in clear_body
+    )
+
+
 def test_router_fx_variant_seam_stamps_data_variant() -> None:
     # data-variant on the .router-fx root is the style-variant seam (same idiom
     # as data-state/source/observe). Only non-'default' is stamped, leaving the
@@ -2783,7 +2901,7 @@ def test_chat_replayed_compaction_terminal_restores_separator_without_toast() ->
     assert "if (!isReplay) {\n        UI.toast(\n          'Compact cancelled'" in body
 
 
-def test_chat_manual_terminal_compaction_separator_persists_only_when_completed() -> None:
+def test_chat_terminal_compaction_separator_persists_for_completed_manual_and_auto() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     sync_start = source.index(
         "function _syncCompactionSeparator(payload, status, source, overrides = {})"
@@ -2793,7 +2911,7 @@ def test_chat_manual_terminal_compaction_separator_persists_only_when_completed(
 
     assert "function _compactionSeparatorAnimated(status, overrides = {})" in source
     assert "function _shouldPersistCompactionSeparator(status, source, overrides = {})" in source
-    assert "return source === 'manual' && status === 'completed';" in source
+    assert "return status === 'completed';" in source
     assert "const liveClass = _compactionSeparatorAnimated(status, overrides)" in sync_body
     assert "filter(Boolean)" in sync_body
     assert "if (_shouldPersistCompactionSeparator(status, source, overrides)) return;" in sync_body
@@ -2847,11 +2965,9 @@ def test_chat_history_reorders_reused_nodes_to_match_transcript_order() -> None:
 
     assert "_thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());" in body
     assert "function _appendHistoryElementInOrder(div)" in source
-    assert (
-        "if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) "
-        "&& div !== _streamBubble)"
-    ) in source
-    assert "_thread.insertBefore(div, _streamBubble);" in source
+    assert "const liveTail = _historyLiveTailAnchor();" in source
+    assert "if (liveTail && div !== liveTail)" in source
+    assert "_thread.insertBefore(div, liveTail);" in source
     assert "_thread.appendChild(div);" in source
     stamp_idx = body.index(
         "_stampHistoryElement(div, stableIdentity, msg.role, displayText, "
@@ -2930,6 +3046,36 @@ def test_chat_history_replacement_preserves_message_body_rendering() -> None:
     assert visible_text_assignment in render_body
     assert markdown_render in render_body
     assert "Markdown.bindHighlight(body);" in render_body
+
+
+def test_chat_history_replacement_rebuilds_role_header() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _syncMessageHeader(div, displayRole, timestamp, options = {}) {" in source
+
+    helper_start = source.index(
+        "function _syncMessageHeader(div, displayRole, timestamp, options = {}) {"
+    )
+    helper_end = source.index("function _replaceHistoryMessage", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "const existing = div.querySelector(':scope > .msg-header');" in helper_body
+    assert "_displayRoleLabel(displayRole)" in helper_body
+    assert "_renderMessageTags(options)" in helper_body
+    assert "div.insertBefore(header, div.firstChild);" in helper_body
+    assert "if (sameGroup) {" in helper_body
+    assert "if (existing) existing.remove();" in helper_body
+
+    replace_start = source.index("function _replaceHistoryMessage")
+    replace_end = source.index("  function _replaceStreamText", replace_start)
+    replace_body = source[replace_start:replace_end]
+    assert (
+        "_syncMessageHeader(div, displayRole, options.timestamp || null, options);"
+        in replace_body
+    )
+
+    history_start = source.index("const msgOptions = {")
+    history_end = source.index("_messages.push({", history_start)
+    history_body = source[history_start:history_end]
+    assert "timestamp: msg.timestamp || msg.ts || null," in history_body
 
 
 def test_chat_streaming_text_strips_generated_artifact_markers() -> None:

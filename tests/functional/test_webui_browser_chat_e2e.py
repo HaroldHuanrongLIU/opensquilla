@@ -1112,6 +1112,205 @@ def test_chat_slash_menu_aligns_with_composer_in_real_browser(tmp_path: Path) ->
     assert layouts["mobile"]["layout"]["exportButton"]["visible"] is False
 
 
+def test_chat_escape_in_composer_aborts_streaming_turn_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_escape_abort_server.py"
+    browser_script = tmp_path / "webui_escape_abort_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await waitRpc(page);
+
+              await page.evaluate(() => {
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                window.__escapeAbort = { sendCalls: [], abortCalls: [] };
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: { enabled: true, rollout_phase: "full", tiers: {} },
+                    });
+                  }
+                  if (method === "chat.history") {
+                    return Promise.resolve({
+                      messages: [],
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 0,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  if (method === "chat.send") {
+                    window.__escapeAbort.sendCalls.push(params);
+                    return Promise.resolve({ task_id: "escape-abort-task" });
+                  }
+                  if (method === "chat.abort") {
+                    window.__escapeAbort.abortCalls.push(params);
+                    return Promise.resolve({ aborted: true, key: params.sessionKey });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate("/chat?session=agent:main:webchat:escape-abort")
+              );
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.fill("#chat-textarea", "turn to abort from textarea");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () =>
+                  window.__escapeAbort.sendCalls.length === 1 &&
+                  OpenSquillaChatDiag.snapshot().isStreaming === true,
+                null, { timeout: 5000 }
+              );
+
+              await page.focus("#chat-textarea");
+              const before = await page.evaluate(() => ({
+                focusId: document.activeElement?.id || "",
+                isStreaming: OpenSquillaChatDiag.snapshot().isStreaming,
+                stopVisible:
+                  !document.querySelector("#chat-btn-stop")?.classList.contains("hidden"),
+              }));
+              await page.locator("#chat-textarea").press("Escape");
+              await page.waitForFunction(
+                () => window.__escapeAbort.abortCalls.length === 1,
+                null, { timeout: 5000 }
+              );
+              await page.waitForFunction(
+                () => OpenSquillaChatDiag.snapshot().isStreaming === false,
+                null, { timeout: 5000 }
+              );
+              const afterState = await page.evaluate(() => ({
+                isStreaming: OpenSquillaChatDiag.snapshot().isStreaming,
+                streamingCount: document.querySelectorAll(".msg.streaming").length,
+                thinkingCount: document.querySelectorAll(".msg.thinking").length,
+                stopVisible:
+                  !document.querySelector("#chat-btn-stop")?.classList.contains("hidden"),
+                abortCalls: window.__escapeAbort.abortCalls,
+              }));
+              const after = { ...afterState, pageErrors: errors };
+
+              await browser.close();
+              console.log(JSON.stringify({ before, after }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    before = payload["before"]
+    after = payload["after"]
+    assert before["focusId"] == "chat-textarea", before
+    assert before["isStreaming"] is True, before
+    assert before["stopVisible"] is True, before
+    assert after["abortCalls"] == [
+        {
+            "sessionKey": "agent:main:webchat:escape-abort",
+            "source": "webui_escape",
+        }
+    ], after
+    assert after["isStreaming"] is False, after
+    assert after["streamingCount"] == 0, after
+    assert after["thinkingCount"] == 0, after
+    assert after["stopVisible"] is False, after
+    assert after["pageErrors"] == [], after
+
+
 def test_chat_tool_result_full_view_handles_large_payloads_in_real_browser(
     tmp_path: Path,
 ) -> None:
@@ -1398,7 +1597,28 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
             async function lastSeparatorText(page) {
               return await page.evaluate(() => {
                 const separators = document.querySelectorAll(".chat-context-separator");
-                return separators.length ? separators[separators.length - 1].innerText : "";
+                return separators.length
+                  ? separators[separators.length - 1].textContent
+                  : "";
+              });
+            }
+
+            async function lastSeparatorPlacement(page) {
+              return await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                const separators = document.querySelectorAll(".chat-context-separator");
+                const separator = separators[separators.length - 1];
+                if (!thread || !separator) return null;
+                const threadBox = thread.getBoundingClientRect();
+                const separatorBox = separator.getBoundingClientRect();
+                return {
+                  bottomGap: Math.round(threadBox.bottom - separatorBox.bottom),
+                  topGap: Math.round(separatorBox.top - threadBox.top),
+                  className: separator.className,
+                  scrollTop: Math.round(thread.scrollTop),
+                  scrollHeight: Math.round(thread.scrollHeight),
+                  clientHeight: Math.round(thread.clientHeight),
+                };
               });
             }
 
@@ -1446,6 +1666,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               await page.waitForTimeout(600);
               const startedStatusVisible = await lastSeparatorText(page);
               const manualSeparatorStarted = startedStatusVisible;
+              const manualSeparatorStartedPlacement = await lastSeparatorPlacement(page);
               await emitCompaction(page, { status: "skipped", source: "manual" });
               await page.waitForTimeout(250);
               const skippedStatusVisible = await lastSeparatorText(page);
@@ -1457,7 +1678,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 tokens_after: 1300,
               });
               await page.waitForFunction(
-                () => document.body.innerText.includes("context compacted"),
+                () => document.body.textContent.includes("context compacted"),
                 null, { timeout: 5000 }
               );
 
@@ -1499,6 +1720,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               await page.waitForTimeout(800);
               const automaticStartedStatusVisible = await lastSeparatorText(page);
               const automaticSeparatorStarted = automaticStartedStatusVisible;
+              const automaticSeparatorStartedPlacement = await lastSeparatorPlacement(page);
               await page.fill("#chat-textarea", "queued during automatic compact");
               await page.click("#chat-btn-send");
               await page.waitForTimeout(150);
@@ -1555,7 +1777,9 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               const automaticNoopSeparatorHidden = await page
                 .locator(".chat-context-separator")
                 .count();
-              const automaticNoopBodyText = await page.locator("body").innerText();
+              const automaticNoopBodyText = await page.evaluate(
+                () => document.body.textContent
+              );
 
               await page.waitForTimeout(1600);
               await emitCompaction(page, {
@@ -1631,6 +1855,11 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 startedStatusVisible: startedStatusVisible.includes("context compacting"),
                 manualRailStarted:
                   manualSeparatorStarted.includes("context compacting"),
+                manualRailBottomAnchored:
+                  manualSeparatorStartedPlacement &&
+                  manualSeparatorStartedPlacement.bottomGap <= 60 &&
+                  manualSeparatorStartedPlacement.className
+                    .includes("chat-context-separator--session"),
                 skippedStatusVisible: skippedStatusVisible.includes(
                   "no compaction needed"
                 ),
@@ -1646,6 +1875,11 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 ),
                 automaticRailStarted:
                   automaticSeparatorStarted.includes("context compacting"),
+                automaticRailBottomAnchored:
+                  automaticSeparatorStartedPlacement &&
+                  automaticSeparatorStartedPlacement.bottomGap <= 60 &&
+                  automaticSeparatorStartedPlacement.className
+                    .includes("chat-context-separator--session"),
                 automaticObservedStatusVisible: automaticObservedStatusVisible.includes(
                   "context compacting"
                 ),
@@ -1731,12 +1965,14 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
         "hasReplayedFailureToast": False,
         "startedStatusVisible": True,
         "manualRailStarted": True,
+        "manualRailBottomAnchored": True,
         "skippedStatusVisible": True,
         "failedStatusVisible": True,
         "queuedBeforeSkipped": 0,
         "skippedDrainedQueuedSend": True,
         "automaticStartedStatusVisible": True,
         "automaticRailStarted": True,
+        "automaticRailBottomAnchored": True,
         "automaticObservedStatusVisible": True,
         "automaticRailObserved": True,
         "automaticRailCompleted": True,

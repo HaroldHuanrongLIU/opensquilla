@@ -718,6 +718,13 @@ const ChatView = (() => {
       + '<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
   }
 
+  function _clearMessageActionFocus(reason = '') {
+    const active = document.activeElement;
+    if (!active || !active.closest || !active.closest('.msg-actions')) return;
+    active.blur();
+    _chatDiag('message_actions.focus_cleared', { reason: reason || '' });
+  }
+
   // Append the hover-action row to a message bubble. Buttons are CSS-hidden
   // until the bubble is hovered/focus-within; click handling lives in
   // _bindHoverActions (delegated on the thread). The row is anchored inside
@@ -916,6 +923,7 @@ const ChatView = (() => {
       ev.stopPropagation();
       const bubble = btn.closest('.msg');
       if (!bubble) return;
+      btn.blur();
       const action = btn.dataset.action;
       if (action === 'copy') {
         const text = _extractBubbleText(bubble);
@@ -1365,6 +1373,9 @@ const ChatView = (() => {
     if (routerToggle) {
       routerToggle.addEventListener('change', async () => {
         const enabled = routerToggle.checked;
+        const previousRouterFeatureEnabled = _routerFeatureEnabled;
+        _routerFeatureEnabled = enabled;
+        if (!enabled) _clearRouterFxVisuals('router_disabled');
         try {
           const patches = { 'squilla_router.enabled': enabled };
           patches['squilla_router.rollout_phase'] = enabled ? 'full' : 'observe';
@@ -1376,7 +1387,10 @@ const ChatView = (() => {
           UI.toast('Squilla Router: ' + (enabled ? 'ON' : 'OFF'), 'info');
         } catch (e) {
           // Revert on failure
+          _routerFeatureEnabled = previousRouterFeatureEnabled;
           routerToggle.checked = !enabled;
+          if (!previousRouterFeatureEnabled) _clearRouterFxVisuals('router_patch_reverted');
+          else _scheduleHistorySync();
           UI.toast('Failed: ' + e.message, 'err');
         }
       });
@@ -2362,8 +2376,9 @@ const ChatView = (() => {
     });
 
     // Keyboard: Enter to send; slash navigation; ↑/↓ history; Alt+↑/↓ pending edit.
-    // ESC streaming abort lives on the document-level handler below, except in
-    // editable targets where ESC belongs to text editing / menu dismissal.
+    // ESC streaming abort lives on the document-level handler below. The
+    // composer textarea is allowed to bubble there while streaming; other
+    // editable targets keep ESC for text editing / menu dismissal.
     _textarea.addEventListener('keydown', (e) => {
       if (_composing || e.isComposing || e.keyCode === 229) return;
 
@@ -2449,7 +2464,8 @@ const ChatView = (() => {
       }
     });
 
-    // Document-level ESC: works outside editable targets. Priority chain:
+    // Document-level ESC: works across the chat view, while preserving
+    // non-composer editable targets. Priority chain:
     //   1. streaming  → _onStop (which also recovers pending)
     //   2. pending    → _popAllPendingIntoComposer
     //   3. otherwise drop through to the textarea handler / popovers / no-op
@@ -2464,19 +2480,20 @@ const ChatView = (() => {
     //   - DOM probe: catches sibling document-level consumers that haven't
     //     run yet — if any overlay is currently visible, defer to its handler
     //     instead of treating ESC as a turn abort.
+    //   - editable guard: preserves ESC inside non-composer inputs, while the
+    //     chat textarea can still abort the active stream.
     function _onDocKeydown(e) {
       if (e.key !== 'Escape') return;
       if (typeof Router !== 'undefined' && Router.currentPath && Router.currentPath() !== '/chat') return;
       if (e.defaultPrevented) return;
       if (_chatOverlayVisible()) return;
       const target = e.target;
-      const inEditable = target && (
-        target === _textarea
-        || target.tagName === 'INPUT'
+      const inOtherEditable = target && target !== _textarea && (
+        target.tagName === 'INPUT'
         || target.tagName === 'TEXTAREA'
         || target.isContentEditable
       );
-      if (inEditable) return; // textarea handler will deal with the empty-clear case
+      if (inOtherEditable) return;
       if (_isStreaming) {
         e.preventDefault();
         _onStop('webui_escape');
@@ -2863,7 +2880,7 @@ const ChatView = (() => {
     if (!_thread) return null;
     if (!_compactionSeparatorEl || !_compactionSeparatorEl.isConnected) {
       _compactionSeparatorEl = document.createElement('div');
-      _compactionSeparatorEl.className = 'chat-context-separator chat-context-separator--info';
+      _compactionSeparatorEl.className = 'chat-context-separator chat-context-separator--session chat-context-separator--info';
       _compactionSeparatorEl.setAttribute('role', 'status');
       _compactionSeparatorEl.setAttribute('aria-live', 'polite');
     }
@@ -2914,7 +2931,7 @@ const ChatView = (() => {
       return !!overrides.persist;
     }
     if (!_compactionTerminalStatus(status)) return false;
-    return source === 'manual' && status === 'completed';
+    return status === 'completed';
   }
 
   function _compactionStatusLabel(payload, source, status) {
@@ -2963,6 +2980,7 @@ const ChatView = (() => {
       : '';
     separator.className = [
       'chat-context-separator',
+      'chat-context-separator--session',
       liveClass,
       `chat-context-separator--${tone}`,
       `chat-context-separator--${status || 'unknown'}`,
@@ -2971,6 +2989,7 @@ const ChatView = (() => {
     separator.dataset.source = source || '';
     separator.innerHTML = `<span>${_esc(label)}</span>`;
     _placeCompactionSeparator();
+    if (_autoScroll) _scrollToBottom();
     if (_compactionTerminalStatus(status)) {
       if (_shouldPersistCompactionSeparator(status, source, overrides)) return;
       _scheduleCompactionSeparatorRemoval();
@@ -3942,6 +3961,12 @@ const ChatView = (() => {
         turnIndex: pending.turnIndex || '',
       });
     }
+  }
+
+  function _clearRouterFxVisuals(reason = '') {
+    _cancelPendingRouterFxScan(reason || 'clear_visuals');
+    if (!_thread) return;
+    _thread.querySelectorAll('.router-fx').forEach((el) => _routerFxRemoveStrip(el));
   }
 
   async function _finishPendingRouterFxScan() {
@@ -5449,6 +5474,7 @@ const ChatView = (() => {
 
   function _renderHistoryMessages(messages, opts = {}) {
     if (!_thread) return;
+    _clearMessageActionFocus('history_rebuild');
     _removeHistoryScopeRows();
     if (messages.length === 0) {
       const liveRouterStrips = _currentSessionLiveRouterStrips(_sessionKey || '');
@@ -5536,6 +5562,7 @@ const ChatView = (() => {
         const stableIdentity = _historyStableMessageIdentity(msg);
         const fallbackIdentity = _historyFallbackMessageIdentity(msg.role, displayText);
         const msgOptions = {
+          timestamp: msg.timestamp || msg.ts || null,
           provenanceKind: msg.provenance_kind || '',
           provenanceSourceSessionKey: msg.provenance_source_session_key || '',
           provenanceSourceTool: msg.provenance_source_tool || '',
@@ -5733,14 +5760,22 @@ const ChatView = (() => {
 	      });
 	  }
 
+  function _historyLiveTailAnchor() {
+    if (!_isStreaming) return null;
+    if (_isCurrentSessionStreamBubble(_streamBubble)) return _streamBubble;
+    if (_isCurrentSessionThinkingIndicator(_thinkingEl)) return _thinkingEl;
+    return null;
+  }
+
   function _appendHistoryDaySeparator(timestamp) {
     const day = _dayKey(timestamp);
     if (!day || day === _lastHeaderDay) return;
     const sep = document.createElement('div');
     sep.className = 'chat-day-sep';
     sep.innerHTML = `<span>${_dayLabel(day)}</span>`;
-    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble)) {
-      _thread.insertBefore(sep, _streamBubble);
+    const liveTail = _historyLiveTailAnchor();
+    if (liveTail) {
+      _thread.insertBefore(sep, liveTail);
     } else {
       _thread.appendChild(sep);
     }
@@ -5755,8 +5790,9 @@ const ChatView = (() => {
     // turn unit; otherwise the DOM reorder can strand the strip above the user
     // while output is streaming.
     const attachedRouterStrip = _routerFxStripImmediatelyAfterUser(div);
-    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) && div !== _streamBubble) {
-      _thread.insertBefore(div, _streamBubble);
+    const liveTail = _historyLiveTailAnchor();
+    if (liveTail && div !== liveTail) {
+      _thread.insertBefore(div, liveTail);
       _restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);
       return;
     }
@@ -5945,10 +5981,39 @@ const ChatView = (() => {
     }
   }
 
+  function _syncMessageHeader(div, displayRole, timestamp, options = {}) {
+    if (!div) return;
+    const day = _dayKey(timestamp);
+    const collapsible = (displayRole === 'user' || displayRole === 'assistant');
+    const sameGroup = collapsible
+      && (displayRole === _lastHeaderRole)
+      && day === _lastHeaderDay
+      && day !== '';
+    if (collapsible) _lastHeaderRole = displayRole;
+    const existing = div.querySelector(':scope > .msg-header');
+    const isoStr = timestamp
+      ? (typeof timestamp === 'string' ? timestamp : new Date(timestamp).toISOString())
+      : '';
+    if (sameGroup) {
+      if (existing) existing.remove();
+      if (isoStr) div.title = new Date(isoStr).toLocaleString();
+      return;
+    }
+    const header = existing || document.createElement('div');
+    header.className = 'msg-header';
+    if (isoStr) {
+      header.title = new Date(isoStr).toLocaleString();
+      div.removeAttribute('title');
+    }
+    header.innerHTML = `<span class="role-label">${_esc(_displayRoleLabel(displayRole))}</span>${_renderMessageTags(options)}<span class="msg-time">${_esc(timestamp ? _relTime(timestamp) : '')}</span>`;
+    if (!existing) div.insertBefore(header, div.firstChild);
+  }
+
   function _replaceHistoryMessage(div, role, text, options = {}) {
     const isSubagentCompletion = _isSubagentCompletionMessage(role, text, options);
     const displayRole = isSubagentCompletion ? 'subagent' : role;
     div.className = `msg ${displayRole}`;
+    _syncMessageHeader(div, displayRole, options.timestamp || null, options);
     const body = div.querySelector('.msg-body');
     if (body) {
       _renderMessageBody(body, role, text, options);

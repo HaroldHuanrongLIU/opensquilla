@@ -472,6 +472,9 @@
   box-shadow: var(--shadow-sm);
   font-size: var(--fs-sm);
   line-height: 1.6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -592,8 +595,13 @@
 }
 
 /* Streaming active mark — delayed bottom dock. The mark appears only after
-   short turns have had time to finish, then sits inside the bubble footer with
-   a small rightward offset so it does not collide with tool-card status rails. */
+   short turns have had time to finish, then sits in the bubble's bottom-left
+   corner, aligned with the content-left edge (the tool-card / text icon
+   column) so it reads as part of that column rather than an orphaned dot.
+   It sits centered in the reserved footer band (padding-bottom below), which
+   gives the orbiting ring a clear gap from the last tool card above and the
+   bubble's bottom edge — earlier the mark was lifted 8px, which pushed the
+   ring up into the card and caused a visible overlap. */
 .msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body {
   padding-bottom: calc(var(--sp-2) + 24px);
 }
@@ -602,8 +610,8 @@
   content: '';
   display: block;
   position: absolute;
-  left: calc(var(--sp-4) + 16px);
-  bottom: calc(var(--sp-2) + 8px);
+  left: var(--sp-4);
+  bottom: var(--sp-2);
   width: 16px;
   height: 16px;
   pointer-events: none;
@@ -613,10 +621,33 @@
   background-repeat: no-repeat;
   background-position: center;
   background-size: 11px 11px;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent),
-    0 0 6px color-mix(in srgb, var(--accent-secondary) 18%, transparent);
-  animation: squilla-activity-spin 1.6s linear infinite;
+  /* The mark stays UPRIGHT and legible — it is a figurative, directional
+     squilla, so it must never tumble. The motion lives in the orbiting
+     ring below (::before), not in the brand mark itself. */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Orbital sweep — a conic highlight rides a hairline ring around the mark.
+   This is the element that animates; circles are built to rotate, the
+   shrimp is not. Reuses --accent / --accent-secondary so it auto-themes. */
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::before {
+  content: '';
+  display: block;
+  position: absolute;
+  left: calc(var(--sp-4) - 4px);
+  bottom: calc(var(--sp-2) - 4px);
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    transparent 200deg,
+    var(--accent-secondary) 320deg,
+    var(--accent) 350deg,
+    transparent 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  animation: squilla-activity-spin 1.15s linear infinite;
 }
 
 .msg.streaming.awaiting-model::after {
@@ -645,10 +676,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after {
+  /* Freeze the orbiting ring into a static arc so the indicator is still
+     legibly "active" without motion. The mark itself is already static. */
+  .msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::before {
     animation: none;
-    opacity: 0.72;
-    transform: none;
+    background: conic-gradient(from 0deg,
+      var(--accent) 90deg, transparent 90deg);
   }
 }
 
@@ -1576,6 +1609,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-context-separator--session {
+  margin-top: auto;
 }
 
 .chat-context-separator--live span {

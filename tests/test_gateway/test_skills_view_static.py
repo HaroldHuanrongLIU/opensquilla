@@ -35,6 +35,21 @@ def test_skill_detail_dialog_shows_full_description_for_touch_users() -> None:
     assert "_truncDesc" not in source
 
 
+def test_skill_detail_dialog_surfaces_requirements_rollup() -> None:
+    source = SKILLS_JS.read_text(encoding="utf-8")
+    dialog_start = source.index("function _openSkillDialog(skill)")
+    dialog_end = source.index("  async function _installDeps", dialog_start)
+    dialog_body = source[dialog_start:dialog_end]
+
+    assert "function _renderRequirements" in source
+    assert "skill.requirements" in dialog_body
+    assert "Requirements" in source
+    assert "requirementsHtml" in dialog_body
+    assert "${requirementsHtml}" in dialog_body
+    assert "${compositionHtml}" in dialog_body
+    assert dialog_body.index("${compositionHtml}") < dialog_body.index("${requirementsHtml}")
+
+
 def test_skills_primary_controls_keep_touch_friendly_hit_areas() -> None:
     css = SKILLS_CSS.read_text(encoding="utf-8")
 
