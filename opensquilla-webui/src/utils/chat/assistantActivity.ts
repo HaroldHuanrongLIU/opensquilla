@@ -308,7 +308,7 @@ function separatedActivityItems(
   }
 
   return timeline.filter((item, index) => {
-    if (item.type === 'tool-group') return true
+    if (item.type === 'tool-group' || item.type === 'interrupt') return true
     if (index >= lastToolIndex) return false
     const rawText = String(item.rawText || '').trim()
     const html = String(item.html || '').trim()
@@ -400,6 +400,7 @@ function terminalControlAnswerCandidate(
       index -= 1
       continue
     }
+    if (item.type !== 'text') return null
     if (!String(item.rawText || '').trim() && !String(item.html || '').trim()) {
       index -= 1
       continue
@@ -728,7 +729,7 @@ export function projectAssistantActivityTimeline(
   let mergeTarget: AssistantActivityCluster | null = null
 
   for (const item of timeline) {
-    if (item.type === 'text') {
+    if (item.type !== 'tool-group') {
       mergeTarget = null
       continue
     }

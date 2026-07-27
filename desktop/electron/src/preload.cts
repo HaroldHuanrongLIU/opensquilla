@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   saveDesktopPreferences: (payload: unknown) => ipcRenderer.invoke('desktop:preferences:save', payload),
   setNativeTheme: (payload: unknown) => ipcRenderer.invoke('desktop:theme:set', payload),
   openArtifact: (payload: unknown) => ipcRenderer.invoke('desktop:artifact:open', payload),
+  chooseProjectDirectory: () => ipcRenderer.invoke('desktop:workspace:choose-directory'),
   createWorkbenchSurface: (payload: unknown) => (
     ipcRenderer.invoke('desktop:workbench:surface:create', payload)
   ),

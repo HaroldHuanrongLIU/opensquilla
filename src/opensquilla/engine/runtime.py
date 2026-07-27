@@ -2642,6 +2642,10 @@ class TurnRunner:
         self._turn_compaction_attempted_sessions: set[str] = set()
         self._turn_compacted_sessions: set[str] = set()
         self._active_pre_compaction_flush_tasks: dict[str, asyncio.Task] = {}
+        self._pre_compaction_flush_status_tasks: dict[
+            str,
+            set[asyncio.Task[None]],
+        ] = {}
         self._emergency_compaction_overrides: dict[str, _EmergencyCompactionOverride] = {}
         # TurnRunner stage decomposition InputStage instance. Holds no per-turn state;
         # constructed once. Active unconditionally as of.
@@ -2848,7 +2852,9 @@ class TurnRunner:
     ) -> ToolContext:
         attachments_cfg = getattr(self._config, "attachments", None)
         media_root = self._attachment_media_root()
-        session_id = await self._resolve_session_id_for_log(session_key)
+        session_id, session_epoch, workspace_id = (
+            await self._resolve_session_identity_for_log(session_key)
+        )
         if not session_id:
             session_id = session_key.split(":")[-1] or session_key
         return replace(
@@ -2858,6 +2864,10 @@ class TurnRunner:
             artifact_session_id=session_id,
             tool_result_store_dir=str(media_root / "tool-results"),
             tool_result_store_session_id=session_id,
+            session_epoch=session_epoch,
+            workspace_id=workspace_id,
+            sandbox_session_manager=self._session_manager,
+            sandbox_gateway_config=self._config,
             workspace_file_writes=[],
             artifact_max_bytes=getattr(attachments_cfg, "artifact_max_bytes", None),
             artifact_disk_budget_bytes=getattr(
@@ -3251,6 +3261,8 @@ class TurnRunner:
             if is_subagent_run
             else uuid.uuid4().hex
         )
+        if tool_context is not None:
+            tool_context = replace(tool_context, execution_id=turn_id)
         resolved_model = ""
         final_prompt_str = ""
         turn_obj: Any | None = None
@@ -4139,11 +4151,14 @@ class TurnRunner:
                 source["input_provenance_kind"] = provenance_kind
         return source
 
-    async def _resolve_session_id_for_log(self, session_key: str) -> str | None:
-        """Best-effort lookup of the transcript identity for observability."""
+    async def _resolve_session_identity_for_log(
+        self,
+        session_key: str,
+    ) -> tuple[str | None, int | None, str | None]:
+        """Best-effort lookup of the current durable session identity."""
 
         if self._session_manager is None:
-            return None
+            return None, None, None
         try:
             if hasattr(self._session_manager, "get_session"):
                 node = await self._session_manager.get_session(session_key)
@@ -4153,15 +4168,29 @@ class TurnRunner:
                 storage = get_session_storage(self._session_manager)
                 node = await storage.get_session(session_key) if storage is not None else None
         except Exception:
-            return None
+            return None, None, None
         session_id = getattr(node, "session_id", None)
+        session_epoch: int | None = None
         if isinstance(session_id, str) and session_id:
             try:
                 session_epoch = max(0, int(getattr(node, "epoch", 0) or 0))
             except (TypeError, ValueError, OverflowError):
                 session_epoch = 0
             self._usage_session_epoch_by_key[session_key] = session_epoch
-        return session_id if isinstance(session_id, str) and session_id else None
+        else:
+            session_id = None
+        workspace_id = getattr(node, "workspace_id", None)
+        if not isinstance(workspace_id, str) or not workspace_id:
+            workspace_id = None
+        return session_id, session_epoch, workspace_id
+
+    async def _resolve_session_id_for_log(self, session_key: str) -> str | None:
+        """Best-effort lookup of the transcript identity for observability."""
+
+        session_id, _session_epoch, _workspace_id = (
+            await self._resolve_session_identity_for_log(session_key)
+        )
+        return session_id
 
     def _resolve_provider(self) -> tuple[Any | None, Any | None]:
         """Clone the selector and resolve provider (no shared state mutation)."""
@@ -4227,10 +4256,26 @@ class TurnRunner:
             # TurnErrorWriter is deliberately synchronous and may wait for its
             # SQLite busy timeout. Keep that wait off the shared turn loop while
             # preserving its existing best-effort return contract.
-            recorded = await asyncio.to_thread(
-                self._turn_error_writer.record_error,
-                record,
+            operation = asyncio.create_task(
+                asyncio.to_thread(
+                    self._turn_error_writer.record_error,
+                    record,
+                )
             )
+            cancellation: asyncio.CancelledError | None = None
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            if cancellation is not None:
+                # ``to_thread`` cancellation cannot stop the worker. Do not
+                # return control to cleanup until its SQLite transaction has
+                # settled; caller cancellation remains authoritative.
+                with contextlib.suppress(BaseException):
+                    operation.result()
+                raise cancellation
+            recorded = operation.result()
             return error_id if recorded else None
         except Exception as record_exc:  # noqa: BLE001 - must not mask the turn error
             log.warning(
@@ -5123,6 +5168,25 @@ class TurnRunner:
                             sandbox_line,
                         ]
                     )
+                    if normalized_run_mode is RunMode.FULL:
+                        lines.extend(
+                            [
+                                (
+                                    "Host filesystem: all paths writable by the OS account "
+                                    "are directly writable, including paths outside the "
+                                    "workspace."
+                                ),
+                                (
+                                    "Writes outside the workspace do not require OpenSquilla "
+                                    "sandbox approval."
+                                ),
+                                (
+                                    "Do not use sandbox_permissions=require_escalated in Full "
+                                    "Host Access; only normal OS permissions such as SIP or TCC "
+                                    "can still deny access."
+                                ),
+                            ]
+                        )
                 extra["Execution Context"] = "\n".join(lines)
         if ctx.caller_kind is CallerKind.SUBAGENT:
             extra["Subagent Task Protocol"] = _SUBAGENT_TASK_PROTOCOL
@@ -5297,6 +5361,7 @@ class TurnRunner:
         prompt_metadata: dict[str, Any] | None = None,
         bootstrap_context_mode: str | None = None,
         fresh_user_session: bool = False,
+        workspace_dir: str | None = None,
     ) -> str | tuple[str, str]:
         """Assemble identity system prompt via Jinja2 template.
 
@@ -5473,7 +5538,7 @@ class TurnRunner:
         runtime_info = {
             "os": os_name,
             "shell": os.environ.get("SHELL", ""),
-            "workspace_dir": str(bootstrap_workspace_dir),
+            "workspace_dir": str(workspace_dir or bootstrap_workspace_dir),
         }
         base_prompt = assemble_system_prompt(
             agent_profile,
@@ -7658,7 +7723,7 @@ class TurnRunner:
         mark_status = getattr(self._session_manager, "mark_compaction_flush_receipt_status", None)
         if not callable(mark_status):
             return
-        asyncio.create_task(
+        task = asyncio.create_task(
             mark_compaction_flush_status_with_retry(
                 mark_status,
                 session_key=session_key,
@@ -7670,6 +7735,90 @@ class TurnRunner:
                 skipped_event=f"{event_prefix}.flush_status_update_skipped",
             )
         )
+        tasks = self._pre_compaction_flush_status_tasks.setdefault(
+            session_key,
+            set(),
+        )
+        tasks.add(task)
+
+        def _discard(completed: asyncio.Task[None]) -> None:
+            current = self._pre_compaction_flush_status_tasks.get(session_key)
+            if current is None:
+                return
+            current.discard(completed)
+            if not current:
+                self._pre_compaction_flush_status_tasks.pop(session_key, None)
+
+        task.add_done_callback(_discard)
+
+    async def drain_session_background_writes(
+        self,
+        session_keys: Sequence[str],
+    ) -> None:
+        """Wait for detached pre-compaction writes for exactly these sessions."""
+
+        keys = tuple(
+            sorted(
+                {
+                    canonicalize_session_key(session_key)
+                    for session_key in session_keys
+                }
+            )
+        )
+        if not keys:
+            return
+
+        def _snapshot_pending() -> set[asyncio.Task[Any]]:
+            pending = {
+                task
+                for session_key in keys
+                if (
+                    task := self._active_pre_compaction_flush_tasks.get(
+                        session_key
+                    )
+                )
+                is not None
+                and not task.done()
+            }
+            pending.update(
+                task
+                for session_key in keys
+                for task in self._pre_compaction_flush_status_tasks.get(
+                    session_key,
+                    (),
+                )
+                if not task.done()
+            )
+            return pending
+
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            tasks = _snapshot_pending()
+            if not tasks:
+                # Completion callbacks can schedule the status-update tail.
+                # One loop turn plus a complete second snapshot closes both a
+                # new-flush admission and the flush -> status hand-off.
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                tasks = _snapshot_pending()
+                if not tasks:
+                    if cancellation is not None:
+                        raise cancellation
+                    return
+
+            settling = asyncio.gather(*tasks, return_exceptions=True)
+            while not settling.done():
+                try:
+                    await asyncio.shield(settling)
+                except asyncio.CancelledError as exc:
+                    # Cancelling gather would cancel a flush wrapper while its
+                    # underlying ``to_thread`` writer keeps running. Keep the
+                    # exact tasks alive and settle every retry/status tail
+                    # before cancellation escapes this drain primitive.
+                    cancellation = cancellation or exc
+            settling.result()
 
     def _log_pre_compaction_flush_receipt(
         self,

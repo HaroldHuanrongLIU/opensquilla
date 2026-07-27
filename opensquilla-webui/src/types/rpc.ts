@@ -57,6 +57,8 @@ export interface RawSessionItem {
   subtitle?: string
   groupLabel?: string
   workspace?: string
+  workspaceId?: string
+  workspace_id?: string
   workspaceLabel?: string
   workspaceDisplayPath?: string
   updatedAt?: number | string
@@ -115,6 +117,42 @@ export type RawSessionListEntry = RawSessionItem | string
 export interface SessionsListResponse {
   sessions?: RawSessionListEntry[]
   keys?: RawSessionListEntry[]
+}
+
+export interface ProjectWorkspaceItem {
+  id: string
+  name: string
+  path: string
+  taskCount: number
+  pinned: boolean
+  available: boolean
+  availabilityReason?: string
+}
+
+export interface ProjectWorkspacesResponse {
+  workspaces?: ProjectWorkspaceItem[]
+}
+
+export interface SandboxPathEntry {
+  name: string
+  path: string
+  kind: 'directory' | 'file'
+  selectable: boolean
+  hidden?: boolean
+}
+
+export interface SandboxPathListResponse {
+  currentPath: string
+  path: string
+  parentPath: string | null
+  systemPickerAvailable: boolean
+  entries: SandboxPathEntry[]
+}
+
+export interface ProjectWorkspaceHistoryDeleteResponse {
+  workspaceId?: string
+  deletedTaskCount?: number
+  deletedSessionKeys?: string[]
 }
 
 /** One title/subject match from `sessions.search`. */
@@ -278,12 +316,45 @@ export interface SessionMessagesSubscribeParams {
   [key: string]: unknown
 }
 
+export interface SessionLiveSnapshotEvent {
+  event: string
+  payload: SessionEventPayload
+}
+
+export interface SessionMessagesSnapshotResponse {
+  key: string
+  task_id?: string | null
+  current_stream_seq?: number
+  events?: SessionLiveSnapshotEvent[]
+}
+
+export interface SessionProjectWorkspaceSnapshot {
+  id: string
+  name: string
+  path: string
+  available: boolean
+  removed: boolean
+  availabilityReason?: string
+}
+
 export interface SessionMessagesSubscribeResponse extends SessionEventPayload {
   subscribed?: boolean
   replay_complete?: boolean
   current_stream_seq?: number
   active_task_group_ids?: string[]
   activeTaskGroupIds?: string[]
+  run_mode_lock?: {
+    locked?: boolean
+    runMode?: 'standard' | 'trusted' | 'full'
+    source?: string
+  }
+  runModeLock?: {
+    locked?: boolean
+    runMode?: 'standard' | 'trusted' | 'full'
+    source?: string
+  }
+  workspaceId?: string
+  projectWorkspace?: SessionProjectWorkspaceSnapshot | null
   collaboration?: import('./plans').CollaborationSnapshot
   currentPlan?: import('./plans').PlanRevisionSnapshot | null
   current_plan?: unknown
@@ -310,6 +381,7 @@ export interface ChatSendParams {
   clientMessageId?: string
   _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
+  workspaceId?: string
   collaborationMode?: import('./plans').CollaborationMode
   forkBeforeMessageId?: string
   displayText?: string

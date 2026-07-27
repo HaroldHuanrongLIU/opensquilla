@@ -19,8 +19,8 @@ const MAX_RESOLVED_OUTCOMES = 4
 // 2s interval as a recovery fallback (resolve-from-another-client self-healing).
 const APPROVAL_POLL_INTERVAL_MS = 2000
 
-// Seconds an Extend click pushes the approval deadline out by (mirrors the
-// backend default re-arm window).
+// Legacy compatibility for explicitly timed approvals from older Gateways.
+// Current human approval cards have no deadline and expose no Extend control.
 const APPROVAL_EXTEND_SECONDS = 300
 
 /** Format a whole-second remaining count as a compact `m:ss` / `s` countdown.
@@ -51,7 +51,7 @@ export interface ChatApprovalItem {
   warning: string
   agent: string
   sessionKey: string
-  deadline: number          // epoch seconds the request expires; 0 when unknown
+  deadline: number          // legacy/internal epoch deadline; 0 for human review
 }
 
 export type ChatApprovalResolution = 'approved' | 'denied' | 'expired' | 'unavailable'
@@ -437,9 +437,8 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
   // list (which the hydration-only path no longer populates).
   const interruptNamespaces = new Map<string, string>()
 
-  // Last-seen approval data per id, so extendInterrupt can re-append a frame
-  // carrying the bumped deadline (the fold merges it onto the existing part) and
-  // the countdown re-arms live without a snapshot round-trip.
+  // Last-seen approval data per id. Deadline mutation remains compatible with
+  // explicitly timed approvals from older Gateways, but current human cards use 0.
   const interruptApprovals = new Map<string, InterruptApprovalData>()
 
   // The clarify frame is keyed by a runId|step composite (a clarify has no
@@ -549,6 +548,24 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     approvalBusyIds.value = next
   }
 
+  function applyApprovalDeadline(id: string, value: unknown) {
+    const deadline = Number(value)
+    if (!id || !Number.isFinite(deadline) || deadline <= 0) return
+    if (interruptState.value.get(id)?.resolution) return
+    const known = interruptApprovals.get(id)
+    if (known) appendApprovalInterrupt({ ...known, deadline })
+    approvalEntries.value = approvalEntries.value.map(entry => {
+      if (entry.approval.id !== id || entry.resolution !== null) return entry
+      return {
+        ...entry,
+        approval: {
+          ...entry.approval,
+          deadline,
+        },
+      }
+    })
+  }
+
   function statusResolution(payload: ApprovalStatusPayload): ChatApprovalResolution | null {
     if (payload.found === false) return 'unavailable'
     if (payload.resolved !== true) return null
@@ -582,10 +599,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     if (entry && entry.resolution === null && resolution) entry.resolution = resolution
     const keepBusy = !resolution && payload.resolutionInProgress === true
     setApprovalBusy(id, keepBusy)
-    if (payload.deadline && interruptApprovals.has(id)) {
-      const known = interruptApprovals.get(id)!
-      appendApprovalInterrupt({ ...known, deadline: Number(payload.deadline) || known.deadline })
-    }
+    applyApprovalDeadline(id, payload.deadline)
   }
 
   async function fetchApprovalStatus(
@@ -685,12 +699,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     }
   }
 
-  /**
-   * Push an inline approval's deadline out (WCAG 2.2.1 extend mechanism). Calls
-   * the `<namespace>.approval.extend` RPC and re-appends the frame with the
-   * bumped deadline so the countdown re-arms live (the fold merges by id). A
-   * busy or already-resolved request is a no-op.
-   */
+  /** Compatibility path for explicitly timed approvals from older Gateways. */
   async function extendInterrupt(id: string, seconds = APPROVAL_EXTEND_SECONDS) {
     const current = interruptState.value.get(id)
     if (approvalBusyIds.value.has(id) || current?.resolution) return
@@ -702,10 +711,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         { id, seconds },
       )
       const deadline = Number(result?.deadline) || 0
-      const known = interruptApprovals.get(id)
-      if (deadline > 0 && known) {
-        appendApprovalInterrupt({ ...known, deadline })
-      }
+      applyApprovalDeadline(id, deadline)
       setInterruptState(id, { busy: false })
     } catch (err) {
       setInterruptState(id, {
@@ -730,8 +736,8 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
   // args/warning rather than duplicating the part.
   function appendApprovalInterrupt(data: InterruptApprovalData) {
     interruptNamespaces.set(data.approvalId, data.namespace)
-    // A lean push (or backfill) may omit the deadline (0); keep the latest
-    // known non-zero deadline so a countdown never regresses to "unknown".
+    // A lean push (or backfill) may omit the legacy deadline (0); keep any
+    // explicit deadline already received for compatibility.
     const prior = interruptApprovals.get(data.approvalId)
     const merged: InterruptApprovalData = {
       ...data,
@@ -815,6 +821,17 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     }
   }
 
+  function handleApprovalUpdated(payload: ApprovalPushPayload) {
+    const id = String(payload.approval_id || payload.approvalId || '').trim()
+    if (!id || interruptState.value.get(id)?.resolution) return
+    const data = pushPayloadToInterruptData(payload)
+    if (data) {
+      if (sessionKey.value && data.sessionKey !== sessionKey.value) return
+      appendApprovalInterrupt(data)
+    }
+    applyApprovalDeadline(id, payload.deadline)
+  }
+
   /**
    * `*.approval.resolved` push: stamp `interruptState` from `payload.approved` so
    * a decision landing elsewhere (another client) collapses
@@ -849,8 +866,10 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     const unsubs = [
       rpc.on('session.event.tool_result', handleToolResult as RpcEventHandler),
       rpc.on('exec.approval.requested', handleApprovalRequested as RpcEventHandler),
+      rpc.on('exec.approval.updated', handleApprovalUpdated as RpcEventHandler),
       rpc.on('exec.approval.resolved', handleApprovalResolved as RpcEventHandler),
       rpc.on('plugin.approval.requested', handleApprovalRequested as RpcEventHandler),
+      rpc.on('plugin.approval.updated', handleApprovalUpdated as RpcEventHandler),
       rpc.on('plugin.approval.resolved', handleApprovalResolved as RpcEventHandler),
       rpc.on('_state', handleConnectionState as RpcEventHandler),
     ]

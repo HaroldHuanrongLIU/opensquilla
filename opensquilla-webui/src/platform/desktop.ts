@@ -274,6 +274,11 @@ export function createDesktopPlatform(): Platform {
     },
     files: {
       openArtifact: (payload) => requireDesktopApi().openArtifact(payload),
+      async chooseProjectDirectory() {
+        const api = requireDesktopApi()
+        if (typeof api.chooseProjectDirectory !== 'function') return null
+        return api.chooseProjectDirectory()
+      },
     },
     workbench: {
       ...(nativeWorkbench ? { native: nativeWorkbench } : {}),

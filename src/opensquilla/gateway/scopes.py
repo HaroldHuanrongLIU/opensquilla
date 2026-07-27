@@ -100,6 +100,8 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.bootstrap": READ_SCOPE,
     "sessions.subscribe": READ_SCOPE,
     "sessions.unsubscribe": READ_SCOPE,
+    "workspaces.list": READ_SCOPE,  # OpenSquilla-only; owner-guarded local paths.
+    "sessions.messages.snapshot": READ_SCOPE,
     "sessions.messages.subscribe": READ_SCOPE,
     "sessions.messages.unsubscribe": READ_SCOPE,
     "gateway.identity.get": READ_SCOPE,
@@ -128,6 +130,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.setup.status": READ_SCOPE,  # OpenSquilla-only; setup readiness.
     "sandbox.explain": READ_SCOPE,  # OpenSquilla-only; deterministic sandbox explanation.
     "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
+    "sandbox.run_mode.preference.get": READ_SCOPE,  # OpenSquilla-only; global picker default.
     "sandbox.path.list": READ_SCOPE,  # OpenSquilla-only; inline path browser listing.
     "channels.status": READ_SCOPE,
     "commands.list_for_surface": READ_SCOPE,  # OpenSquilla-only.
@@ -187,6 +190,11 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.contextCompact": WRITE_SCOPE,
     "sessions.compact": WRITE_SCOPE,
     "sessions.truncate": WRITE_SCOPE,
+    "workspaces.open": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded project lifecycle.
+    "workspaces.update": WRITE_SCOPE,
+    "workspaces.pin": WRITE_SCOPE,
+    "workspaces.remove": WRITE_SCOPE,
+    "workspaces.history.delete": WRITE_SCOPE,
     "models.routing.set": WRITE_SCOPE,
     # Deleting a session is a routine, per-user write op like reset/truncate above,
     # so it is write-scoped rather than admin-gated. Admin-gating it broke deletion
@@ -205,7 +213,9 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.setup.ensure": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded setup.
     "sandbox.resume": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded denial-pause clear.
     "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.run_mode.preference.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded default.
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
+    "sandbox.path.create-directory": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded path creation.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
     # OpenSquilla-only; manual ``/meta`` command launch stamp.

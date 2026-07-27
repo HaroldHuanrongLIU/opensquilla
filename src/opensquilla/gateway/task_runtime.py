@@ -103,6 +103,27 @@ def _task_identity_payload(
     return payload
 
 
+def _accepted_run_mode_payload(override: Any) -> dict[str, str] | None:
+    from opensquilla.gateway.project_workspace_runtime import AcceptedRunModeOverride
+
+    if not isinstance(override, AcceptedRunModeOverride):
+        return None
+    payload = {"run_mode": override.run_mode.value}
+    if isinstance(override.run_mode_source, str) and override.run_mode_source:
+        payload["run_mode_source"] = override.run_mode_source
+    return payload
+
+
+def _reusable_route_envelope(envelope: RouteEnvelope) -> RouteEnvelope:
+    """Detach one route for reuse without execution-scoped freshness."""
+
+    return replace(
+        envelope,
+        metadata=dict(envelope.metadata),
+        sandbox_run_context_fresh=False,
+    )
+
+
 @dataclass(frozen=True)
 class TaskHandle:
     task_id: str
@@ -176,6 +197,10 @@ class TaskRun:
     # This is deliberately off RouteEnvelope.metadata so cached envelopes can
     # never leak one turn's strategy into a later proactive send.
     accepted_config: Any | None = None
+    # Ingress-vetted per-turn run-mode selection. This remains off mutable
+    # RouteEnvelope.metadata so execution cannot manufacture authority from an
+    # arbitrary or cached envelope.
+    accepted_run_mode_override: Any | None = None
     provider_request_correlation: ProviderRequestCorrelation | None = field(
         default=None,
         repr=False,
@@ -274,6 +299,7 @@ class _RuntimeTask:
         repr=False,
     )
     accepted_config_captured: bool = False
+    accepted_run_mode_override: Any | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     terminal_emitted: bool = False
     cancel_requested: bool = False
@@ -518,12 +544,19 @@ class TaskRuntime:
         # status updates behind external I/O.
         self._session_execution_locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[str, _RuntimeTask] = {}
+        # Driver tasks remain tracked until their whole coroutine returns.
+        # ``_mark_terminal`` intentionally sets ``task.done`` before the
+        # subagent notification tail, so waiters that must fence every possible
+        # follow-up write cannot rely on the durable-task event alone.
+        self._driver_tasks_by_session: dict[str, set[asyncio.Task[None]]] = {}
+        self._driver_state_changed = asyncio.Event()
         self._terminal_fallback_records: dict[str, AgentTaskRecord] = {}
         self._pending_by_session: dict[str, list[_RuntimeTask]] = {}
         self._running_by_session: dict[str, _RuntimeTask] = {}
         self._reservations_by_session: dict[str, list[TaskReservation]] = {}
         self._reserved_overflow_victims: set[str] = set()
         self._last_envelope_by_session: dict[str, RouteEnvelope] = {}
+        self._last_envelope_task_id_by_session: dict[str, str] = {}
         self._state_lock = asyncio.Lock()
         # Admission is per session so durable RPC ingress crosses reserve,
         # commit, and activation in order. This prevents resets from overtaking
@@ -578,6 +611,7 @@ class TaskRuntime:
         message_count: int = 1,
         fresh_user_session: bool = False,
         stream_event_sink: TaskStreamEventSink | None = None,
+        accepted_run_mode_override: Any | None = None,
         *,
         task_id: str | None = None,
         provider_request_correlation: ProviderRequestCorrelation | None = None,
@@ -593,8 +627,8 @@ class TaskRuntime:
         if not self.supports_queue_mode(queue_mode):
             valid = ", ".join(sorted(self.supported_queue_modes))
             raise ValueError(f"mode must be one of {{{valid}}}")
-        if queue_mode == "collect":
-            async with self.collect_admission(envelope.session_key):
+        async with self.collect_admission(envelope.session_key):
+            if queue_mode == "collect":
                 collected = await self._try_collect(
                     envelope=envelope,
                     message=message,
@@ -605,47 +639,30 @@ class TaskRuntime:
                     persisted_user_message_id=persisted_user_message_id,
                     persisted_user_message_ids=persisted_user_message_ids,
                     message_count=message_count,
+                    accepted_run_mode_override=accepted_run_mode_override,
                 )
                 if collected is not None:
                     return collected
-                return await self._reserve_persist_and_activate(
-                    envelope,
-                    message,
-                    attachments=attachments,
-                    mode=queue_mode,
-                    run_kind=run_kind,
-                    no_memory_capture=no_memory_capture,
-                    ingress_pipeline_steps=ingress_pipeline_steps,
-                    semantic_message=semantic_message,
-                    persisted_user_message_id=persisted_user_message_id,
-                    persisted_user_message_ids=persisted_user_message_ids,
-                    message_count=message_count,
-                    fresh_user_session=fresh_user_session,
-                    stream_event_sink=stream_event_sink,
-                    task_id=task_id,
-                    provider_request_correlation=provider_request_correlation,
-                    update_envelope_cache=update_envelope_cache,
-                    overflow_policy=overflow_policy,
-                )
-        return await self._reserve_persist_and_activate(
-            envelope,
-            message,
-            attachments=attachments,
-            mode=queue_mode,
-            run_kind=run_kind,
-            no_memory_capture=no_memory_capture,
-            ingress_pipeline_steps=ingress_pipeline_steps,
-            semantic_message=semantic_message,
-            persisted_user_message_id=persisted_user_message_id,
-            persisted_user_message_ids=persisted_user_message_ids,
-            message_count=message_count,
-            fresh_user_session=fresh_user_session,
-            stream_event_sink=stream_event_sink,
-            task_id=task_id,
-            provider_request_correlation=provider_request_correlation,
-            update_envelope_cache=update_envelope_cache,
-            overflow_policy=overflow_policy,
-        )
+            return await self._reserve_persist_and_activate(
+                envelope,
+                message,
+                attachments=attachments,
+                mode=queue_mode,
+                run_kind=run_kind,
+                no_memory_capture=no_memory_capture,
+                ingress_pipeline_steps=ingress_pipeline_steps,
+                semantic_message=semantic_message,
+                persisted_user_message_id=persisted_user_message_id,
+                persisted_user_message_ids=persisted_user_message_ids,
+                message_count=message_count,
+                fresh_user_session=fresh_user_session,
+                stream_event_sink=stream_event_sink,
+                accepted_run_mode_override=accepted_run_mode_override,
+                task_id=task_id,
+                provider_request_correlation=provider_request_correlation,
+                update_envelope_cache=update_envelope_cache,
+                overflow_policy=overflow_policy,
+            )
 
     @contextlib.asynccontextmanager
     async def collect_admission(self, session_key: str) -> AsyncIterator[None]:
@@ -663,6 +680,183 @@ class TaskRuntime:
         async with lock:
             yield
 
+    @contextlib.asynccontextmanager
+    async def quiesce_sessions(
+        self,
+        session_keys: Iterable[str],
+    ) -> AsyncIterator[None]:
+        """Fence runtime work for a stable, ordered set of sessions.
+
+        Cancellation first drains the real ``_execute`` driver coroutines,
+        including their post-terminal notification/promotion tails. Execution
+        and admission locks are then acquired in stable key order. A final
+        state check closes commit-before-activate and reservation races; if
+        anything appeared while the drivers were draining, every lock is
+        released and the sequence retries.
+        """
+
+        keys = tuple(
+            sorted(
+                {
+                    canonicalize_session_key(session_key)
+                    for session_key in session_keys
+                }
+            )
+        )
+        if not keys:
+            yield
+            return
+
+        key_set = frozenset(keys)
+        while True:
+            await self._cancel_and_drain_session_drivers(keys, key_set)
+
+            async with contextlib.AsyncExitStack() as fences:
+                for session_key in keys:
+                    execution_lock = self._session_execution_locks.setdefault(
+                        session_key,
+                        asyncio.Lock(),
+                    )
+                    await self._acquire_execution_lock_while_quiescing(
+                        execution_lock,
+                        keys,
+                        key_set,
+                    )
+                    fences.callback(execution_lock.release)
+                for session_key in keys:
+                    await fences.enter_async_context(
+                        self.collect_admission(session_key)
+                    )
+
+                async with self._state_lock:
+                    active = any(
+                        self._driver_tasks_by_session.get(session_key)
+                        for session_key in keys
+                    )
+                    if not active:
+                        active = any(
+                            task.envelope.session_key in key_set
+                            for task in self._tasks.values()
+                        )
+                    if not active:
+                        active = any(
+                            self._reservations_by_session.get(session_key)
+                            for session_key in keys
+                        )
+                if active:
+                    continue
+
+                yield
+                return
+
+    async def _acquire_execution_lock_while_quiescing(
+        self,
+        execution_lock: asyncio.Lock,
+        keys: Sequence[str],
+        key_set: frozenset[str],
+    ) -> None:
+        """Acquire one execution fence without waiting behind an uncancelled driver."""
+
+        acquiring = asyncio.create_task(execution_lock.acquire())
+        changed: asyncio.Task[bool] | None = None
+        try:
+            while not acquiring.done():
+                # Capture the current generation's broadcast event before the
+                # state snapshot. A mutation swaps in a fresh event and sets
+                # this one, so concurrent quiescers cannot erase each other's
+                # wake-up by clearing shared state.
+                driver_state_changed = self._driver_state_changed
+                await self._cancel_and_drain_session_drivers(keys, key_set)
+                if acquiring.done():
+                    break
+                if driver_state_changed.is_set():
+                    continue
+
+                changed = asyncio.create_task(driver_state_changed.wait())
+                try:
+                    await asyncio.wait(
+                        {acquiring, changed},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if not changed.done():
+                        changed.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await changed
+                    changed = None
+            await acquiring
+        except BaseException:
+            if changed is not None and not changed.done():
+                changed.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await changed
+            if acquiring.done():
+                try:
+                    acquiring.result()
+                except BaseException:
+                    pass
+                else:
+                    execution_lock.release()
+            else:
+                acquiring.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await acquiring
+            raise
+
+    def _signal_driver_state_changed(self) -> None:
+        """Broadcast one driver-state generation change."""
+
+        changed = self._driver_state_changed
+        self._driver_state_changed = asyncio.Event()
+        changed.set()
+
+    async def _cancel_and_drain_session_drivers(
+        self,
+        keys: Sequence[str],
+        key_set: frozenset[str],
+    ) -> None:
+        async with self._state_lock:
+            runtime_tasks = [
+                task
+                for task in self._tasks.values()
+                if task.envelope.session_key in key_set
+                and task.status not in TERMINAL_STATUSES
+            ]
+            drivers = {
+                driver
+                for session_key in keys
+                for driver in self._driver_tasks_by_session.get(
+                    session_key,
+                    (),
+                )
+                if not driver.done()
+            }
+
+        if runtime_tasks:
+            await self._cancel_runtime_tasks(
+                runtime_tasks,
+                source="workspace_history_delete",
+                reason="project_history_deleted",
+            )
+        if drivers:
+            await asyncio.gather(*drivers, return_exceptions=True)
+            for driver in drivers:
+                for session_key in keys:
+                    self._discard_session_driver(session_key, driver)
+
+    def _discard_session_driver(
+        self,
+        session_key: str,
+        driver: asyncio.Task[None],
+    ) -> None:
+        drivers = self._driver_tasks_by_session.get(session_key)
+        if drivers is None:
+            return
+        drivers.discard(driver)
+        if not drivers:
+            self._driver_tasks_by_session.pop(session_key, None)
+        self._signal_driver_state_changed()
+
     async def _reserve_persist_and_activate(
         self,
         envelope: RouteEnvelope,
@@ -678,6 +872,7 @@ class TaskRuntime:
         message_count: int = 1,
         fresh_user_session: bool = False,
         stream_event_sink: TaskStreamEventSink | None = None,
+        accepted_run_mode_override: Any | None = None,
         *,
         task_id: str | None = None,
         provider_request_correlation: ProviderRequestCorrelation | None = None,
@@ -700,6 +895,7 @@ class TaskRuntime:
             message_count=message_count,
             fresh_user_session=fresh_user_session,
             stream_event_sink=stream_event_sink,
+            accepted_run_mode_override=accepted_run_mode_override,
             task_id=task_id,
             provider_request_correlation=provider_request_correlation,
             update_envelope_cache=update_envelope_cache,
@@ -766,6 +962,7 @@ class TaskRuntime:
         message_count: int = 1,
         fresh_user_session: bool = False,
         stream_event_sink: TaskStreamEventSink | None = None,
+        accepted_run_mode_override: Any | None = None,
         *,
         task_id: str | None = None,
         provider_request_correlation: ProviderRequestCorrelation | None = None,
@@ -828,6 +1025,11 @@ class TaskRuntime:
                 user_message_id=persisted_user_message_id,
             ),
         }
+        accepted_run_mode_payload = _accepted_run_mode_payload(
+            accepted_run_mode_override,
+        )
+        if accepted_run_mode_payload is not None:
+            record.details["accepted_run_mode"] = accepted_run_mode_payload
         runtime_task = _RuntimeTask(
             task_id=record.task_id,
             envelope=envelope,
@@ -843,6 +1045,7 @@ class TaskRuntime:
             message_count=message_count,
             fresh_user_session=fresh_user_session,
             stream_event_sink=stream_event_sink,
+            accepted_run_mode_override=accepted_run_mode_override,
             provider_request_correlation=provider_request_correlation,
             primary_input_pending=bool(
                 (persisted_user_message_id or envelope.metadata.get("client_message_id"))
@@ -1063,8 +1266,21 @@ class TaskRuntime:
                 active.add(session_key)
                 rr.append(session_key)
             if reservation.update_envelope_cache:
-                self._last_envelope_by_session[session_key] = runtime_task.envelope
-            runtime_task.asyncio_task = asyncio.create_task(self._execute(runtime_task))
+                self._last_envelope_by_session[session_key] = (
+                    _reusable_route_envelope(runtime_task.envelope)
+                )
+                self._last_envelope_task_id_by_session[session_key] = (
+                    runtime_task.task_id
+                )
+            driver = asyncio.create_task(self._execute(runtime_task))
+            runtime_task.asyncio_task = driver
+            self._driver_tasks_by_session.setdefault(session_key, set()).add(driver)
+            self._signal_driver_state_changed()
+
+            def _discard_driver(completed: asyncio.Task[None]) -> None:
+                self._discard_session_driver(session_key, completed)
+
+            driver.add_done_callback(_discard_driver)
             reservation.activated = True
             queue_depth = len(self._pending_by_session.get(session_key, []))
             queue_position = queue_depth
@@ -1326,6 +1542,7 @@ class TaskRuntime:
                 run_kind="runtime_send",
                 stream_event_sink=stream_event_sink,
             )
+        cached = _reusable_route_envelope(cached)
         if provenance is None:
             return await self.enqueue(
                 cached,
@@ -1355,8 +1572,9 @@ class TaskRuntime:
         message: str,
         provenance: dict[str, Any] | None = None,
         stream_event_sink: TaskStreamEventSink | None = None,
+        accepted_run_mode_override: Any | None = None,
     ) -> TaskHandle:
-        """Send a follow-up while preserving an authoritative routing context."""
+        """Send a follow-up while preserving authoritative routing and mode context."""
         if not isinstance(envelope, RouteEnvelope):
             raise TypeError("envelope must be a RouteEnvelope")
         canonical_session_key = canonicalize_session_key(envelope.session_key)
@@ -1367,10 +1585,11 @@ class TaskRuntime:
             input_provenance=provenance or envelope.input_provenance,
         )
         return await self.enqueue(
-            routed,
+            _reusable_route_envelope(routed),
             message,
             mode="followup",
             stream_event_sink=stream_event_sink,
+            accepted_run_mode_override=accepted_run_mode_override,
             update_envelope_cache=False,
         )
 
@@ -1565,6 +1784,7 @@ class TaskRuntime:
         persisted_user_message_id: str | None = None,
         persisted_user_message_ids: builtins.list[str] | tuple[str, ...] | None = None,
         message_count: int = 1,
+        accepted_run_mode_override: Any | None = None,
     ) -> TaskHandle | None:
         async def persist(
             handle: TaskHandle,
@@ -1631,6 +1851,7 @@ class TaskRuntime:
                 persisted_user_message_id=persisted_user_message_id,
                 persisted_user_message_ids=persisted_user_message_ids,
                 message_count=message_count,
+                accepted_run_mode_override=accepted_run_mode_override,
                 persist=persist,
             )
         except _CollectIdentityRebindError:
@@ -1649,6 +1870,7 @@ class TaskRuntime:
         persisted_user_message_id: str | None = None,
         persisted_user_message_ids: builtins.list[str] | tuple[str, ...] | None = None,
         message_count: int = 1,
+        accepted_run_mode_override: Any | None = None,
         persist: Callable[
             [TaskHandle, dict[str, Any]], Awaitable[_CollectResult]
         ],
@@ -1674,6 +1896,7 @@ class TaskRuntime:
                 persisted_user_message_id=persisted_user_message_id,
                 persisted_user_message_ids=persisted_user_message_ids,
                 message_count=message_count,
+                accepted_run_mode_override=accepted_run_mode_override,
                 persist=persist,
             )
         )
@@ -1697,6 +1920,7 @@ class TaskRuntime:
         persisted_user_message_id: str | None,
         persisted_user_message_ids: builtins.list[str] | tuple[str, ...] | None,
         message_count: int,
+        accepted_run_mode_override: Any | None,
         persist: Callable[
             [TaskHandle, dict[str, Any]], Awaitable[_CollectResult]
         ],
@@ -1731,6 +1955,11 @@ class TaskRuntime:
                     candidate not in pending
                     or candidate.queue_mode != "collect"
                     or candidate.status != AgentTaskStatus.QUEUED
+                ):
+                    return None
+                if (
+                    candidate.accepted_run_mode_override
+                    != accepted_run_mode_override
                 ):
                     return None
                 collected_no_memory_capture = candidate.no_memory_capture
@@ -1937,9 +2166,8 @@ class TaskRuntime:
                         stream_event_sink=task.stream_event_sink,
                         pending_input_provider=task.pending_input_provider,
                         accepted_config=task.accepted_config,
-                        provider_request_correlation=(
-                            task.provider_request_correlation
-                        ),
+                        accepted_run_mode_override=task.accepted_run_mode_override,
+                        provider_request_correlation=task.provider_request_correlation,
                         assistant_message_sink=(
                             task.capture_terminal_assistant_message
                             if task.run_kind == "channel_turn"
@@ -2447,7 +2675,9 @@ class TaskRuntime:
                 "turn_context_revision": 2,
             }
         )
-        envelope = replace(completed_task.envelope, metadata=metadata)
+        envelope = _reusable_route_envelope(
+            replace(completed_task.envelope, metadata=metadata)
+        )
         message = "\n\n".join(item.text for item in items if item.text.strip())
         semantic_parts = [
             item.semantic_message or item.text for item in items if item.text.strip()
@@ -2924,8 +3154,17 @@ class TaskRuntime:
             self._remove_pending(task)
             if self._running_by_session.get(task.envelope.session_key) is task:
                 self._running_by_session.pop(task.envelope.session_key, None)
-            if self._last_envelope_by_session.get(task.envelope.session_key) is task.envelope:
+            if (
+                self._last_envelope_task_id_by_session.get(
+                    task.envelope.session_key
+                )
+                == task.task_id
+            ):
                 self._last_envelope_by_session.pop(task.envelope.session_key, None)
+                self._last_envelope_task_id_by_session.pop(
+                    task.envelope.session_key,
+                    None,
+                )
             # Keep the short write lock stable for this session. Popping it can
             # split callers across old/new lock objects while callbacks or
             # late lifecycle events still reference the old one. The dict grows
@@ -2955,6 +3194,22 @@ class TaskRuntime:
                 task,
                 status=status,
                 terminal_reason=terminal_reason,
+            )
+        # The per-session execution lock makes this task the only possible live
+        # continuation for approvals owned by its session. At terminal state,
+        # any remaining request is orphaned and must fail closed.
+        try:
+            from opensquilla.application.approval_queue import get_approval_queue
+
+            get_approval_queue().expire_pending_for_session(
+                task.envelope.session_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - terminalization must continue.
+            log.warning(
+                "task_runtime.approval_cleanup_failed",
+                task_id=task.task_id,
+                session_key=task.envelope.session_key,
+                error=str(exc),
             )
         for collected_input in collected_terminal_inputs:
             await self._record_collected_primary_input_disposition(

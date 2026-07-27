@@ -9883,6 +9883,15 @@ ipcMain.handle('desktop:preferences:save', async (event, payload: DesktopPrefere
   return await saveDesktopPreferences(payload)
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
+ipcMain.handle('desktop:workspace:choose-directory', async (event) => {
+  if (!trustedControlUiIpc(event)) return null
+  const choice = await dialog.showOpenDialog(currentMainWindow()!, {
+    title: 'Choose a project',
+    properties: ['openDirectory'],
+  })
+  if (choice.canceled || choice.filePaths.length !== 1) return null
+  return { path: resolve(choice.filePaths[0]!) }
+})
 ipcMain.handle('desktop:workbench:surface:create', async (event, payload: unknown) => {
   if (!trustedControlUiIpc(event)) throw new Error('Untrusted native Workbench request.')
   try {

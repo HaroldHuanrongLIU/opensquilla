@@ -27,6 +27,7 @@ from opensquilla.session.models import (
     PlanRevisionRecord,
     PlanRunRecord,
     PlanRunStatus,
+    ProjectWorkspace,
     SessionContextState,
     SessionNode,
     SessionStatus,
@@ -70,6 +71,7 @@ from opensquilla.usage_reasons import normalize_usage_unknown_reason
 
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
+    from opensquilla.project_workspaces import ProjectWorkspaceGuard
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +117,10 @@ class TaskCollectionUnavailableError(RuntimeError):
     """Raised when a queued task stopped being collectable before acceptance."""
 
 
+class ProjectSessionSnapshotMismatchError(RuntimeError):
+    """Raised when a locked project-session snapshot changed before deletion."""
+
+
 @dataclass(frozen=True)
 class ResetArchiveSnapshot:
     """Pre-reset session state captured under the acceptance write transaction."""
@@ -133,6 +139,80 @@ class TurnAcceptanceResult:
     fresh_user_session: bool
     task_status: AgentTaskStatus | None = None
     reset_archive_snapshot: ResetArchiveSnapshot | None = None
+
+
+async def _verify_project_workspace_guard(
+    conn: aiosqlite.Connection,
+    *,
+    session_node: SessionNode | None,
+    entry_session_key: str,
+    workspace_guard: ProjectWorkspaceGuard | None,
+) -> None:
+    from opensquilla.project_workspaces import ProjectWorkspaceStateError
+
+    async with conn.execute(
+        "SELECT workspace_id FROM sessions WHERE session_key = ?",
+        (entry_session_key,),
+    ) as cursor:
+        session_row = await cursor.fetchone()
+    persisted_bound_id = (
+        session_row["workspace_id"] if session_row is not None else None
+    )
+    prepared_bound_id = (
+        session_node.workspace_id
+        if session_node is not None
+        else persisted_bound_id
+    )
+    if (
+        session_row is not None
+        and session_node is not None
+        and persisted_bound_id != prepared_bound_id
+    ):
+        raise ProjectWorkspaceStateError("binding_changed")
+    bound_id = prepared_bound_id
+    if bound_id is None:
+        if workspace_guard is not None:
+            raise ProjectWorkspaceStateError("binding_changed")
+        return
+    if workspace_guard is None:
+        raise ProjectWorkspaceStateError("guard_required")
+    if workspace_guard.workspace_id != bound_id:
+        raise ProjectWorkspaceStateError("binding_changed")
+    async with conn.execute(
+        """
+        SELECT workspace_id, path, path_key, removed_at, trusted_at
+        FROM project_workspaces
+        WHERE workspace_id = ?
+        """,
+        (bound_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise ProjectWorkspaceStateError("not_found")
+    if row["removed_at"] is not None:
+        raise ProjectWorkspaceStateError("removed")
+    if row["trusted_at"] is None:
+        raise ProjectWorkspaceStateError("untrusted")
+    if row["path"] != workspace_guard.path or row["path_key"] != workspace_guard.path_key:
+        raise ProjectWorkspaceStateError("binding_changed")
+
+
+async def _next_project_workspace_order_value(
+    conn: aiosqlite.Connection,
+    *,
+    column: str,
+    now_ms: int,
+) -> int:
+    """Return a transaction-local order value that cannot tie an older action."""
+
+    if column not in {"position_at", "pinned_at"}:
+        raise ValueError(f"Unsupported project workspace order column: {column}")
+    async with conn.execute(
+        f"SELECT MAX({column}) FROM project_workspaces"  # noqa: S608 - allowlisted column
+    ) as cursor:
+        row = await cursor.fetchone()
+    previous = row[0] if row is not None else None
+    return max(now_ms, int(previous) + 1) if previous is not None else now_ms
 
 
 _SQLITE_BUSY_TIMEOUT_MS = 100
@@ -173,9 +253,11 @@ def _serialized_read[**P, R](
 # Version 9 added durable turn-ingress receipts.
 # Version 10 added the durable provider usage ledger and content-free daily usage
 # telemetry aggregates. Version 11 added per-item provider-native billing receipts.
-# Version 12 added durable collaboration-mode state. Version 13 added immutable
-# plan revisions. Version 14 added mutable, compare-and-set plan runs.
-SCHEMA_VERSION = 14
+# Version 12 added persistent project workspaces and optional session bindings.
+# Version 13 added backend-owned runtime preferences. Version 14 added durable
+# collaboration-mode state. Version 15 added immutable plan revisions. Version
+# 16 added mutable, compare-and-set plan runs.
+SCHEMA_VERSION = 16
 
 # Session rows at or above this semantic version were created by fork logic
 # that records enough existing metadata for canonical coverage to be checked
@@ -241,10 +323,35 @@ CREATE TABLE IF NOT EXISTS sessions (
     group_id TEXT,
     subject TEXT,
     origin TEXT,
+    workspace_id TEXT,
     agent_id TEXT NOT NULL DEFAULT 'main',
     schema_version INTEGER NOT NULL DEFAULT 1,
     epoch INTEGER NOT NULL DEFAULT 0
 )
+"""
+
+_CREATE_PROJECT_WORKSPACES = """
+CREATE TABLE IF NOT EXISTS project_workspaces (
+    workspace_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    path_key TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    position_at INTEGER NOT NULL,
+    pinned_at INTEGER,
+    removed_at INTEGER,
+    trusted_at INTEGER
+)
+"""
+
+_CREATE_IDX_PROJECT_WORKSPACES_ORDER = """
+CREATE INDEX IF NOT EXISTS idx_project_workspaces_order
+ON project_workspaces(removed_at, pinned_at DESC, position_at DESC)
+"""
+
+_CREATE_IDX_SESSIONS_WORKSPACE = """
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace_id ON sessions(workspace_id)
 """
 
 # Recency ordering for list_sessions and the title search (ORDER BY updated_at
@@ -252,6 +359,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 _CREATE_IDX_SESSIONS_UPDATED = (
     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)"
 )
+
+_CREATE_RUNTIME_PREFERENCES = """
+CREATE TABLE IF NOT EXISTS runtime_preferences (
+    preference_key TEXT PRIMARY KEY,
+    preference_value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+)
+"""
 
 _CREATE_PLAN_REVISIONS = """
 CREATE TABLE IF NOT EXISTS plan_revisions (
@@ -1053,11 +1168,54 @@ class SessionStorage:
         self._operation_lock = asyncio.Lock()
         self._usage_backfill_index_lock = asyncio.Lock()
         self._usage_backfill_indexes_ready = False
+        self._legacy_project_adoption_lock = asyncio.Lock()
+        self._legacy_project_adoption_generation = 0
+        self._legacy_project_adoption_completed_generation = -1
         self._poisoned = False
         self._busy_budget_seconds = _INTERACTIVE_BUSY_BUDGET_SECONDS
         self._sleep = asyncio.sleep
         self._monotonic = time.monotonic
         self._random = random.random
+        self._restart_abandoned_session_keys: tuple[str, ...] = ()
+
+    @property
+    def restart_abandoned_session_keys(self) -> tuple[str, ...]:
+        """Sessions whose in-flight tasks were orphaned by process restart."""
+
+        return self._restart_abandoned_session_keys
+
+    def take_restart_abandoned_session_keys(self) -> tuple[str, ...]:
+        """Return and clear the one-shot restart recovery signal."""
+
+        session_keys = self._restart_abandoned_session_keys
+        self._restart_abandoned_session_keys = ()
+        return session_keys
+
+    async def run_legacy_project_adoption_once(
+        self,
+        adoption: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Single-flight legacy project adoption for this storage connection."""
+
+        if (
+            self._legacy_project_adoption_completed_generation
+            == self._legacy_project_adoption_generation
+        ):
+            return
+        async with self._legacy_project_adoption_lock:
+            while (
+                self._legacy_project_adoption_completed_generation
+                != self._legacy_project_adoption_generation
+            ):
+                generation = self._legacy_project_adoption_generation
+                await adoption()
+                if generation == self._legacy_project_adoption_generation:
+                    self._legacy_project_adoption_completed_generation = generation
+
+    def invalidate_legacy_project_adoption(self) -> None:
+        """Require the next workspace listing to re-check legacy session origins."""
+
+        self._legacy_project_adoption_generation += 1
 
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path, isolation_level=None)
@@ -1272,6 +1430,9 @@ class SessionStorage:
     async def _initialize_schema(self) -> None:
         assert self._conn is not None
         await self._conn.execute(_CREATE_SESSIONS)
+        await self._conn.execute(_CREATE_PROJECT_WORKSPACES)
+        await self._conn.execute(_CREATE_IDX_PROJECT_WORKSPACES_ORDER)
+        await self._conn.execute(_CREATE_RUNTIME_PREFERENCES)
         await self._conn.execute(_CREATE_PLAN_REVISIONS)
         await self._conn.execute(_CREATE_IDX_PLAN_REVISIONS_PLAN_GENERATION)
         await self._conn.execute(_CREATE_IDX_PLAN_REVISIONS_SOURCE_SESSION)
@@ -1337,6 +1498,7 @@ class SessionStorage:
         await self._conn.commit()
         # Migrate older databases — add the epoch column if missing.
         await self._migrate_epoch_column()
+        await self._migrate_workspace_id_column()
         await self._migrate_collaboration_columns()
         await self._migrate_derived_title_column()
         await self._migrate_transcript_reasoning_content_column()
@@ -1352,6 +1514,8 @@ class SessionStorage:
             session_columns = {row[1] for row in await cur.fetchall()}
         if "updated_at" in session_columns:
             await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
+        if "workspace_id" in session_columns:
+            await self._conn.execute(_CREATE_IDX_SESSIONS_WORKSPACE)
         await self._conn.commit()
         required_recovery_columns = {
             "status",
@@ -1499,6 +1663,18 @@ class SessionStorage:
         if null_count > 0:
             await self._conn.execute(
                 "UPDATE sessions SET epoch = 0 WHERE epoch IS NULL"
+            )
+            await self._conn.commit()
+
+    async def _migrate_workspace_id_column(self) -> None:
+        """Idempotently add the optional project-workspace session binding."""
+
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(sessions)") as cur:
+            columns = {str(row[1]) for row in await cur.fetchall()}
+        if "workspace_id" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN workspace_id TEXT"
             )
             await self._conn.commit()
 
@@ -2846,7 +3022,484 @@ class SessionStorage:
 
     # ── Session CRUD ────────────────────────────────────────────────────────
 
-    async def upsert_session(self, node: SessionNode) -> None:
+    async def create_or_restore_project_workspace(
+        self,
+        *,
+        path: str,
+        path_key: str,
+        display_name: str,
+        trusted_at: int | None,
+        now_ms: int | None = None,
+    ) -> ProjectWorkspace:
+        now = _now_ms() if now_ms is None else int(now_ms)
+        async with self._write_transaction("create_or_restore_project_workspace") as conn:
+            return await self._create_or_restore_project_workspace_on_conn(
+                conn,
+                path=path,
+                path_key=path_key,
+                display_name=display_name,
+                trusted_at=trusted_at,
+                now_ms=now,
+            )
+
+    async def _create_or_restore_project_workspace_on_conn(
+        self,
+        conn: Any,
+        *,
+        path: str,
+        path_key: str,
+        display_name: str,
+        trusted_at: int | None,
+        now_ms: int,
+    ) -> ProjectWorkspace:
+        async with conn.execute(
+            "SELECT * FROM project_workspaces WHERE path_key = ?",
+            (path_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            position_at = await _next_project_workspace_order_value(
+                conn,
+                column="position_at",
+                now_ms=now_ms,
+            )
+            workspace = ProjectWorkspace(
+                path=path,
+                path_key=path_key,
+                display_name=display_name,
+                created_at=now_ms,
+                updated_at=now_ms,
+                position_at=position_at,
+                trusted_at=trusted_at,
+            )
+            data = workspace.model_dump()
+            columns = list(data)
+            await conn.execute(
+                f"INSERT INTO project_workspaces ({', '.join(columns)}) "  # noqa: S608
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                [_serialize(data[column]) for column in columns],
+            )
+            return workspace
+
+        workspace = ProjectWorkspace(**dict(row))
+        if workspace.removed_at is None:
+            if workspace.trusted_at is None and trusted_at is not None:
+                await conn.execute(
+                    """
+                    UPDATE project_workspaces
+                    SET trusted_at = ?, updated_at = ?, path = ?
+                    WHERE workspace_id = ?
+                    """,
+                    (trusted_at, now_ms, path, workspace.workspace_id),
+                )
+                workspace.trusted_at = trusted_at
+                workspace.updated_at = now_ms
+                workspace.path = path
+            return workspace
+
+        position_at = await _next_project_workspace_order_value(
+            conn,
+            column="position_at",
+            now_ms=now_ms,
+        )
+        await conn.execute(
+            """
+            UPDATE project_workspaces
+            SET removed_at = NULL, position_at = ?, updated_at = ?,
+                trusted_at = COALESCE(?, trusted_at), path = ?
+            WHERE workspace_id = ?
+            """,
+            (position_at, now_ms, trusted_at, path, workspace.workspace_id),
+        )
+        workspace.removed_at = None
+        workspace.position_at = position_at
+        workspace.updated_at = now_ms
+        workspace.trusted_at = trusted_at or workspace.trusted_at
+        workspace.path = path
+        return workspace
+
+    @_serialized_read
+    async def get_project_workspace(self, workspace_id: str) -> ProjectWorkspace | None:
+        async with self.conn.execute(
+            "SELECT * FROM project_workspaces WHERE workspace_id = ?",
+            (workspace_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return ProjectWorkspace(**dict(row)) if row is not None else None
+
+    @_serialized_read
+    async def get_project_workspace_by_path_key(
+        self,
+        path_key: str,
+    ) -> ProjectWorkspace | None:
+        async with self.conn.execute(
+            "SELECT * FROM project_workspaces WHERE path_key = ?",
+            (path_key,),
+        ) as cur:
+            row = await cur.fetchone()
+        return ProjectWorkspace(**dict(row)) if row is not None else None
+
+    @_serialized_read
+    async def list_project_workspaces(
+        self,
+        *,
+        include_removed: bool = False,
+    ) -> list[ProjectWorkspace]:
+        where = "" if include_removed else "WHERE removed_at IS NULL"
+        async with self.conn.execute(
+            f"""
+            SELECT * FROM project_workspaces
+            {where}
+            ORDER BY
+                CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+                pinned_at DESC,
+                position_at DESC,
+                created_at DESC,
+                rowid DESC
+            """  # noqa: S608 - fixed optional clause
+        ) as cur:
+            rows = await cur.fetchall()
+        return [ProjectWorkspace(**dict(row)) for row in rows]
+
+    async def update_project_workspace(
+        self,
+        workspace_id: str,
+        *,
+        display_name: str,
+        now_ms: int | None = None,
+    ) -> ProjectWorkspace:
+        now = _now_ms() if now_ms is None else int(now_ms)
+        async with self._write_transaction("update_project_workspace") as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE project_workspaces
+                SET display_name = ?, updated_at = ?
+                WHERE workspace_id = ?
+                """,
+                (display_name, now, workspace_id),
+            )
+            if int(cursor.rowcount or 0) == 0:
+                raise KeyError(f"Project workspace not found: {workspace_id}")
+            async with conn.execute(
+                "SELECT * FROM project_workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None
+        return ProjectWorkspace(**dict(row))
+
+    async def set_project_workspace_pin(
+        self,
+        workspace_id: str,
+        *,
+        pinned: bool,
+        now_ms: int | None = None,
+    ) -> ProjectWorkspace:
+        now = _now_ms() if now_ms is None else int(now_ms)
+        async with self._write_transaction("set_project_workspace_pin") as conn:
+            if pinned:
+                pinned_at = await _next_project_workspace_order_value(
+                    conn,
+                    column="pinned_at",
+                    now_ms=now,
+                )
+                cursor = await conn.execute(
+                    """
+                    UPDATE project_workspaces
+                    SET pinned_at = ?, updated_at = ?
+                    WHERE workspace_id = ? AND removed_at IS NULL
+                    """,
+                    (pinned_at, now, workspace_id),
+                )
+            else:
+                position_at = await _next_project_workspace_order_value(
+                    conn,
+                    column="position_at",
+                    now_ms=now,
+                )
+                cursor = await conn.execute(
+                    """
+                    UPDATE project_workspaces
+                    SET pinned_at = NULL, position_at = ?, updated_at = ?
+                    WHERE workspace_id = ? AND removed_at IS NULL
+                    """,
+                    (position_at, now, workspace_id),
+                )
+            if int(cursor.rowcount or 0) == 0:
+                raise KeyError(f"Project workspace not found: {workspace_id}")
+            async with conn.execute(
+                "SELECT * FROM project_workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None
+        return ProjectWorkspace(**dict(row))
+
+    async def remove_project_workspace(
+        self,
+        workspace_id: str,
+        *,
+        now_ms: int | None = None,
+    ) -> None:
+        now = _now_ms() if now_ms is None else int(now_ms)
+        async with self._write_transaction("remove_project_workspace") as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE project_workspaces
+                SET removed_at = ?, pinned_at = NULL, updated_at = ?
+                WHERE workspace_id = ? AND removed_at IS NULL
+                """,
+                (now, now, workspace_id),
+            )
+            if int(cursor.rowcount or 0) == 0:
+                raise KeyError(f"Project workspace not found: {workspace_id}")
+
+    async def bind_session_workspace(
+        self,
+        session_key: str,
+        workspace_id: str | None,
+    ) -> None:
+        session_key = canonicalize_session_key(session_key)
+        async with self._write_transaction("bind_session_workspace") as conn:
+            cursor = await conn.execute(
+                "UPDATE sessions SET workspace_id = ? WHERE session_key = ?",
+                (workspace_id, session_key),
+            )
+            if int(cursor.rowcount or 0) == 0:
+                raise KeyError(f"Session not found: {session_key}")
+
+    @_serialized_read
+    async def list_legacy_project_workspace_candidates(
+        self,
+        *,
+        after_rowid: int = 0,
+        limit: int = 500,
+    ) -> list[tuple[int, str, str, dict[str, Any] | None]]:
+        """Return one lightweight keyset page for legacy project adoption."""
+
+        if limit <= 0:
+            return []
+        async with self.conn.execute(
+            """
+            SELECT rowid, session_key, agent_id, origin
+            FROM sessions
+            WHERE workspace_id IS NULL
+              AND origin IS NOT NULL
+              AND rowid > ?
+            ORDER BY rowid
+            LIMIT ?
+            """,
+            (max(0, int(after_rowid)), int(limit)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            (
+                int(row["rowid"]),
+                str(row["session_key"]),
+                str(row["agent_id"] or "main"),
+                _json_object_or_none(row["origin"]),
+            )
+            for row in rows
+        ]
+
+    async def adopt_legacy_session_workspace(
+        self,
+        session_key: str,
+        *,
+        expected_agent_id: str,
+        expected_origin: dict[str, Any],
+        path: str,
+        path_key: str,
+        display_name: str,
+        trusted_at: int | None,
+        now_ms: int,
+    ) -> ProjectWorkspace | None:
+        """Atomically create and bind a still-current legacy session candidate."""
+
+        session_key = canonicalize_session_key(session_key)
+        async with self._write_transaction("adopt_legacy_session_workspace") as conn:
+            async with conn.execute(
+                """
+                SELECT 1
+                FROM sessions
+                WHERE session_key = ?
+                  AND workspace_id IS NULL
+                  AND agent_id = ?
+                  AND origin IS ?
+                """,
+                (
+                    session_key,
+                    normalize_agent_id(expected_agent_id),
+                    _serialize(expected_origin),
+                ),
+            ) as cursor:
+                if await cursor.fetchone() is None:
+                    return None
+            workspace = await self._create_or_restore_project_workspace_on_conn(
+                conn,
+                path=path,
+                path_key=path_key,
+                display_name=display_name,
+                trusted_at=trusted_at,
+                now_ms=now_ms,
+            )
+            cursor = await conn.execute(
+                """
+                UPDATE sessions
+                SET workspace_id = ?
+                WHERE session_key = ?
+                  AND workspace_id IS NULL
+                  AND agent_id = ?
+                  AND origin IS ?
+                """,
+                (
+                    workspace.workspace_id,
+                    session_key,
+                    normalize_agent_id(expected_agent_id),
+                    _serialize(expected_origin),
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                raise RuntimeError("legacy project candidate changed during transaction")
+            return workspace
+
+    @_serialized_read
+    async def count_project_workspace_tasks(self, workspace_id: str) -> int:
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sessions
+            WHERE workspace_id = ? AND spawn_depth = 0
+            """,
+            (workspace_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0] if row is not None else 0)
+
+    @_serialized_read
+    async def list_project_workspace_session_keys(
+        self,
+        workspace_id: str,
+    ) -> list[str]:
+        async with self.conn.execute(
+            """
+            SELECT session_key
+            FROM sessions
+            WHERE workspace_id = ?
+            ORDER BY created_at ASC, session_key ASC
+            """,
+            (workspace_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [str(row[0]) for row in rows]
+
+    async def _delete_project_workspace_sessions(
+        self,
+        workspace_id: str,
+        expected_session_keys: Sequence[str] | None,
+    ) -> list[str]:
+        deleted: list[SessionNode] = []
+        async with self._write_transaction("delete_project_workspace_sessions") as conn:
+            async with conn.execute(
+                """
+                SELECT removed_at
+                FROM project_workspaces
+                WHERE workspace_id = ?
+                """,
+                (workspace_id,),
+            ) as cursor:
+                workspace_row = await cursor.fetchone()
+            if workspace_row is None or workspace_row["removed_at"] is not None:
+                raise KeyError(f"Project workspace not found: {workspace_id}")
+
+            async with conn.execute(
+                """
+                SELECT *
+                FROM sessions
+                WHERE workspace_id = ?
+                ORDER BY created_at ASC, session_key ASC
+                """,
+                (workspace_id,),
+            ) as cursor:
+                deleted = [
+                    SessionNode(**_deserialize_row(dict(row)))
+                    for row in await cursor.fetchall()
+                ]
+            deleted_keys = [session.session_key for session in deleted]
+            if (
+                expected_session_keys is not None
+                and deleted_keys != list(expected_session_keys)
+            ):
+                raise ProjectSessionSnapshotMismatchError(
+                    "Project session snapshot changed before deletion"
+                )
+
+            for session in deleted:
+                await self._delete_session_rows(conn, session)
+
+        for session in deleted:
+            try:
+                await self._cleanup_deleted_session(session)
+            except Exception:  # noqa: BLE001 - the database commit is authoritative.
+                log.warning(
+                    "project_workspace.session_cleanup_failed "
+                    "workspace_id=%s session_key=%s",
+                    workspace_id,
+                    session.session_key,
+                    exc_info=True,
+                )
+        return [session.session_key for session in deleted]
+
+    async def delete_project_workspace_sessions(
+        self,
+        workspace_id: str,
+        *,
+        expected_session_keys: Sequence[str] | None = None,
+    ) -> list[str]:
+        """Atomically delete one project's history and exhaust post-commit cleanup.
+
+        The database transaction and every cleanup attempt run in a child task
+        shielded from caller cancellation. Cancellation is propagated only
+        after that operation settles, so a committed delete cannot strand
+        session material merely because its RPC transport disappeared.
+        """
+
+        operation = asyncio.create_task(
+            self._delete_project_workspace_sessions(
+                workspace_id,
+                expected_session_keys,
+            )
+        )
+        cancellation: asyncio.CancelledError | None = None
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        if cancellation is not None:
+            # The operation outcome is now known and all cleanup attempts have
+            # settled. Retrieve it to avoid an unobserved child exception;
+            # cancellation remains authoritative for the interrupted caller.
+            with contextlib.suppress(BaseException):
+                operation.result()
+            raise cancellation
+        return operation.result()
+
+    async def upsert_session(
+        self,
+        node: SessionNode,
+        *,
+        expected_session_id: str | None = None,
+    ) -> None:
+        """Insert or update a session, optionally fencing an existing generation.
+
+        ``expected_session_id`` is for delayed mutations of an already-read
+        session. When supplied, a missing row or a different session id raises
+        ``KeyError`` inside the write transaction, before the UPSERT can recreate
+        a deleted row or overwrite a same-key replacement. Omitting it preserves
+        the create/repair behavior of the legacy UPSERT.
+        """
+
         node.session_key = canonicalize_session_key(node.session_key)
         node.agent_id = normalize_agent_id(node.agent_id)
         data = node.model_dump()
@@ -2868,6 +3521,20 @@ class SessionStorage:
             f"ON CONFLICT(session_key) DO UPDATE SET {updates}"
         )
         async with self._write_transaction("upsert_session") as conn:
+            if expected_session_id is not None:
+                if node.session_id != expected_session_id:
+                    raise KeyError(
+                        f"Session generation changed: {node.session_key}"
+                    )
+                async with conn.execute(
+                    "SELECT session_id FROM sessions WHERE session_key = ?",
+                    (node.session_key,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None or str(row["session_id"]) != expected_session_id:
+                    raise KeyError(
+                        f"Session generation changed: {node.session_key}"
+                    )
             await conn.execute(sql, values)
 
     @_serialized_read
@@ -2880,6 +3547,56 @@ class SessionStorage:
         if row is None:
             return None
         return SessionNode(**_deserialize_row(dict(row)))
+
+    async def compare_and_set_session_origin(
+        self,
+        *,
+        expected_session: SessionNode,
+        expected_origin: dict[str, Any] | None,
+        origin: dict[str, Any] | None,
+        workspace_guard: ProjectWorkspaceGuard | None,
+    ) -> SessionNode | None:
+        """Replace one origin only while identity, binding, and origin still match."""
+
+        session_key = canonicalize_session_key(expected_session.session_key)
+        async with self._write_transaction("compare_and_set_session_origin") as conn:
+            await _verify_project_workspace_guard(
+                conn,
+                session_node=expected_session,
+                entry_session_key=session_key,
+                workspace_guard=workspace_guard,
+            )
+            async with conn.execute(
+                """
+                UPDATE sessions
+                SET origin = ?, updated_at = ?
+                WHERE session_key = ?
+                  AND session_id = ?
+                  AND epoch = ?
+                  AND workspace_id IS ?
+                  AND origin IS ?
+                """,
+                (
+                    _serialize(origin),
+                    _now_ms(),
+                    session_key,
+                    expected_session.session_id,
+                    int(expected_session.epoch or 0),
+                    expected_session.workspace_id,
+                    _serialize(expected_origin),
+                ),
+            ) as cursor:
+                updated = cursor.rowcount or 0
+            if updated != 1:
+                return None
+            async with conn.execute(
+                "SELECT * FROM sessions WHERE session_key = ?",
+                (session_key,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            return SessionNode(**_deserialize_row(dict(row)))
 
     @_serialized_read
     async def list_sessions(
@@ -2935,69 +3652,67 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [SessionNode(**_deserialize_row(dict(r))) for r in rows]
 
-    async def delete_session(self, session_key: str) -> None:
-        session_key = canonicalize_session_key(session_key)
-        session: SessionNode | None = None
-        async with self._write_transaction("delete_session") as conn:
-            async with conn.execute(
-                "SELECT * FROM sessions WHERE session_key = ?", (session_key,)
-            ) as cur:
-                row = await cur.fetchone()
-            if row is None:
-                return
-            session = SessionNode(**_deserialize_row(dict(row)))
-            for table in (
-                "transcript_entries",
-                "compacted_transcript_entries",
-                "session_summaries",
-            ):
-                await conn.execute(
-                    f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608 - fixed literals
-                    (session.session_id,),
-                )
+    async def _delete_session_rows(
+        self,
+        conn: aiosqlite.Connection,
+        session: SessionNode,
+    ) -> None:
+        for table in (
+            "transcript_entries",
+            "compacted_transcript_entries",
+            "session_summaries",
+        ):
             await conn.execute(
-                "DELETE FROM session_context_states WHERE session_id = ?",
+                f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608 - fixed literals
                 (session.session_id,),
             )
-            for table in ("router_decisions", "turn_errors"):
-                async with conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-                    (table,),
-                ) as cur:
-                    exists = await cur.fetchone() is not None
-                if exists:
-                    await conn.execute(
-                        f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
-                        (session_key,),
-                    )
-            for table in ("agent_tasks", "memory_durable_receipts"):
+        # A reset rotates session_id but deliberately retains invalid context
+        # rows from older epochs. The stable session key owns every one.
+        await conn.execute(
+            "DELETE FROM session_context_states WHERE session_key = ?",
+            (session.session_key,),
+        )
+        for table in ("router_decisions", "turn_errors"):
+            async with conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                (table,),
+            ) as cursor:
+                exists = await cursor.fetchone() is not None
+            if exists:
                 await conn.execute(
                     f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
-                    (session_key,),
+                    (session.session_key,),
                 )
+        for table in ("agent_tasks", "memory_durable_receipts"):
             await conn.execute(
-                "DELETE FROM turn_ingress_receipts WHERE accepted_session_key = ?",
-                (session_key,),
+                f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
+                (session.session_key,),
             )
-            await conn.execute(
-                "DELETE FROM plan_runs WHERE session_key = ?",
-                (session_key,),
-            )
-            await conn.execute(
-                "DELETE FROM plan_revisions WHERE source_session_key = ?",
-                (session_key,),
-            )
-            await conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
+        await conn.execute(
+            "DELETE FROM turn_ingress_receipts WHERE accepted_session_key = ?",
+            (session.session_key,),
+        )
+        await conn.execute(
+            "DELETE FROM plan_runs WHERE session_key = ?",
+            (session.session_key,),
+        )
+        await conn.execute(
+            "DELETE FROM plan_revisions WHERE source_session_key = ?",
+            (session.session_key,),
+        )
+        await conn.execute(
+            "DELETE FROM sessions WHERE session_key = ?",
+            (session.session_key,),
+        )
 
-        assert session is not None
-
+    async def _cleanup_deleted_session(self, session: SessionNode) -> None:
         # Cascade the on-disk session material (transcript media + workspace
         # attachment copies). DB-only deletion otherwise leaks both stores until
         # the transcript disk budget hard-fails. Best-effort via the registered
         # process-global hook; never fails the delete.
         from opensquilla.session.material_cleanup import run_session_material_cleanup
 
-        await run_session_material_cleanup(session.session_id, session_key)
+        await run_session_material_cleanup(session.session_id, session.session_key)
 
         # G4 cleanup: cascade meta-skill audit rows for this session. The
         # sessions table is created lazily at runtime (not via yoyo), so
@@ -3006,9 +3721,28 @@ class SessionStorage:
             try:
                 # The writer commits synchronously (busy_timeout=5000); keep the
                 # delete off the event loop like every other writer call site.
-                await asyncio.to_thread(self._meta_run_writer.purge_for_session, session_key)
+                await asyncio.to_thread(
+                    self._meta_run_writer.purge_for_session,
+                    session.session_key,
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("session_delete.purge_meta_runs_failed: %s", exc)
+
+    async def delete_session(self, session_key: str) -> None:
+        session_key = canonicalize_session_key(session_key)
+        session: SessionNode | None = None
+        async with self._write_transaction("delete_session") as conn:
+            async with conn.execute(
+                "SELECT * FROM sessions WHERE session_key = ?", (session_key,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return
+            session = SessionNode(**_deserialize_row(dict(row)))
+            await self._delete_session_rows(conn, session)
+
+        assert session is not None
+        await self._cleanup_deleted_session(session)
 
     async def prune_stale_sessions(self, before_ms: int) -> int:
         """Delete sessions not updated since before_ms epoch ms. Returns count deleted."""
@@ -3058,6 +3792,49 @@ class SessionStorage:
         ) as cur:
             row = await cur.fetchone()
         return int(row[0]) if row is not None else 0
+
+    # ── Backend-owned runtime preferences ──────────────────────────────────
+
+    @_serialized_read
+    async def get_runtime_preference(self, key: str) -> str | None:
+        """Return one persisted runtime preference, if configured."""
+        normalized_key = key.strip() if isinstance(key, str) else ""
+        if not normalized_key:
+            raise ValueError("runtime preference key must not be empty")
+        async with self.conn.execute(
+            """
+            SELECT preference_value
+            FROM runtime_preferences
+            WHERE preference_key = ?
+            """,
+            (normalized_key,),
+        ) as cur:
+            row = await cur.fetchone()
+        return str(row[0]) if row is not None else None
+
+    async def set_runtime_preference(self, key: str, value: str) -> str:
+        """Persist one runtime preference and return its confirmed value."""
+        normalized_key = key.strip() if isinstance(key, str) else ""
+        normalized_value = value.strip() if isinstance(value, str) else ""
+        if not normalized_key:
+            raise ValueError("runtime preference key must not be empty")
+        if not normalized_value:
+            raise ValueError("runtime preference value must not be empty")
+        async with self._write_transaction("set_runtime_preference") as conn:
+            await conn.execute(
+                """
+                INSERT INTO runtime_preferences (
+                    preference_key,
+                    preference_value,
+                    updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(preference_key) DO UPDATE SET
+                    preference_value = excluded.preference_value,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized_key, normalized_value, _now_ms()),
+            )
+        return normalized_value
 
     # ── Collaboration plans ────────────────────────────────────────────────
 
@@ -4229,7 +5006,16 @@ class SessionStorage:
     async def upsert_memory_durable_receipt(
         self,
         receipt: MemoryDurableReceipt,
+        *,
+        expected_session_id: str | None = None,
     ) -> MemoryDurableReceipt:
+        """Upsert a receipt, optionally requiring its live session generation.
+
+        ``expected_session_id`` is checked in the same write transaction as the
+        receipt UPSERT. A missing or replaced session raises ``KeyError``.
+        Omitting it intentionally retains synthetic repair and legacy behavior.
+        """
+
         receipt.session_key = canonicalize_session_key(receipt.session_key)
         receipt.updated_at = _now_ms()
         data = receipt.model_dump()
@@ -4242,6 +5028,20 @@ class SessionStorage:
         )
         values = [_serialize(data[col]) for col in cols]
         async with self._write_transaction("upsert_memory_durable_receipt") as conn:
+            if expected_session_id is not None:
+                if receipt.session_id != expected_session_id:
+                    raise KeyError(
+                        f"Session generation changed: {receipt.session_key}"
+                    )
+                async with conn.execute(
+                    "SELECT session_id FROM sessions WHERE session_key = ?",
+                    (receipt.session_key,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None or str(row["session_id"]) != expected_session_id:
+                    raise KeyError(
+                        f"Session generation changed: {receipt.session_key}"
+                    )
             await conn.execute(
                 f"""
                 INSERT INTO memory_durable_receipts ({", ".join(cols)})
@@ -4568,6 +5368,25 @@ class SessionStorage:
             SessionStatus.TIMEOUT,
         )
         async with self._write_transaction("mark_abandoned_agent_tasks") as conn:
+            async with conn.execute(
+                """
+                SELECT DISTINCT session_key
+                FROM agent_tasks
+                WHERE status IN (?, ?)
+                   OR (status = ? AND terminal_reason = ?)
+                ORDER BY session_key ASC
+                """,
+                (
+                    AgentTaskStatus.QUEUED,
+                    AgentTaskStatus.RUNNING,
+                    AgentTaskStatus.ABANDONED,
+                    "process_restart",
+                ),
+            ) as restart_cur:
+                self._restart_abandoned_session_keys = tuple(
+                    str(row[0]) for row in await restart_cur.fetchall()
+                )
+
             async with conn.execute(
                 """
                 SELECT DISTINCT agent_tasks.session_key
@@ -5059,7 +5878,7 @@ class SessionStorage:
         *,
         expected_epoch: int,
         updated_at: int,
-        task_record: AgentTaskRecord,
+        task_record: AgentTaskRecord | None,
         source_scope: str,
         request_session_key: str,
         client_request_id: str,
@@ -5072,8 +5891,9 @@ class SessionStorage:
         plan_revision: PlanRevisionRecord | None = None,
         plan_run: PlanRunRecord | None = None,
         merge_into_task: bool = False,
+        workspace_guard: ProjectWorkspaceGuard | None = None,
     ) -> TurnAcceptanceResult:
-        """Commit one user message, task, and request receipt atomically.
+        """Commit one user message, optional task, and request receipt atomically.
 
         Repeating the same scoped client request returns the original receipt.
         Reusing its id for a different payload is rejected before any write.
@@ -5090,10 +5910,11 @@ class SessionStorage:
 
         request_session_key = canonicalize_session_key(request_session_key)
         entry.session_key = canonicalize_session_key(entry.session_key)
-        task_record.session_key = canonicalize_session_key(task_record.session_key)
-        task_record.agent_id = normalize_agent_id(task_record.agent_id)
-        if task_record.session_key != entry.session_key:
-            raise ValueError("task and transcript session keys must match")
+        if task_record is not None:
+            task_record.session_key = canonicalize_session_key(task_record.session_key)
+            task_record.agent_id = normalize_agent_id(task_record.agent_id)
+            if task_record.session_key != entry.session_key:
+                raise ValueError("task and transcript session keys must match")
         if session_node is not None:
             session_node.session_key = canonicalize_session_key(session_node.session_key)
             session_node.agent_id = normalize_agent_id(session_node.agent_id)
@@ -5105,6 +5926,8 @@ class SessionStorage:
             raise ValueError("reset_from_session_id requires session_node")
         if initial_transcript_entries and session_node is None:
             raise ValueError("initial transcript entries require session_node")
+        if merge_into_task and task_record is None:
+            raise ValueError("task collection requires task_record")
         if reset_archive_writer is not None and reset_from_session_id is None:
             raise ValueError("reset_archive_writer requires reset_from_session_id")
         if merge_into_task and session_node is not None:
@@ -5112,6 +5935,8 @@ class SessionStorage:
         if plan_run is not None:
             if merge_into_task:
                 raise ValueError("a plan implementation turn cannot merge into a task")
+            if task_record is None:
+                raise ValueError("an accepted plan run requires a runtime task")
             plan_run.session_key = canonicalize_session_key(plan_run.session_key)
             if (
                 plan_run.session_key != entry.session_key
@@ -5146,6 +5971,7 @@ class SessionStorage:
             "last_account_id",
             "last_thread_id",
             "delivery_context",
+            "origin",
             "collaboration_mode",
             "active_plan_revision_id",
         }
@@ -5200,6 +6026,13 @@ class SessionStorage:
                     fresh_user_session=fresh_user_session,
                     task_status=task_status,
                 )
+
+            await _verify_project_workspace_guard(
+                conn,
+                session_node=session_node,
+                entry_session_key=entry.session_key,
+                workspace_guard=workspace_guard,
+            )
 
             reset_archive_snapshot: ResetArchiveSnapshot | None = None
             if session_node is not None:
@@ -5387,103 +6220,104 @@ class SessionStorage:
             if plan_run is not None:
                 await self._start_plan_run_on_conn(conn, plan_run)
 
-            incoming_details = dict(task_record.details or {})
-            if merge_into_task:
-                async with conn.execute(
-                    """
-                    SELECT details
-                    FROM agent_tasks
-                    WHERE task_id = ? AND session_key = ? AND status = ?
-                    """,
-                    (
-                        task_record.task_id,
-                        task_record.session_key,
-                        AgentTaskStatus.QUEUED.value,
-                    ),
-                ) as cur:
-                    existing_row = await cur.fetchone()
-                if existing_row is None:
-                    raise TaskCollectionUnavailableError(
-                        "The target task is no longer queued for collection"
+            if task_record is not None:
+                incoming_details = dict(task_record.details or {})
+                if merge_into_task:
+                    async with conn.execute(
+                        """
+                        SELECT details
+                        FROM agent_tasks
+                        WHERE task_id = ? AND session_key = ? AND status = ?
+                        """,
+                        (
+                            task_record.task_id,
+                            task_record.session_key,
+                            AgentTaskStatus.QUEUED.value,
+                        ),
+                    ) as cur:
+                        existing_row = await cur.fetchone()
+                    if existing_row is None:
+                        raise TaskCollectionUnavailableError(
+                            "The target task is no longer queued for collection"
+                        )
+                    deserialized = _deserialize_row({"details": existing_row["details"]})
+                    existing_details_raw = deserialized.get("details")
+                    existing_details = (
+                        dict(existing_details_raw)
+                        if isinstance(existing_details_raw, dict)
+                        else {}
                     )
-                deserialized = _deserialize_row({"details": existing_row["details"]})
-                existing_details_raw = deserialized.get("details")
-                existing_details = (
-                    dict(existing_details_raw)
-                    if isinstance(existing_details_raw, dict)
-                    else {}
-                )
-                details = {**existing_details, **incoming_details}
-                message_ids = _ordered_detail_message_ids(
-                    existing_details.get("persisted_user_message_id"),
-                    existing_details.get("persisted_user_message_ids"),
-                    incoming_details.get("persisted_user_message_id"),
-                    incoming_details.get("persisted_user_message_ids"),
-                    entry.message_id,
-                )
-                existing_count = existing_details.get("message_count")
-                incoming_count = incoming_details.get("message_count")
-                existing_count = (
-                    existing_count
-                    if isinstance(existing_count, int) and existing_count > 0
-                    else 0
-                )
-                incoming_count = (
-                    incoming_count
-                    if isinstance(incoming_count, int) and incoming_count > 0
-                    else 0
-                )
-                details["persisted_user_message_id"] = (
-                    message_ids[0] if message_ids else entry.message_id
-                )
-                details["persisted_user_message_ids"] = message_ids
-                details["message_count"] = max(
-                    1,
-                    incoming_count,
-                    existing_count + 1,
-                )
-                details["fresh_user_session"] = existing_details.get(
-                    "fresh_user_session",
-                    fresh_user_session,
-                )
-                task_record.details = details
-                async with conn.execute(
-                    """
-                    UPDATE agent_tasks
-                    SET details = ?, updated_at = ?
-                    WHERE task_id = ? AND session_key = ? AND status = ?
-                    """,
-                    (
-                        _serialize(details),
-                        task_record.updated_at,
-                        task_record.task_id,
-                        task_record.session_key,
-                        AgentTaskStatus.QUEUED.value,
-                    ),
-                ) as cur:
-                    merged = cur.rowcount or 0
-                if merged == 0:
-                    raise TaskCollectionUnavailableError(
-                        "The target task is no longer queued for collection"
+                    details = {**existing_details, **incoming_details}
+                    message_ids = _ordered_detail_message_ids(
+                        existing_details.get("persisted_user_message_id"),
+                        existing_details.get("persisted_user_message_ids"),
+                        incoming_details.get("persisted_user_message_id"),
+                        incoming_details.get("persisted_user_message_ids"),
+                        entry.message_id,
                     )
-            else:
-                message_ids = _ordered_detail_message_ids(
-                    entry.message_id,
-                    incoming_details.get("persisted_user_message_id"),
-                    incoming_details.get("persisted_user_message_ids"),
-                )
-                incoming_count = incoming_details.get("message_count")
-                details = dict(incoming_details)
-                details["persisted_user_message_id"] = entry.message_id
-                details["persisted_user_message_ids"] = message_ids
-                details["message_count"] = (
-                    incoming_count
-                    if isinstance(incoming_count, int) and incoming_count > 0
-                    else 1
-                )
-                details["fresh_user_session"] = fresh_user_session
-                task_record.details = details
-                await self._insert_agent_task(conn, task_record)
+                    existing_count = existing_details.get("message_count")
+                    incoming_count = incoming_details.get("message_count")
+                    existing_count = (
+                        existing_count
+                        if isinstance(existing_count, int) and existing_count > 0
+                        else 0
+                    )
+                    incoming_count = (
+                        incoming_count
+                        if isinstance(incoming_count, int) and incoming_count > 0
+                        else 0
+                    )
+                    details["persisted_user_message_id"] = (
+                        message_ids[0] if message_ids else entry.message_id
+                    )
+                    details["persisted_user_message_ids"] = message_ids
+                    details["message_count"] = max(
+                        1,
+                        incoming_count,
+                        existing_count + 1,
+                    )
+                    details["fresh_user_session"] = existing_details.get(
+                        "fresh_user_session",
+                        fresh_user_session,
+                    )
+                    task_record.details = details
+                    async with conn.execute(
+                        """
+                        UPDATE agent_tasks
+                        SET details = ?, updated_at = ?
+                        WHERE task_id = ? AND session_key = ? AND status = ?
+                        """,
+                        (
+                            _serialize(details),
+                            task_record.updated_at,
+                            task_record.task_id,
+                            task_record.session_key,
+                            AgentTaskStatus.QUEUED.value,
+                        ),
+                    ) as cur:
+                        merged = cur.rowcount or 0
+                    if merged == 0:
+                        raise TaskCollectionUnavailableError(
+                            "The target task is no longer queued for collection"
+                        )
+                else:
+                    message_ids = _ordered_detail_message_ids(
+                        entry.message_id,
+                        incoming_details.get("persisted_user_message_id"),
+                        incoming_details.get("persisted_user_message_ids"),
+                    )
+                    incoming_count = incoming_details.get("message_count")
+                    details = dict(incoming_details)
+                    details["persisted_user_message_id"] = entry.message_id
+                    details["persisted_user_message_ids"] = message_ids
+                    details["message_count"] = (
+                        incoming_count
+                        if isinstance(incoming_count, int) and incoming_count > 0
+                        else 1
+                    )
+                    details["fresh_user_session"] = fresh_user_session
+                    task_record.details = details
+                    await self._insert_agent_task(conn, task_record)
 
             receipt = TurnIngressReceipt(
                 source_scope=source_scope,
@@ -5493,7 +6327,7 @@ class SessionStorage:
                 accepted_session_key=entry.session_key,
                 session_id=entry.session_id,
                 message_id=entry.message_id,
-                task_id=task_record.task_id,
+                task_id=task_record.task_id if task_record is not None else None,
             )
             data = receipt.model_dump()
             cols = list(data.keys())
@@ -5507,7 +6341,7 @@ class SessionStorage:
                 receipt=receipt,
                 replayed=False,
                 fresh_user_session=fresh_user_session,
-                task_status=task_record.status,
+                task_status=task_record.status if task_record is not None else None,
                 reset_archive_snapshot=reset_archive_snapshot,
             )
 

@@ -87,6 +87,9 @@
       </button>
     </div>
     <div v-else-if="item.type === 'text'" class="msg-ai-text" v-html="item.html" />
+    <div v-else-if="item.type === 'interrupt'" class="run-trace__interrupt">
+      <slot name="interrupt" :part="item.part" />
+    </div>
     <button
       v-else-if="item.type === 'overflow'"
       type="button"
@@ -628,6 +631,12 @@ const props = defineProps<{
   // History can preserve provider group and tool ids that repeat across
   // messages. Scope only ephemeral disclosure keys; render ids stay unchanged.
   stateScope?: string
+}>()
+
+defineSlots<{
+  interrupt?: (props: {
+    part: Extract<import('@/types/parts').ChatPart, { type: 'interrupt' }>
+  }) => unknown
 }>()
 
 const emit = defineEmits<{
@@ -1825,7 +1834,7 @@ function fmtTok(n?: number | null): string {
 }
 
 .tool-timeline--activity .msg-ai-text + .msg-ai-text {
-  margin-top: -0.125rem;
+  margin-top: 0.5rem;
 }
 
 /* Completed, non-open rows soften and tuck in — kept for traceability, not

@@ -51,7 +51,7 @@
           <ReasoningPart v-if="reasoningPart" :part="reasoningPart" embedded />
           <AssistantActivityTimeline
             v-if="
-              activityProjection.activityClusters.length
+              activityProjection.activityItems.length
               || activityProjection.statusSteps.length
             "
             :projection="activityProjection"
@@ -65,7 +65,19 @@
             @toggle-group="$emit('toggleToolGroup', $event)"
             @toggle-item="$emit('toggleToolItem', $event)"
             @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
-          />
+          >
+            <template #interrupt="{ part }">
+              <InterruptPart
+                v-if="part.resolution"
+                :part="part"
+                timeline
+                @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
+                @extend="id => $emit('extendInterrupt', id)"
+                @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
+                @clarify-dismiss="$emit('clarifyDismiss')"
+              />
+            </template>
+          </AssistantActivityTimeline>
         </ActivityDisclosure>
         <TextPart
           v-if="activityProjection.answerPart"
@@ -91,24 +103,24 @@
           @toggle-group="$emit('toggleToolGroup', $event)"
           @toggle-item="$emit('toggleToolItem', $event)"
           @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
-        />
+        >
+          <template #interrupt="{ part }">
+            <InterruptPart
+              v-if="part.resolution"
+              :part="part"
+              timeline
+              @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
+              @extend="id => $emit('extendInterrupt', id)"
+              @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
+              @clarify-dismiss="$emit('clarifyDismiss')"
+            />
+          </template>
+        </ToolCallTimeline>
         <StatusHistoryPart
           v-if="statusHistory.length"
           :entries="statusHistory"
         />
       </template>
-
-      <!-- Inline interrupts: approval / clarify requests that blocked the run,
-           rendered after the body and before the ending deliverables. -->
-      <InterruptPart
-        v-for="part in interruptParts"
-        :key="part.key"
-        :part="part"
-        @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
-        @extend="id => $emit('extendInterrupt', id)"
-        @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
-        @clarify-dismiss="$emit('clarifyDismiss')"
-      />
 
       <div
         class="msg-ai-ending"
@@ -271,6 +283,18 @@
           </time>
         </div>
       </div>
+
+      <!-- A pending interrupt is the turn's active control and must remain the
+           final item. Once resolved it folds back into the activity timeline. -->
+      <InterruptPart
+        v-for="part in standaloneInterruptParts"
+        :key="part.key"
+        :part="part"
+        @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
+        @extend="id => $emit('extendInterrupt', id)"
+        @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
+        @clarify-dismiss="$emit('clarifyDismiss')"
+      />
     </div>
   </div>
 </template>
@@ -405,6 +429,17 @@ const interruptParts = computed(
     props.message.parts?.filter(
       (part): part is Extract<ChatPart, { type: 'interrupt' }> => part.type === 'interrupt',
     ) ?? [],
+)
+const timelineResolvedInterruptKeys = computed(() => new Set(
+  props.message.timelineItems
+    ?.filter(
+      (item): item is Extract<import('@/types/chat').ChatStreamTimelineItem, { type: 'interrupt' }> =>
+        item.type === 'interrupt' && !!item.part.resolution,
+    )
+    .map(item => item.part.key) ?? [],
+))
+const standaloneInterruptParts = computed(() =>
+  interruptParts.value.filter(part => !timelineResolvedInterruptKeys.value.has(part.key)),
 )
 const planParts = computed(
   () =>
@@ -689,6 +724,14 @@ function ensembleRole(role: string, label: string): string {
 </script>
 
 <style scoped>
+.msg-ai-main > :deep(.approval-card),
+.msg-ai-main > :deep(.clarify-card) {
+  width: 100%;
+  max-width: 100%;
+  margin-inline: 0;
+  box-sizing: border-box;
+}
+
 .msg-ai {
   position: relative;
   display: flex;

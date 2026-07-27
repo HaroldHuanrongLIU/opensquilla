@@ -516,6 +516,11 @@ def tool_context_from_envelope(
         source="route_metadata",
         preserve_materialized_user_grants=sandbox_run_context_fresh,
     )
+    effective_workspace_dir = (
+        sandbox_run_context.workspace
+        if sandbox_run_context is not None and sandbox_run_context.workspace
+        else workspace_dir
+    )
     if (
         sandbox_run_context is not None
         and sandbox_run_context.run_mode == RunMode.FULL
@@ -535,7 +540,7 @@ def tool_context_from_envelope(
         interaction_mode=interaction_mode,
         subagent_depth=int(envelope.metadata.get("spawn_depth") or 0),
         agent_id=envelope.agent_id,
-        workspace_dir=workspace_dir,
+        workspace_dir=effective_workspace_dir,
         workspace_strict=workspace_strict,
         run_mode=run_mode.value if run_mode is not None else None,
         sandbox_mounts=sandbox_mounts,
@@ -579,6 +584,11 @@ def tool_context_from_envelope(
         plan_revision=envelope.runtime_services.get("plan_revision"),
         plan_run=envelope.runtime_services.get("plan_run"),
     )
+    if sandbox_run_context_fresh:
+        # Runtime-only authority marker copied from the RouteEnvelope field,
+        # never from mutable metadata. Execution-time workspace validation is
+        # the only ingress that sets this field for ordinary turns.
+        setattr(ctx, "_sandbox_run_context_fresh", True)
     if caller_kind is CallerKind.CRON:
         if not cron_trusted_owner:
             ctx = apply_tool_policy_layer(

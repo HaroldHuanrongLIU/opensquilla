@@ -228,7 +228,7 @@
 
               <AssistantActivityTimeline
                 v-if="
-                  liveActivityProjection.activityClusters.length
+                  liveActivityTimelineItems.length
                   || liveActivityProjection.statusSteps.length
                 "
                 variant="checklist"
@@ -244,7 +244,19 @@
                 @toggle-group="toggleToolGroup"
                 @toggle-item="toggleToolItem"
                 @show-result="showToolResultModal"
-              />
+              >
+                <template #interrupt="{ part }">
+                  <InterruptPart
+                    v-if="part.resolution"
+                    :part="part"
+                    timeline
+                    @resolve="resolveInterrupt"
+                    @extend="extendInterrupt"
+                    @clarify-submit="(fields, request) => submitClarify(fields, request)"
+                    @clarify-dismiss="dismissClarify"
+                  />
+                </template>
+              </AssistantActivityTimeline>
             </ActivityDisclosure>
 
             <!-- Provisional answer candidate: the left rule + draft tag mark
@@ -266,19 +278,6 @@
               aria-hidden="true"
             />
 
-            <!-- Live inline interrupts (fold-driven): approval / clarify cards
-                 that block the in-flight turn, rendered after the activity body
-                 and before the deliverables. -->
-            <InterruptPart
-              v-for="part in liveInterruptParts"
-              :key="part.key"
-              :part="part"
-              @resolve="resolveInterrupt"
-              @extend="extendInterrupt"
-              @clarify-submit="(fields, request) => submitClarify(fields, request)"
-              @clarify-dismiss="dismissClarify"
-            />
-
             <ChatArtifactList
               :artifacts="liveArtifacts"
               :navigation-artifacts="sessionArtifacts"
@@ -291,6 +290,19 @@
 
           </div>
         </div>
+
+        <!-- Pending controls stay outside the collapsible activity timeline at
+             the live edge. A resolution removes this card and leaves its compact
+             outcome in chronological history. -->
+        <InterruptPart
+          v-for="part in livePendingInterruptParts"
+          :key="part.key"
+          :part="part"
+          @resolve="resolveInterrupt"
+          @extend="extendInterrupt"
+          @clarify-submit="(fields, request) => submitClarify(fields, request)"
+          @clarify-dismiss="dismissClarify"
+        />
 
         <!-- Soft long-running banner: content events crossed the high watchdog
              threshold while no backend-deadline-owned phase (tool, approval,
@@ -472,9 +484,11 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
-      :send-blocked-message="modelImageSendBlockedMessage"
+      :send-blocked-message="composerSendBlockedMessage"
       :run-mode="runMode"
       :allowed-run-modes="allowedRunModes"
+      :run-mode-locked="runModeLocked"
+      :run-mode-lock-message="t('chat.composer.runModeLocked')"
       :model-routing-mode="modelRoutingMode"
       :model-routing-settings-busy="modelRoutingSettingsBusy"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
@@ -483,6 +497,11 @@
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       :voice-ready="voiceReady"
+      :project-workspace="activeWorkspace"
+      :project-workspace-status="activeWorkspaceStatus"
+      :project-status-message="activeProjectStatusMessage"
+      :can-close-project="isDraftRoute() && pendingWorkspaceId !== null"
+      :can-choose-project="rpc.canChooseProject"
       :plan-mode-available="planUiAvailable"
       :collaboration-mode="collaboration.mode"
       :plan-mode-busy="planModeBusy"
@@ -508,6 +527,17 @@
       @export-markdown="exportMarkdown"
       @send="onComposerSend"
       @stop="onComposerStop"
+      @choose-project="openProjectPicker"
+      @close-project="closeProjectDraft"
+    />
+    <ProjectWorkspacePickerDialog
+      v-if="rpc.canChooseProject"
+      :open="projectPickerOpen"
+      :enabled="rpc.canChooseProject"
+      :session-key="sessionKey"
+      :initial-path="activeWorkspace?.path"
+      @close="projectPickerOpen = false"
+      @choose="chooseProjectPath"
     />
     </div>
 
@@ -574,6 +604,7 @@ import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import ChatHeaderActions from '@/components/chat/ChatHeaderActions.vue'
 import DeliverablesDrawer from '@/components/chat/DeliverablesDrawer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
+import ProjectWorkspacePickerDialog from '@/components/ProjectWorkspacePickerDialog.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatSessionLoadState from '@/components/chat/ChatSessionLoadState.vue'
 import ChatStallNotice from '@/components/chat/ChatStallNotice.vue'
@@ -630,7 +661,10 @@ import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useChatPlans } from '@/composables/chat/useChatPlans'
 import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/useSessions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
-import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
+import {
+  useChatRunModePreference,
+  type RunModePolicy,
+} from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
 import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
@@ -641,6 +675,17 @@ import { useVoiceInput } from '@/composables/chat/useVoiceInput'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import { hasOpenDialogLayer } from '@/composables/useDialogA11y'
 import { useToasts } from '@/composables/useToasts'
+import { useConfirm } from '@/composables/useConfirm'
+import {
+  useProjectWorkspaces,
+  type ProjectWorkspaceItem,
+} from '@/composables/useProjectWorkspaces'
+import {
+  createDraftProjectHydrationGuard,
+  useActiveProjectWorkspace,
+  type ActiveProjectWorkspaceSnapshot,
+} from '@/composables/useActiveProjectWorkspace'
+import { useFreshTaskDraft } from '@/composables/useFreshTaskDraft'
 import type {
   ChatMessage,
   ChatPendingItem,
@@ -656,9 +701,10 @@ import type {
 import type {
   ArtifactPayload,
   SessionEventPayload,
+  SessionMessagesSnapshotResponse,
 } from '@/types/rpc'
 import type { ModelRoutingMode } from '@/types/modelRouting'
-import type { SandboxRunMode } from '@/types/sandbox'
+import { isSandboxRunMode, type SandboxRunMode } from '@/types/sandbox'
 import type { ChatPart, InterruptViewState } from '@/types/parts'
 import type {
   CollaborationMode,
@@ -761,6 +807,18 @@ const platform = usePlatform()
 const router = useRouter()
 const { t, locale } = useI18n()
 const { pushToast } = useToasts()
+const { confirm } = useConfirm()
+const projectWorkspaces = useProjectWorkspaces()
+const activeProjectWorkspace = useActiveProjectWorkspace()
+const draftProjectHydration = createDraftProjectHydrationGuard()
+const {
+  pendingWorkspaceId,
+  boundWorkspaceId,
+  activeWorkspace,
+  status: activeWorkspaceStatus,
+  sendBlockedReason: activeWorkspaceSendBlockedReason,
+} = activeProjectWorkspace
+const projectPickerOpen = ref(false)
 const isCompactViewport = useMediaQuery('(max-width: 480px)')
 const isDesktopViewport = useMediaQuery('(min-width: 769px)')
 const landingAgentId = computed(() => agentIdFromSessionKey(sessionKey.value))
@@ -823,15 +881,22 @@ const {
 } = chatElevatedMode
 
 const {
-  runMode,
+  runMode: globalRunMode,
   allowedRunModes,
-  setRunMode: setPersistedRunMode,
+  hydrateRunModePreference,
+  setGlobalRunMode,
+  applyRunModePreferenceChanged,
 } = useChatRunModePreference({
+  rpc,
   runModePolicy: () => {
     const auth = rpc.auth as RpcAuthPayload | null
     return auth?.runModePolicy
   },
 })
+const activeRunModeLock = ref<SandboxRunMode | null>(null)
+const runMode = computed<SandboxRunMode>(
+  () => activeRunModeLock.value ?? globalRunMode.value,
+)
 
 const sandboxSetupRecovery = useSandboxSetupRecovery({
   rpc,
@@ -860,10 +925,25 @@ const activeTaskGroups = ref<Set<string>>(new Set())
 const activeStreamTaskId = ref<string>('')
 const activeStreamSessionKey = ref<string>('')
 let bindActiveStreamTask = (taskId: string) => { activeStreamTaskId.value = taskId }
+let restoreLiveTurnSnapshot = (_snapshot: SessionMessagesSnapshotResponse) => {}
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
 const pendingForkBeforeMessageId = ref<string | null>(null)
+const freshTaskDraft = useFreshTaskDraft()
+
+function activeSnapshot(workspace: ProjectWorkspaceItem): ActiveProjectWorkspaceSnapshot {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    path: workspace.path,
+    available: workspace.available,
+    removed: false,
+    ...(workspace.availabilityReason
+      ? { availabilityReason: workspace.availabilityReason }
+      : {}),
+  }
+}
 let applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void = () => {}
 let resetComposerInputHistory: () => void = () => {}
 
@@ -1106,6 +1186,7 @@ const {
   hasLegacyNewChatQuery,
   isDraftRoute,
   persistSession,
+  readProjectFromUrl,
   resolveInitialSession,
 } = chatSessionRoute
 
@@ -1312,7 +1393,11 @@ const chatSessionSubscription = useChatSessionSubscription({
   loadHistory,
   resetStreamIdleTimer,
   resetStreamLiveTurnState,
+  onLiveSnapshot: snapshot => restoreLiveTurnSnapshot(snapshot),
   onAuthoritativeIdle: () => {
+    if (pendingQueueOwnerContext.value?.sessionKey !== sessionKey.value) {
+      activeRunModeLock.value = null
+    }
     const taskId = activeStreamTaskId.value
     if (
       taskId
@@ -1321,6 +1406,26 @@ const chatSessionSubscription = useChatSessionSubscription({
     ) {
       schedulePendingDrainAfterTerminal()
     }
+  },
+  onRunModeLock: lock => {
+    if (lock.locked === false) return
+    if (isSandboxRunMode(lock.runMode)) {
+      activeRunModeLock.value = lock.runMode
+    } else if (activeRunModeLock.value === null) {
+      activeRunModeLock.value = globalRunMode.value
+    }
+  },
+  beginSessionMetadataResolution: key =>
+    pendingSessionIntent.value === 'new_chat'
+      ? -1
+      : activeProjectWorkspace.beginSessionResolution(key),
+  onSessionMetadata: (key, generation, metadata) => {
+    if (generation < 0) return
+    activeProjectWorkspace.applySessionSnapshot(key, generation, metadata)
+  },
+  onSessionMetadataError: (key, generation) => {
+    if (generation < 0) return
+    activeProjectWorkspace.failSessionResolution(key, generation)
   },
   onSnapshot: snapshot => {
     chatPlans.applyBootstrap(snapshot)
@@ -1333,7 +1438,7 @@ const {
   unsubscribeSession,
 } = chatSessionSubscription
 applySessionRunState = chatSessionSubscription.applySessionRunState
-const canStop = computed(() => !isSessionHydrating.value && (
+const sessionHasActiveWork = computed(() => (
   isStreaming.value
   || activeTaskGroups.value.size > 0
   || ['queued', 'running', 'approval_pending'].includes(runStatus.value.status)
@@ -1341,6 +1446,24 @@ const canStop = computed(() => !isSessionHydrating.value && (
   || activePlanRun.value?.status === 'running'
   || pendingQueueOwnerContext.value?.sessionKey === sessionKey.value
 ))
+const canStop = computed(() => !isSessionHydrating.value && sessionHasActiveWork.value)
+const runModeLocked = computed(
+  () => isSessionHydrating.value
+    || sessionHasActiveWork.value
+    || activeRunModeLock.value !== null,
+)
+
+watch(sessionHasActiveWork, active => {
+  if (active && activeRunModeLock.value === null) {
+    activeRunModeLock.value = globalRunMode.value
+  } else if (!active && !isSessionHydrating.value) {
+    activeRunModeLock.value = null
+  }
+}, { flush: 'sync' })
+
+watch(sessionKey, () => {
+  activeRunModeLock.value = null
+})
 
 const chatSessionRuntime = useChatSessionRuntime({
   sessionKey,
@@ -1370,21 +1493,37 @@ const chatSessionRuntime = useChatSessionRuntime({
   resetSavingsPopupCooldown,
   restoreWidgetState,
   resetStreamLiveTurnState,
+  resetDraftComposer: () => {
+    inputText.value = ''
+    pendingAttachments.value = []
+    resetComposerInputHistory()
+    autoResizeTextarea()
+  },
 })
 const {
   resetCurrentSessionAfterSlash,
   startDraftSession,
-  switchToSession,
+  switchToSession: switchRuntimeToSession,
   adoptResponseSession,
 } = chatSessionRuntime
 switchToPlanSession = switchToSession
+
+function switchToSession(nextSessionKey: string) {
+  if (nextSessionKey !== sessionKey.value) {
+    activeProjectWorkspace.beginSessionResolution(nextSessionKey)
+  }
+  return switchRuntimeToSession(nextSessionKey)
+}
 
 const chatSlashCommands = useChatSlashCommands({
   rpc,
   inputText,
   sessionKey,
   autoResizeTextarea,
-  newSession: () => goToDraft({ agentId: 'main' }),
+  newSession: () => {
+    freshTaskDraft.requestFreshTask('main')
+    goToDraft({ agentId: 'main' })
+  },
   resetCurrentSession: () => {
     resetCurrentSessionAfterSlash()
     chatPlans.reset()
@@ -1449,8 +1588,16 @@ const chatSend = useChatSend({
   runMode,
   pendingAttachments,
   pendingSessionIntent,
+  pendingWorkspaceId,
+  sendBlockedReason: activeWorkspaceSendBlockedReason,
+  validateActiveProjectBeforeSend,
+  acceptPendingWorkspaceBinding: activeProjectWorkspace.acceptPendingBinding,
   initialCollaborationMode,
   pendingForkBeforeMessageId,
+  materializeDraftSession: key => {
+    if (!isDraftRoute()) return
+    persistSession(key, { source: 'chatView.draftAccepted' })
+  },
   aborted,
   activeStreamTaskId,
   activeStreamSessionKey,
@@ -1611,6 +1758,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   loadCurrentSessionUsage,
 })
 bindActiveStreamTask = rpcEventHandlers.bindActiveStreamTask
+restoreLiveTurnSnapshot = rpcEventHandlers.restoreLiveTurnSnapshot
 const {
   streamThinkingText,
   streamThinkingElapsedText,
@@ -1725,6 +1873,48 @@ const liveInterruptParts = computed(() =>
     : foldedTurn.value.parts.filter(
         (part): part is Extract<typeof part, { type: 'interrupt' }> => part.type === 'interrupt',
       ),
+)
+const livePendingInterruptParts = computed(() =>
+  liveInterruptParts.value.filter(part => !part.resolution),
+)
+
+const visiblePendingInterruptKeys = computed(() => {
+  const keys = new Set(livePendingInterruptParts.value.map(part => part.key))
+  for (const message of renderedMessages.value) {
+    for (const part of message.parts ?? []) {
+      if (part.type === 'interrupt' && !part.resolution) keys.add(part.key)
+    }
+  }
+  return [...keys]
+})
+
+async function focusPendingApprovalCard() {
+  const request = appStore.approvalFocusRequest
+  if (!request || request.sessionKey !== sessionKey.value) return
+
+  await nextTick()
+  if (
+    appStore.approvalFocusRequest?.requestId !== request.requestId
+    || request.sessionKey !== sessionKey.value
+  ) return
+
+  const card = [...(threadRef.value?.querySelectorAll<HTMLElement>('[data-approval-id]') ?? [])]
+    .find(element => element.dataset.approvalId === request.approvalId)
+  if (!card) return
+
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  card.focus({ preventScroll: true })
+  appStore.clearApprovalFocusRequest(request.requestId)
+}
+
+watch(
+  [
+    () => appStore.approvalFocusRequest?.requestId ?? 0,
+    sessionKey,
+    () => visiblePendingInterruptKeys.value.join('\u0000'),
+  ],
+  () => { void focusPendingApprovalCard() },
+  { flush: 'post', immediate: true },
 )
 
 // Feeds the persistent visually-hidden status region in the template. It only
@@ -1998,9 +2188,29 @@ const modelImageSendBlockedMessage = computed(() => {
     : ''
 })
 
+const activeProjectStatusMessage = computed(() => {
+  switch (activeWorkspaceStatus.value) {
+    case 'resolving':
+      return t('workspaces.activeProjectResolving')
+    case 'unavailable':
+      return t('workspaces.activeProjectUnavailable')
+    case 'removed':
+      return t('workspaces.activeProjectRemoved')
+    case 'unknown':
+    case 'error':
+      return t('workspaces.activeProjectBlocksSending')
+    default:
+      return ''
+  }
+})
+
+const composerSendBlockedMessage = computed(() =>
+  modelImageSendBlockedMessage.value || activeProjectStatusMessage.value,
+)
+
 const sendButtonTitle = computed(() => {
   if (replanActive.value) return t('chat.plan.reviseSend')
-  if (modelImageSendBlockedMessage.value) return modelImageSendBlockedMessage.value
+  if (composerSendBlockedMessage.value) return composerSendBlockedMessage.value
   if (isCompactInFlightForCurrentSession()) return t('chat.sendQueuesUntilCompaction')
   if (isStreaming.value) {
     return busySendMode.value === 'steer'
@@ -2081,8 +2291,15 @@ function readAuthToken(): string {
   }
 }
 
-function setComposerRunMode(mode: SandboxRunMode) {
-  setPersistedRunMode(mode)
+async function setComposerRunMode(mode: SandboxRunMode) {
+  if (runModeLocked.value) return
+  try {
+    await setGlobalRunMode(mode)
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    console.warn('Failed to persist sandbox run mode:', detail)
+    pushToast(detail, { tone: 'danger' })
+  }
 }
 
 async function setComposerModelRoutingMode(mode: ModelRoutingMode) {
@@ -2773,6 +2990,121 @@ function consumeDraftPrefill() {
   } catch { /* ignore */ }
 }
 
+async function chooseProjectPath(path: string) {
+  projectPickerOpen.value = false
+  if (!rpc.canChooseProject) return
+  const trusted = await confirm({
+    title: t('workspaces.trustTitle'),
+    body: t('workspaces.trustBody', { path }),
+    primaryLabel: t('workspaces.trustConfirm'),
+    primaryClass: 'btn--primary',
+  })
+  if (!trusted) return
+  try {
+    const workspace = await projectWorkspaces.openWorkspace(path)
+    if (!workspace) return
+    freshTaskDraft.requestFreshTask(draftAgentId(), workspace.id)
+    goToDraft({
+      agentId: draftAgentId(),
+      projectId: workspace.id,
+      replace: true,
+    })
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    pushToast(t('workspaces.openFailed', { error: detail }), { tone: 'warn' })
+  }
+}
+
+function openProjectPicker() {
+  if (!rpc.canChooseProject) return
+  projectPickerOpen.value = true
+}
+
+function closeProjectDraft() {
+  activeProjectWorkspace.clearDraft()
+  freshTaskDraft.requestFreshTask(draftAgentId())
+  goToDraft({
+    agentId: draftAgentId(),
+    projectId: null,
+    replace: true,
+  })
+}
+
+async function validateActiveProjectBeforeSend(): Promise<string | null> {
+  const workspaceId = boundWorkspaceId.value
+  if (!workspaceId) return activeWorkspaceSendBlockedReason.value
+  if (!rpc.canManageProjectWorkspaces) {
+    return activeWorkspaceSendBlockedReason.value
+  }
+  try {
+    const workspaces = await projectWorkspaces.loadWorkspaces()
+    if (boundWorkspaceId.value !== workspaceId) {
+      return activeWorkspaceSendBlockedReason.value || 'resolving'
+    }
+    const workspace = workspaces.find(item => item.id === workspaceId) || null
+    activeProjectWorkspace.applyWorkspaceRefresh(
+      workspace ? activeSnapshot(workspace) : null,
+    )
+  } catch {
+    if (boundWorkspaceId.value === workspaceId) {
+      activeProjectWorkspace.failWorkspaceRefresh()
+    }
+  }
+  return activeWorkspaceSendBlockedReason.value
+}
+
+function draftProjectHydrationIsCurrent(
+  generation: number,
+  workspaceId: string | null,
+): boolean {
+  return draftProjectHydration.isCurrent(generation)
+    && isDraftRoute()
+    && readProjectFromUrl() === workspaceId
+}
+
+async function syncDraftProjectFromRoute(generation: number): Promise<boolean> {
+  const workspaceId = readProjectFromUrl()
+  if (!draftProjectHydrationIsCurrent(generation, workspaceId)) return false
+  if (!workspaceId) {
+    activeProjectWorkspace.clearDraft()
+    return true
+  }
+  if (!rpc.canChooseProject) {
+    activeProjectWorkspace.clearDraft()
+    freshTaskDraft.requestFreshTask(draftAgentId())
+    goToDraft({
+      agentId: draftAgentId(),
+      projectId: null,
+      replace: true,
+    })
+    return true
+  }
+  const cached = projectWorkspaces.byId.value.get(workspaceId)
+  if (cached) {
+    activeProjectWorkspace.beginProjectDraft(activeSnapshot(cached))
+    return true
+  }
+  activeProjectWorkspace.beginUnknownProjectDraft(workspaceId)
+  try {
+    await rpc.waitForConnection()
+    if (!draftProjectHydrationIsCurrent(generation, workspaceId)) return false
+    await projectWorkspaces.loadWorkspaces()
+    if (!draftProjectHydrationIsCurrent(generation, workspaceId)) return false
+    const workspace = projectWorkspaces.byId.value.get(workspaceId)
+    if (workspace) {
+      activeProjectWorkspace.beginProjectDraft(activeSnapshot(workspace))
+    } else {
+      activeProjectWorkspace.beginUnknownProjectDraft(workspaceId)
+    }
+  } catch (cause) {
+    if (!draftProjectHydrationIsCurrent(generation, workspaceId)) return false
+    activeProjectWorkspace.failWorkspaceRefresh()
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    pushToast(t('workspaces.loadFailed', { error: detail }), { tone: 'warn' })
+  }
+  return true
+}
+
 // Reset to a clean draft for the agent requested by the draft route. The
 // provisional key stays out of the URL and storage until the first send.
 function enterDraft() {
@@ -2795,14 +3127,38 @@ onMounted(async () => {
   sessionKey.value = initialSession.sessionKey
   if (initialSession.draft) {
     pendingSessionIntent.value = 'new_chat'
-    if (!isDraftRoute() || hasLegacyNewChatQuery()) goToDraft({ replace: true })
-    consumeDraftPrefill()
+    const generation = draftProjectHydration.begin()
+    const synced = await syncDraftProjectFromRoute(generation)
+    if (synced) {
+      if (!isDraftRoute() || hasLegacyNewChatQuery()) goToDraft({ replace: true })
+      consumeDraftPrefill()
+    }
   } else {
+    activeProjectWorkspace.beginSessionResolution(initialSession.sessionKey)
     persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
   // Load elevated mode
   loadElevatedMode()
+
+  const refreshRunModePreference = async () => {
+    try {
+      await hydrateRunModePreference()
+    } catch (cause) {
+      console.warn(
+        'Failed to hydrate global sandbox run mode:',
+        cause instanceof Error ? cause.message : String(cause),
+      )
+    }
+  }
+  unsubs.push(rpc.on(
+    'sandbox.run_mode.preference.changed',
+    payload => applyRunModePreferenceChanged(payload),
+  ))
+  unsubs.push(rpc.on('_state', state => {
+    if (state === 'connected') void refreshRunModePreference()
+  }))
+  void refreshRunModePreference()
 
   // Register event handlers before sessions.messages.subscribe can replay
   // buffered events. Session hydration and unrelated feature configuration
@@ -2883,21 +3239,62 @@ watch(() => route.query.session, (newSession) => {
 })
 
 // Entering the draft route resets to a clean draft for the requested agent.
-watch(() => [route.path, route.query.agent], () => {
-  if (isDraftRoute()) enterDraft()
+watch(() => [route.path, route.query.agent, route.query.project], async () => {
+  const generation = draftProjectHydration.begin()
+  if (!isDraftRoute()) return
+  if (!await syncDraftProjectFromRoute(generation)) return
+  enterDraft()
 })
+
+// Explicit new-task actions must reset even when navigation targets the exact
+// draft URL already on screen (for example, clicking the same project pencil).
+watch(freshTaskDraft.request, request => {
+  if (!request) return
+  draftProjectHydration.invalidate()
+  landingPrefilled.value = false
+  if (request.workspaceId && rpc.canChooseProject) {
+    const workspace = projectWorkspaces.byId.value.get(request.workspaceId)
+    if (workspace) {
+      activeProjectWorkspace.beginProjectDraft(activeSnapshot(workspace))
+    } else {
+      activeProjectWorkspace.beginUnknownProjectDraft(request.workspaceId)
+    }
+  } else {
+    activeProjectWorkspace.clearDraft()
+  }
+  startDraftSession(request.agentId)
+  if (isDesktopViewport.value) composerRef.value?.focusTextarea()
+})
+
+watch(projectWorkspaces.workspaces, workspaces => {
+  if (!rpc.canManageProjectWorkspaces) return
+  const workspaceId = boundWorkspaceId.value
+  if (!workspaceId) return
+  const workspace = workspaces.find(item => item.id === workspaceId) || null
+  activeProjectWorkspace.applyWorkspaceRefresh(
+    workspace ? activeSnapshot(workspace) : null,
+  )
+})
+
+watch(
+  () => rpc.canChooseProject,
+  allowed => {
+    if (allowed) return
+    projectPickerOpen.value = false
+    if (!isDraftRoute() || !readProjectFromUrl()) return
+    activeProjectWorkspace.clearDraft()
+    freshTaskDraft.requestFreshTask(draftAgentId())
+    goToDraft({
+      agentId: draftAgentId(),
+      projectId: null,
+      replace: true,
+    })
+  },
+)
 
 // Legacy ?newChat=1 / ?new=1 links land on the draft route, then the params disappear.
 watch(() => [route.query.newChat, route.query.new], () => {
   if (hasLegacyNewChatQuery()) goToDraft({ replace: true })
-})
-
-// A draft materializes its session key in the URL only when the first message
-// actually goes out.
-watch(pendingSessionIntent, (intent, previous) => {
-  if (previous !== 'new_chat' || intent !== null) return
-  if (!isDraftRoute()) return
-  persistSession(sessionKey.value, { source: 'chatView.draftMaterialized' })
 })
 
 watch(sessionKey, () => {
@@ -2919,14 +3316,19 @@ watch(answerRevealOpen, (open) => {
   if (open && autoScroll.value) scrollToBottom()
 })
 
-// An approval/clarify interrupt is a user-blocking control, not answer content,
-// so it must not sit behind the router-lead reveal window. With the fold
-// authoritative (default), the gated activity is the only interrupt surface,
-// so reveal immediately when a live interrupt part appears — otherwise the card
-// can stay invisible for up to the MAX backstop when no router decision lands.
-watch(() => liveInterruptParts.value.length, (n, prev) => {
-  if (n > (prev ?? 0)) revealNow()
-})
+// An approval/clarify interrupt is a user-blocking control, not answer content.
+// Reveal it immediately, re-pin the live edge, and keep it outside the
+// collapsible activity surface so it cannot disappear while the backend waits.
+watch(
+  () => visiblePendingInterruptKeys.value,
+  (keys, previousKeys = []) => {
+    if (!keys.some(key => !previousKeys.includes(key))) return
+    revealNow()
+    autoScroll.value = true
+    scrollToBottom()
+  },
+  { flush: 'post' },
+)
 </script>
 
 <style scoped src="../styles/chat-view.css"></style>

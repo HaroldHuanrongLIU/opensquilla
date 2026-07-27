@@ -49,6 +49,7 @@ interface SendAttempt {
   intent: string | null
   initialCollaborationMode: CollaborationMode | null
   forkBeforeMessageId: string | null
+  workspaceId: string | null
   params: ChatSendParams
   requiresIdempotentReplay?: boolean
 }
@@ -201,6 +202,7 @@ function matchesRecoveredDraft(
     intent: string | null
     initialCollaborationMode: CollaborationMode | null
     forkBeforeMessageId: string | null
+    workspaceId: string | null
   },
 ): boolean {
   return (
@@ -209,6 +211,7 @@ function matchesRecoveredDraft(
     attempt.intent === input.intent &&
     attempt.initialCollaborationMode === input.initialCollaborationMode &&
     attempt.forkBeforeMessageId === input.forkBeforeMessageId &&
+    attempt.workspaceId === input.workspaceId &&
     sameSendableAttachments(input.attachments, attempt)
   )
 }
@@ -236,6 +239,11 @@ export interface UseChatSendOptions {
   pendingSessionIntent: Ref<string | null>
   initialCollaborationMode: Readonly<Ref<CollaborationMode>>
   pendingForkBeforeMessageId: Ref<string | null>
+  pendingWorkspaceId?: Ref<string | null>
+  sendBlockedReason?: Readonly<Ref<string | null>>
+  validateActiveProjectBeforeSend?: () => Promise<string | null>
+  acceptPendingWorkspaceBinding?: (workspaceId: string | null) => void
+  materializeDraftSession?: (sessionKey: string) => void
   aborted: Ref<boolean>
   // Task id rendered by the live stream; a fresh turn binds it from the
   // chat.send response so a prior task's late events can't leak in (issue #344).
@@ -279,13 +287,45 @@ export function useChatSend(options: UseChatSendOptions) {
   const { pushToast } = useToasts()
   let activeFreshSendToken: FreshSendToken | null = null
   let activeResponseHandoff: ResponseHandoffGate | null = null
+  let activeProjectPreflightToken: symbol | null = null
   let recoveredAttempt: SendAttempt | null = null
   const recoveredQueuedAttempts = new WeakMap<ChatPendingItem, SendAttempt>()
+
+  function pendingWorkspaceForIntent(intent: string | null): string | null {
+    return intent === 'new_chat'
+      ? options.pendingWorkspaceId?.value || null
+      : null
+  }
 
   function modelImageSendBlocked(attachments: readonly Attachment[]): boolean {
     if (!hasSendableModelInputImageAttachment(attachments)) return false
     return options.modelRoutingSettingsBusy.value
       || options.modelRoutingMode.value === 'llm_ensemble'
+  }
+
+  async function refreshedActiveProjectBlocksSend(): Promise<boolean> {
+    if (activeProjectPreflightToken) return true
+    const token = Symbol('active-project-preflight')
+    activeProjectPreflightToken = token
+    const requestSessionKey = options.sessionKey.value
+    try {
+      const reason = await options.validateActiveProjectBeforeSend?.()
+      if (options.sessionKey.value !== requestSessionKey) return true
+      return Boolean(reason)
+    } catch {
+      return true
+    } finally {
+      if (activeProjectPreflightToken === token) {
+        activeProjectPreflightToken = null
+      }
+    }
+  }
+
+  function acceptPendingWorkspaceBinding(workspaceId: string | null) {
+    options.acceptPendingWorkspaceBinding?.(workspaceId)
+    if (options.pendingWorkspaceId?.value === workspaceId) {
+      options.pendingWorkspaceId.value = null
+    }
   }
 
   function beginFreshStream(requestSessionKey: string): FreshSendToken {
@@ -310,11 +350,19 @@ export function useChatSend(options: UseChatSendOptions) {
   }
 
   function consumeAcceptedSessionIntent(attempt: SendAttempt): void {
-    if (
-      options.sessionKey.value === attempt.requestSessionKey
-      && options.pendingSessionIntent.value === attempt.intent
-    ) {
+    if (options.sessionKey.value !== attempt.requestSessionKey) return
+    if (attempt.intent === 'new_chat') {
+      options.materializeDraftSession?.(attempt.requestSessionKey)
+    }
+    if (options.pendingSessionIntent.value === attempt.intent) {
       options.pendingSessionIntent.value = null
+    }
+    if (
+      options.pendingWorkspaceId
+      && attempt.intent === 'new_chat'
+      && options.pendingWorkspaceId.value === attempt.workspaceId
+    ) {
+      acceptPendingWorkspaceBinding(attempt.workspaceId)
     }
   }
 
@@ -565,6 +613,14 @@ export function useChatSend(options: UseChatSendOptions) {
       hasPayload = text || sendableAttachments.length > 0
     }
 
+    if (hasPayload) {
+      if (options.validateActiveProjectBeforeSend) {
+        if (await refreshedActiveProjectBlocksSend()) return
+      } else if (options.sendBlockedReason?.value) {
+        return
+      }
+    }
+
     // An unknown acceptance must be resolved by replaying the exact original
     // request before any edited draft or mode change can become a new turn.
     // Otherwise a committed new_chat can be stranded behind a second request
@@ -593,6 +649,7 @@ export function useChatSend(options: UseChatSendOptions) {
         intent: options.pendingSessionIntent.value,
         initialCollaborationMode: initialModeForIntent(options.pendingSessionIntent.value),
         forkBeforeMessageId: options.pendingForkBeforeMessageId.value,
+        workspaceId: pendingWorkspaceForIntent(options.pendingSessionIntent.value),
       })
     ) {
       await dispatchSend(text, {
@@ -621,6 +678,11 @@ export function useChatSend(options: UseChatSendOptions) {
         await dispatchSend(text, {
           composerText,
           queueMode: 'steer',
+          payload: {
+            attachments: sendableAttachments,
+            intent: null,
+            forkBeforeMessageId: null,
+          },
         })
         return
       }
@@ -745,6 +807,10 @@ export function useChatSend(options: UseChatSendOptions) {
     const forkBeforeMessageId = sendOpts.payload
       ? sendOpts.payload.forkBeforeMessageId
       : options.pendingForkBeforeMessageId.value
+    // Only the first new-task attempt owns the pending workspace. Follow-up
+    // queue/steer sends may run before it is accepted, but must neither inherit
+    // nor clear that project binding.
+    const workspaceId = pendingWorkspaceForIntent(intent)
     const initialCollaborationMode = initialModeForIntent(intent)
     const initialSendableAttachments = sourceAttachments.filter(isSendableAttachment)
     // This is deliberately before optimistic rendering, composer clearing,
@@ -767,6 +833,7 @@ export function useChatSend(options: UseChatSendOptions) {
           intent,
           initialCollaborationMode,
           forkBeforeMessageId,
+          workspaceId,
         })
         && retryCandidate.queueMode === sendOpts.queueMode
       ),
@@ -827,6 +894,7 @@ export function useChatSend(options: UseChatSendOptions) {
       if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
       params._source = chatSourceMetadata(options)
       if (intent) params.intent = intent
+      if (intent === 'new_chat' && workspaceId) params.workspaceId = workspaceId
       if (initialCollaborationMode === 'plan') {
         params.collaborationMode = initialCollaborationMode
       }
@@ -846,6 +914,7 @@ export function useChatSend(options: UseChatSendOptions) {
         intent,
         initialCollaborationMode,
         forkBeforeMessageId,
+        workspaceId,
         params,
       }
       const now = new Date().toISOString()
@@ -875,7 +944,6 @@ export function useChatSend(options: UseChatSendOptions) {
         options.pendingForkBeforeMessageId.value = null
       }
     }
-
     // A steer send rides an already-active stream; restarting it would wipe
     // the partial output of the run being steered.
     const wasStreaming = options.stream.isStreaming.value
@@ -1097,6 +1165,9 @@ export function useChatSend(options: UseChatSendOptions) {
     if (!options.pendingForkBeforeMessageId.value) {
       options.pendingForkBeforeMessageId.value = attempt.forkBeforeMessageId
     }
+    if (options.pendingWorkspaceId && !options.pendingWorkspaceId.value) {
+      options.pendingWorkspaceId.value = attempt.workspaceId
+    }
     recoveredAttempt = {
       ...attempt,
       requiresIdempotentReplay: recovery.requiresIdempotentReplay,
@@ -1148,6 +1219,11 @@ export function useChatSend(options: UseChatSendOptions) {
   async function dispatchHiddenSend(providerText: string, displayText: string) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey || !providerText) return
+    if (options.validateActiveProjectBeforeSend) {
+      if (await refreshedActiveProjectBlocksSend()) return
+    } else if (options.sendBlockedReason?.value) {
+      return
+    }
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     const handoffInFlight = responseHandoffBlocksCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight || handoffInFlight) {
