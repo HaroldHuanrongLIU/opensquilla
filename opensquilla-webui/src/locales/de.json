@@ -3304,11 +3304,18 @@
       "sendReply": "Antwort senden",
       "sendingContinuing": "Antwort wird gesendet · Ausführung wird fortgesetzt…"
     },
+    "slashCommands": {
+      "unknown": "Unbekannter Befehl {command}. Bearbeite ihn weiter oder verwende //, um ihn als Text zu senden."
+    },
     "codingMode": {
-      "enabled": "Coding mode aktiviert.",
+      "enabled": "Coding mode für alle Chats aktiviert.",
       "disabled": "Coding mode deaktiviert.",
-      "usage": "Verwende /coding, /coding on, /coding off oder /coding status.",
-      "updateFailed": "Coding mode konnte nicht aktualisiert werden."
+      "usage": "Verwende /coding zum Umschalten oder /coding on, /coding off bzw. /coding status.",
+      "updateFailed": "Coding mode konnte nicht aktualisiert werden.",
+      "commandEnable": "Coding mode aktivieren.",
+      "commandDisable": "Coding mode deaktivieren.",
+      "activeLabel": "Coding AN",
+      "disableLabel": "Coding mode deaktivieren"
     },
     "composer": {
       "executionMode": "Ausführungsmodus",

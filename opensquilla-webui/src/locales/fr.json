@@ -3304,11 +3304,18 @@
       "sendReply": "Envoyer la réponse",
       "sendingContinuing": "Envoi de la réponse · poursuite de l'exécution…"
     },
+    "slashCommands": {
+      "unknown": "Commande inconnue {command}. Continuez à la modifier ou utilisez // pour l’envoyer comme texte."
+    },
     "codingMode": {
-      "enabled": "Coding mode activé.",
+      "enabled": "Coding mode activé pour toutes les discussions.",
       "disabled": "Coding mode désactivé.",
-      "usage": "Utilisez /coding, /coding on, /coding off ou /coding status.",
-      "updateFailed": "Impossible de mettre à jour Coding mode."
+      "usage": "Utilisez /coding pour basculer, ou /coding on, /coding off ou /coding status.",
+      "updateFailed": "Impossible de mettre à jour Coding mode.",
+      "commandEnable": "Activer Coding mode.",
+      "commandDisable": "Désactiver Coding mode.",
+      "activeLabel": "Coding ACTIVÉ",
+      "disableLabel": "Désactiver Coding mode"
     },
     "composer": {
       "executionMode": "Mode d'exécution",
