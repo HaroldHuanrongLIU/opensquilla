@@ -292,6 +292,8 @@
       "toolDetailsExpanded": "Expandido",
       "visualEffectsLabel": "Efectos visuales",
       "visualEffectsDesc": "Anima las decisiones de enrutamiento de modelos y las transiciones de respuestas.",
+      "composerFxLabel": "Compositor flotante",
+      "composerFxDesc": "Flota el campo de entrada sobre la conversación y lo colapsa a una sola línea al desplazarse hacia arriba.",
       "bgmLabel": "Música de fondo",
       "bgmDesc": "Muestra el control de música de fondo en la barra superior. Desactivado por defecto; también se puede alternar desde la paleta de comandos.",
       "sidebarWidthLabel": "Ancho de la barra lateral",
