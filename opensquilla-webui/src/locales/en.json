@@ -4066,6 +4066,7 @@
     "sidebar": {
       "recentConversations": "Recent tasks",
       "recents": "Recents",
+      "pinned": "Pinned",
       "refresh": "Reload tasks",
       "clearAgentFilter": "Clear agent filter: {name}",
       "loadError": "Unable to load tasks",

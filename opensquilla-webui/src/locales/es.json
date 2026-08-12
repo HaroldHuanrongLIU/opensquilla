@@ -4013,6 +4013,7 @@
     "sidebar": {
       "recentConversations": "Tareas recientes",
       "recents": "Recientes",
+      "pinned": "Fijadas",
       "refresh": "Recargar tareas",
       "clearAgentFilter": "Borrar filtro de agente: {name}",
       "loadError": "No se pueden cargar las tareas",
