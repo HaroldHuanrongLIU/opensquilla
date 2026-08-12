@@ -559,6 +559,9 @@
       @clear="clearPendingQueue"
       @edit="editPendingMessage"
       @remove="removePendingChip"
+      @reorder="reorderPendingItem"
+      @reorder-end="endPendingReorder"
+      @reorder-start="beginPendingReorder"
       @steer="steerPendingMessage"
     />
 
@@ -1500,6 +1503,9 @@ const {
   adoptPendingQueue,
   popPendingTail,
   popAllPendingIntoComposer,
+  beginPendingReorder,
+  reorderPendingItem,
+  endPendingReorder,
   schedulePendingDrainAfterTerminal,
   flushDeferredPendingDrain,
   cleanup: cleanupPendingQueue,
