@@ -35,6 +35,7 @@ from opensquilla.gateway.routing import tool_context_from_envelope
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_sessions import _normalize_terminal_event_payload
 from opensquilla.gateway.scopes import METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
+from opensquilla.gateway.session_lifecycle import SessionTaskSnapshot
 from opensquilla.gateway.session_streams import SessionStreamRegistry, get_session_streams
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, WsConnection, get_registry
@@ -1863,6 +1864,43 @@ class TestSessionsList:
         assert row["run_status"] == "running"
 
     @pytest.mark.asyncio
+    async def test_list_prefers_oldest_queued_task_as_fifo_foreground(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:queued-fifo")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-first",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+            SimpleNamespace(
+                task_id="task-second",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=200,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["active_task"]["task_id"] == "task-first"
+        assert row["run_status"] == "queued"
+
+    @pytest.mark.asyncio
     async def test_list_batches_persisted_task_state_for_visible_sessions(self, dispatcher):
         one = FakeSession(session_key="agent:main:webchat:one")
         two = FakeSession(session_key="agent:main:webchat:two")
@@ -2961,6 +2999,28 @@ class TestSessionsSend:
             {"message": "boom", "code": "SomeRuntimeError"},
         )
         assert payload["turn_outcome"]["kind"] == "failed"
+
+    def test_terminal_error_preserves_transient_retryability(self):
+        payload = _normalize_terminal_event_payload(
+            "session.event.error",
+            {
+                "message": "raw provider body with private prompt material",
+                "code": "PRIVATE_PROVIDER_CODE_BODY",
+                "response_body": "private upstream response body",
+                "request_payload_head": "private prompt payload",
+                "turn_outcome": {
+                    "failure_kind": "rate_limited",
+                },
+            },
+        )
+
+        assert payload["turn_outcome"]["failure_kind"] == "rate_limited"
+        assert payload["turn_outcome"]["retryable"] is True
+        assert payload["code"] == "provider_rate_limited"
+        assert payload["error_message"] == (
+            "The model provider is rate-limiting requests. Try again later."
+        )
+        assert "private" not in repr(payload).lower()
 
     @pytest.mark.asyncio
     async def test_send_reset_same_key_intent_applies_before_append(
@@ -4436,18 +4496,18 @@ class TestSessionsAbort:
                         "reason": reason,
                     }
                 )
-                return 1
+                return int(task_id == "task-new" and session_key == session.session_key)
 
             async def wait(self, task_id: str):
                 return SimpleNamespace(task_id=task_id, status="cancelled")
 
         runtime = Runtime()
         ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
-        background_cancel_calls: list[str] = []
+        task_background_cancel_calls: list[tuple[str, str]] = []
         approval_cancel_calls: list[str] = []
 
-        async def cancel_background(session_key: str) -> int:
-            background_cancel_calls.append(session_key)
+        async def cancel_task_background(session_key: str, task_id: str) -> int:
+            task_background_cancel_calls.append((session_key, task_id))
             return 1
 
         class ApprovalQueue:
@@ -4456,8 +4516,8 @@ class TestSessionsAbort:
                 return 1
 
         monkeypatch.setattr(
-            "opensquilla.gateway.subagent_announce.cancel_background_completion_for_session",
-            cancel_background,
+            "opensquilla.gateway.subagent_announce.cancel_background_completion_for_task",
+            cancel_task_background,
         )
         monkeypatch.setattr(
             "opensquilla.gateway.approval_queue.get_approval_queue",
@@ -4479,8 +4539,18 @@ class TestSessionsAbort:
         assert res.ok is True
         assert res.payload["aborted"] is False
         assert res.payload["reason"] == "task_mismatch"
-        assert runtime.cancel_calls == []
-        assert background_cancel_calls == []
+        # The exact cancel is the in-memory authority.  The advisory task list
+        # is consulted only after its side-effect-free no-op to classify the
+        # stale identity for the client.
+        assert runtime.cancel_calls == [
+            {
+                "task_id": "task-old",
+                "session_key": session.session_key,
+                "source": "webui_stop",
+                "reason": "user_abort",
+            }
+        ]
+        assert task_background_cancel_calls == []
         assert approval_cancel_calls == []
 
     @pytest.mark.asyncio
@@ -4541,6 +4611,80 @@ class TestSessionsAbort:
             }
         ]
         assert runtime.wait_calls == ["task-current"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_task_preserves_running_task_session_registries(
+        self, dispatcher, session, monkeypatch
+    ):
+        class Runtime:
+            def __init__(self) -> None:
+                self.cancel_calls: list[dict[str, Any]] = []
+                self.wait_calls: list[str] = []
+
+            async def list(self, session_key: str | None = None):
+                assert session_key == session.session_key
+                return [
+                    SimpleNamespace(task_id="task-running", status="running"),
+                    SimpleNamespace(task_id="task-queued", status="queued"),
+                ]
+
+            async def cancel(self, **kwargs: Any) -> int:
+                self.cancel_calls.append(kwargs)
+                return int(kwargs.get("task_id") == "task-queued")
+
+            async def wait(self, task_id: str):
+                self.wait_calls.append(task_id)
+                return SimpleNamespace(task_id=task_id, status="cancelled")
+
+        task_background_cancel_calls: list[tuple[str, str]] = []
+        approval_cancel_calls: list[str] = []
+
+        async def cancel_task_background(session_key: str, task_id: str) -> int:
+            task_background_cancel_calls.append((session_key, task_id))
+            return 1
+
+        class ApprovalQueue:
+            def resolve_pending_for_session(self, session_key: str, *, approved: bool) -> int:
+                assert approved is False
+                approval_cancel_calls.append(session_key)
+                return 1
+
+        monkeypatch.setattr(
+            "opensquilla.gateway.subagent_announce.cancel_background_completion_for_task",
+            cancel_task_background,
+        )
+        monkeypatch.setattr(
+            "opensquilla.gateway.approval_queue.get_approval_queue",
+            lambda: ApprovalQueue(),
+        )
+        runtime = Runtime()
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "chat.abort",
+            {
+                "sessionKey": session.session_key,
+                "taskId": "task-queued",
+                "source": "webui_stop",
+                "scope": "task",
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["aborted"] is True
+        assert runtime.cancel_calls == [
+            {
+                "task_id": "task-queued",
+                "session_key": session.session_key,
+                "source": "webui_stop",
+                "reason": "user_abort",
+            }
+        ]
+        assert runtime.wait_calls == ["task-queued"]
+        assert task_background_cancel_calls == [(session.session_key, "task-queued")]
+        assert approval_cancel_calls == []
 
     @pytest.mark.asyncio
     async def test_chat_task_scoped_stop_without_valid_task_id_never_widens_to_session_abort(
@@ -7582,6 +7726,7 @@ class TestSessionsMessagesSubscribe:
         assert res.payload == {
             "key": key,
             "task_id": "task-live-snapshot",
+            "stream_generation": stream_registry.stream_generation,
             "current_stream_seq": 2,
             "events": [
                 {
@@ -7590,6 +7735,7 @@ class TestSessionsMessagesSubscribe:
                         "task_id": "task-live-snapshot",
                         "text": "Inspecting",
                         "session_key": key,
+                        "stream_generation": stream_registry.stream_generation,
                         "stream_seq": 1,
                         "emitted_at": ANY,
                     },
@@ -8073,6 +8219,134 @@ class TestSessionsMessagesSubscribe:
         assert subscriptions.get_message_subscribers(key) == set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method",
+        ["sessions.messages.hydrate", "sessions.bootstrap"],
+    )
+    async def test_hydration_uses_runtime_fifo_for_same_timestamp_queued_tasks(
+        self,
+        dispatcher,
+        method: str,
+    ) -> None:
+        key = "agent:main:webchat:runtime-fifo-hydration"
+        session = FakeSession(session_key=key, session_id="runtime-fifo-hydration")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[key] = [
+            SimpleNamespace(
+                task_id="task-z-first",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+                details={},
+            ),
+            SimpleNamespace(
+                task_id="task-a-second",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+                details={},
+            ),
+        ]
+        runtime = SimpleNamespace(
+            session_task_snapshot=lambda candidate: (
+                SessionTaskSnapshot(
+                    running_task_id=None,
+                    queued_task_ids=("task-z-first", "task-a-second"),
+                )
+                if candidate == key
+                else SessionTaskSnapshot(None, ())
+            ),
+            pending_user_inputs=lambda _candidate: [],
+            steer_capability=lambda _candidate: None,
+        )
+        context = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        response = await dispatcher.dispatch("hydrate-fifo", method, {"key": key}, context)
+
+        assert response.ok is True
+        assert response.payload["active_task"]["task_id"] == "task-z-first"
+        assert response.payload["active_task"]["status"] == "queued"
+        assert response.payload["queued_task_ids"] == [
+            "task-z-first",
+            "task-a-second",
+        ]
+        assert response.payload["run_status"] == "queued"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method",
+        ["sessions.messages.hydrate", "sessions.bootstrap"],
+    )
+    async def test_hydration_keeps_durable_queue_during_runtime_activation_window(
+        self,
+        dispatcher,
+        method: str,
+    ) -> None:
+        key = "agent:main:webchat:runtime-activation-window"
+        session = FakeSession(session_key=key, session_id="runtime-activation-window")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[key] = [
+            SimpleNamespace(
+                task_id="task-durable-before-activation",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+                details={},
+            ),
+            SimpleNamespace(
+                task_id="task-second-before-activation",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=200,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+                details={},
+            ),
+        ]
+        runtime = SimpleNamespace(
+            # The SQLite acceptance transaction committed, but activate() has
+            # not yet inserted the task into TaskRuntime's in-memory lane.
+            session_task_snapshot=lambda _candidate: SessionTaskSnapshot(None, ()),
+            pending_user_inputs=lambda _candidate: [],
+            steer_capability=lambda _candidate: None,
+        )
+        context = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        response = await dispatcher.dispatch(
+            "hydrate-activation-window",
+            method,
+            {"key": key},
+            context,
+        )
+
+        assert response.ok is True
+        assert response.payload["active_task"]["task_id"] == "task-durable-before-activation"
+        assert response.payload["active_task"]["status"] == "queued"
+        assert response.payload["queued_task_ids"] == [
+            "task-durable-before-activation",
+            "task-second-before-activation",
+        ]
+        assert response.payload["run_status"] == "queued"
+
+    @pytest.mark.asyncio
     async def test_messages_subscribe_reports_persisted_task_run_mode_lock(
         self, dispatcher
     ):
@@ -8247,6 +8521,79 @@ class TestSessionsMessagesSubscribe:
         assert conn.events == [("session.event.done", second, {"replayed": True})]
 
     @pytest.mark.asyncio
+    async def test_messages_subscribe_reports_generation_change_without_legacy_promotion(
+        self,
+        dispatcher,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        key = "agent:main:generation-restart"
+        streams = SessionStreamRegistry(stream_generation="gateway-generation-new")
+        monkeypatch.setattr(rpc_sessions, "get_session_streams", lambda: streams)
+        current = streams.record(
+            key,
+            "session.event.text_delta",
+            {"task_id": "task-new", "text": "new"},
+        )
+        context = make_ctx(
+            session_manager=FakeSessionManager([FakeSession(session_key=key)]),
+            conn_id="generation-restart-conn",
+            subscription_manager=SubscriptionManager(),
+        )
+
+        response = await dispatcher.dispatch(
+            "generation-restart",
+            "sessions.messages.subscribe",
+            {
+                "key": key,
+                "since_stream_generation": "gateway-generation-old",
+                "since_stream_seq": 9_000,
+                "fast_ack": True,
+            },
+            context,
+        )
+
+        assert response.ok is True
+        assert response.payload["stream_generation"] == "gateway-generation-new"
+        assert response.payload["current_stream_seq"] == current["stream_seq"]
+        assert response.payload["replay_complete"] is False
+        assert response.payload["replay_gap_reason"] == "stream_generation_changed"
+        assert response.payload["replayed_count"] == 0
+        assert streams.current_seq(key) == current["stream_seq"]
+
+    @pytest.mark.asyncio
+    async def test_messages_subscribe_promotes_legacy_cursor_before_next_event(
+        self,
+        dispatcher,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        key = "agent:main:legacy-generation-restart"
+        streams = SessionStreamRegistry(stream_generation="gateway-generation-new")
+        monkeypatch.setattr(rpc_sessions, "get_session_streams", lambda: streams)
+        context = make_ctx(
+            session_manager=FakeSessionManager([FakeSession(session_key=key)]),
+            conn_id="legacy-generation-restart-conn",
+            subscription_manager=SubscriptionManager(),
+        )
+
+        response = await dispatcher.dispatch(
+            "legacy-generation-restart",
+            "sessions.messages.subscribe",
+            {"key": key, "since_stream_seq": 9_000, "fast_ack": True},
+            context,
+        )
+        following = streams.record(
+            key,
+            "session.event.text_delta",
+            {"task_id": "task-new", "text": "visible"},
+        )
+
+        assert response.ok is True
+        assert response.payload["stream_generation"] == "gateway-generation-new"
+        assert response.payload["current_stream_seq"] == 9_000
+        assert response.payload["replay_complete"] is True
+        assert following["stream_seq"] == 9_001
+
+    @pytest.mark.asyncio
     async def test_messages_subscribe_ack_is_not_blocked_by_writer_queue_socket(
         self,
         dispatcher,
@@ -8380,13 +8727,17 @@ class TestSessionsMessagesSubscribe:
         res = await dispatcher.dispatch(
             "r1",
             "sessions.messages.subscribe",
-            {"key": key, "since_stream_seq": 7},
+            {
+                "key": key,
+                "since_stream_generation": "retired-gateway-generation",
+                "since_stream_seq": 7,
+            },
             ctx,
         )
 
         assert res.ok is True
         assert res.payload["replay_complete"] is False
-        assert res.payload["replay_gap_reason"] == "stream_buffer_reset"
+        assert res.payload["replay_gap_reason"] == "stream_generation_changed"
         assert res.payload["last_task"]["task_id"] == "task-abandoned"
         assert res.payload["run_status"] == "interrupted"
         assert res.payload["hydration_complete"] is True
