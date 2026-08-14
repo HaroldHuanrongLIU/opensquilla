@@ -40,6 +40,7 @@ from .compat_policy import (
     OpenAICompatPolicy,
     ReasoningModelRule,
     compat_policy_for_kind,
+    effective_reasoning_format,
 )
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .error_redaction import (
@@ -3434,7 +3435,7 @@ class OpenAIProvider:
         if (caps and caps.supports_reasoning and cfg.thinking) or (
             thinking_toggle_model and cfg.thinking
         ):
-            reasoning_format = (
+            resolved_reasoning_format = (
                 reasoning_rule.reasoning_format
                 if reasoning_rule and reasoning_rule.reasoning_format
                 else (
@@ -3442,6 +3443,11 @@ class OpenAIProvider:
                     if caps is not None
                     else self._compat.default_reasoning_format
                 )
+            )
+            reasoning_format = effective_reasoning_format(
+                self._compat,
+                resolved_reasoning_format,
+                self._base_url,
             )
             reasoning_effort_override: str | None = None
             if reasoning_rule and reasoning_rule.reasoning_format:
@@ -3494,9 +3500,14 @@ class OpenAIProvider:
                     "none",
                     "off",
                 }:
+                    reasoning_format = effective_reasoning_format(
+                        self._compat,
+                        reasoning_rule.reasoning_format,
+                        self._base_url,
+                    )
                     apply_reasoning_disable(
                         payload,
-                        reasoning_rule.reasoning_format,
+                        reasoning_format,
                         ReasoningDisableArgs(model=self._model),
                     )
             else:
@@ -3504,7 +3515,9 @@ class OpenAIProvider:
         elif caps and caps.supports_reasoning:
             apply_reasoning_disable(
                 payload,
-                caps.reasoning_format,
+                effective_reasoning_format(
+                    self._compat, caps.reasoning_format, self._base_url
+                ),
                 ReasoningDisableArgs(
                     model=self._model,
                     disable_reasoning_by_default_models=(
